@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   providerRequestPacingStatus,
   reconcileProviderRequestPacing,
+  RequestPacingProviderRemovedError,
   RequestPacingQueueOverloadError,
   requestPacingIntervalMs,
   resetProviderRequestPacingForTest,
@@ -233,6 +234,14 @@ describe("provider request pacing queue", () => {
     clock.advanceBy(100);
     await liveQueued;
     expect(clock.pendingTimerCount()).toBe(0);
+  });
+
+  test("maps a provider removed during pacing to retryable provider-unavailable", async () => {
+    const response = requestPacingOverloadResponse(new RequestPacingProviderRemovedError("demo"));
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({
+      error: { type: "server_error", code: "provider_unavailable" },
+    });
   });
 
   test("maps pacing admission overload to 429 with Retry-After", async () => {

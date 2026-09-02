@@ -292,6 +292,7 @@ export function comboFailureCooldownScope(
     "payment_required",
     "billing_error",
     "insufficient_balance",
+    "provider_unavailable",
   ].includes(code)) return "provider";
   return "target";
 }
@@ -357,6 +358,9 @@ export function comboFailureDecision(
     "input_admission_refused",
     "context_length_exceeded",
     "tool_catalog_too_large",
+    "cursor_root_envelope_limit",
+    "kiro_profile_required",
+    "target_incompatible",
     "model_not_found",
     "model_unavailable",
     "unsupported_model",
@@ -376,8 +380,9 @@ export function comboFailureDecision(
     "rate_limit_exceeded",
     "server_is_overloaded",
     "upstream_server_error",
+    "provider_unavailable",
   ].includes(failureCode)) return "hop";
-  if ([401, 402, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
+  if ([401, 402, 403, 404, 408, 410, 413, 429].includes(status) || status >= 500) return "hop";
   if (["origin_rejected", "invalid_request_error"].includes(error.code ?? "")) return "stop";
   return "stop";
 }

@@ -418,17 +418,21 @@ describe("server combo failover 030 activation matrix", () => {
     const a = make("context", () => Response.json({ error: { code: "context_length_exceeded", message: "maximum context exceeded" } }, { status: 400 }));
     const b = make("billing", () => Response.json({ error: { code: "insufficient_quota", message: "payment required" } }, { status: 402 }));
     const c = make("model", () => Response.json({ error: { code: "unsupported_model", message: "unsupported model" } }, { status: 400 }));
-    const d = make("healthy", () => chatSuccess("deep fallback", "m4"));
+    const d = make("gone", () => Response.json({ error: { message: "resource gone" } }, { status: 410 }));
+    const e = make("too-large", () => Response.json({ error: { message: "request too large" } }, { status: 413 }));
+    const f = make("healthy", () => chatSuccess("deep fallback", "m6"));
     const config = comboConfig({
       a: provider("openai-chat", baseUrl(a), "ka"),
       b: provider("openai-chat", baseUrl(b), "kb"),
       c: provider("openai-chat", baseUrl(c), "kc"),
       d: provider("openai-chat", baseUrl(d), "kd"),
+      e: provider("openai-chat", baseUrl(e), "ke"),
+      f: provider("openai-chat", baseUrl(f), "kf"),
     });
     const response = await post(config);
     expect(response.status).toBe(200);
     expect(JSON.stringify(await response.json())).toContain("deep fallback");
-    expect(hits).toEqual(["context", "billing", "model", "healthy"]);
+    expect(hits).toEqual(["context", "billing", "model", "gone", "too-large", "healthy"]);
   });
 
   test("local pacing overload before dispatch hops to the next combo target", async () => {
@@ -515,6 +519,30 @@ describe("server combo failover 030 activation matrix", () => {
     expect(response.status).toBe(200);
     expect(JSON.stringify(await response.json())).toContain("healthy fallback");
     expect(hits).toEqual(["go:m1", "orca:m2", "backup:m3"]);
+  });
+
+  test("adapter-local tool-choice incompatibility hops before upstream dispatch", async () => {
+    let ollamaHits = 0;
+    const ollama = serve(() => {
+      ollamaHits += 1;
+      return Response.json({ message: { role: "assistant", content: "must not dispatch" }, done: true });
+    });
+    const backup = serve(async request => {
+      const body = await request.json() as { model?: string };
+      return chatSuccess("tool-choice fallback", body.model ?? "m2");
+    });
+    const config = comboConfig({
+      a: provider("ollama-native", baseUrl(ollama), "ka"),
+      b: provider("openai-chat", baseUrl(backup), "kb"),
+    });
+
+    const response = await post(config, {
+      tools: [{ type: "function", name: "read", description: "read", parameters: { type: "object", properties: {} } }],
+      tool_choice: "required",
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("tool-choice fallback");
+    expect(ollamaHits).toBe(0);
   });
 
   test("ordinary openai-chat 503 hops to backup for non-stream and stream", async () => {
@@ -1583,7 +1611,10 @@ describe("server combo failover 030 activation matrix", () => {
     }));
     expect(exhausted.status).toBe(404);
     expect(order).toEqual(["a", "b"]);
-    expect(await exhausted.text()).not.toContain("sk-a-should-redact");
+    const exhaustedText = await exhausted.text();
+    expect(exhaustedText).toContain("combo_unavailable");
+    expect(exhaustedText).not.toContain("missing model");
+    expect(exhaustedText).not.toContain("sk-a-should-redact");
   });
 
   test("429 Retry-After 120 keeps A cooling at 60 seconds and restores it at 120", async () => {

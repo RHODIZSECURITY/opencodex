@@ -111,9 +111,9 @@ describe("policy candidate fallback", () => {
     expect(response.status).toBe(400);
     expect(seenModels).toEqual(["policy/daily"]);
   });
-  test("an upstream context_length_exceeded still stops the chain (#1524)", async () => {
-    // The mirror-image contract. An upstream verdict is about the REQUEST, so retrying it
-    // elsewhere is guesswork -- and hopping would burn every candidate on a doomed request.
+  test("an upstream context_length_exceeded hops to a larger declared candidate (#1524)", async () => {
+    // In an explicit policy candidate set, context capacity is target-local: another declared
+    // model may have a larger window, so a pre-output context verdict remains replay-safe.
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
     const seenModels: string[] = [];
@@ -131,7 +131,7 @@ describe("policy candidate fallback", () => {
     const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, { runCore });
 
     expect(response.status).toBe(400);
-    expect(seenModels).toEqual(["policy/daily"]);
+    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b", "provider-c/model-c"]);
   });
   test("retries the next policy candidate and keeps distinct physical attempts", async () => {
     const trace = policyTrace();
@@ -179,7 +179,7 @@ describe("policy candidate fallback", () => {
     expect(logCtx.activeAttempt).toBe(logCtx.attempts?.[1]);
   });
 
-  test("a stored Pool 401 replay dispatch stops policy candidate fallback", async () => {
+  test("a stored Pool 401 replay that fails before output can still hop policy candidates", async () => {
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
     const seenModels: string[] = [];
@@ -192,33 +192,76 @@ describe("policy candidate fallback", () => {
         const body = await req.json() as { model: string };
         seenModels.push(body.model);
         childLog.routeDecision = trace;
-        seedAttempt(childLog, "provider-a", "model-a");
-        options.onStoredPool401ReplayDispatched?.();
-        return Response.json(
-          { error: { message: "stored replay exhausted", type: "rate_limit_error" } },
-          { status: 429 },
-        );
+        const first = seenModels.length === 1;
+        seedAttempt(childLog, first ? "provider-a" : "provider-b", first ? "model-a" : "model-b");
+        if (first) {
+          options.onStoredPool401ReplayDispatched?.();
+          return Response.json({ error: { message: "stored replay exhausted", type: "rate_limit_error" } }, { status: 429 });
+        }
+        return Response.json({ status: "completed" });
       },
     });
 
-    expect(response.status).toBe(429);
-    expect(seenModels).toEqual(["policy/daily"]);
+    expect(response.status).toBe(200);
+    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b"]);
     expect(replaySignals).toBe(1);
   });
 
-  test("returns local pacing overload without switching policy candidates", async () => {
+  test("a stored Pool 401 replay stops policy fallback after visible output", async () => {
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
     let calls = 0;
     const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {
-      runCore: async () => {
+      runCore: async (_req, _config, childLog, options) => {
         calls += 1;
-        throw new RequestPacingQueueOverloadError("provider-a", "queue_full", 2);
+        childLog.routeDecision = trace;
+        seedAttempt(childLog, "provider-a", "model-a");
+        childLog.activeAttempt!.firstOutputMs = 1;
+        options.onStoredPool401ReplayDispatched?.();
+        return Response.json({ error: { message: "late replay failure", type: "rate_limit_error" } }, { status: 429 });
       },
     });
     expect(response.status).toBe(429);
-    expect(response.headers.get("Retry-After")).toBe("2");
     expect(calls).toBe(1);
+  });
+
+  test("local pacing overload hops to the next policy candidate", async () => {
+    const trace = policyTrace();
+    const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
+    const seenModels: string[] = [];
+    const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {
+      runCore: async (req, _config, childLog) => {
+        const body = await req.clone().json() as { model: string };
+        seenModels.push(body.model);
+        childLog.routeDecision = trace;
+        const first = seenModels.length === 1;
+        seedAttempt(childLog, first ? "provider-a" : "provider-b", first ? "model-a" : "model-b");
+        if (first) throw new RequestPacingQueueOverloadError("provider-a", "queue_full", 2);
+        return Response.json({ status: "completed" });
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b"]);
+  });
+
+  test("all retryable policy candidates exhausted returns a sanitized policy-level error", async () => {
+    const trace = policyTrace();
+    const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
+    const seenModels: string[] = [];
+    const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {
+      runCore: async (req, _config, childLog) => {
+        const body = await req.clone().json() as { model: string };
+        seenModels.push(body.model);
+        childLog.routeDecision = trace;
+        seedAttempt(childLog, "provider", body.model);
+        return Response.json({ error: { message: "provider-secret-detail", type: "rate_limit_error" } }, { status: 429 });
+      },
+    });
+    expect(response.status).toBe(429);
+    const text = await response.text();
+    expect(text).toContain("All eligible policy candidates are temporarily unavailable");
+    expect(text).not.toContain("provider-secret-detail");
+    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b", "provider-c/model-c"]);
   });
 
   test("does not switch candidates for terminal client/input failures", async () => {

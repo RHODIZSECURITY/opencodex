@@ -480,9 +480,9 @@ describe("combo failure policy and advancement", () => {
     }
     expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
     expect(comboFailureDecision(403, '{"code":"origin_rejected"}')).toBe("stop");
-    expect(comboFailureDecision(413, "request too large")).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("hop");
     expect(comboFailureDecision(409, "conflict")).toBe("stop");
-    expect(comboFailureDecision(410, "resource is gone")).toBe("stop");
+    expect(comboFailureDecision(410, "resource is gone")).toBe("hop");
     expect(comboFailureDecision(410, "The model has reached its end of life and is no longer available.")).toBe("hop");
     expect(comboFailureDecision(410, "The model is scheduled for retirement.")).toBe("hop");
     expect(comboFailureDecision(410, "gone", { code: "model_retired" })).toBe("hop");
@@ -501,7 +501,7 @@ describe("combo failure policy and advancement", () => {
     // model can have a larger context window. A generic 413 without context evidence remains
     // terminal because replaying an arbitrary oversized request would be guesswork.
     expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
-    expect(comboFailureDecision(413, "request too large")).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("hop");
   });
 
   test("provider-scoped free-tier and monthly quota failures hop without weakening generic 400 handling", () => {
@@ -538,6 +538,9 @@ describe("combo failure policy and advancement", () => {
       [400, "unsupported_model", "unsupported model"],
       [400, "context_length_exceeded", "maximum context exceeded"],
       [413, "tool_catalog_too_large", "tool catalog too large"],
+      [400, "cursor_root_envelope_limit", "Cursor request envelope is too large"],
+      [400, "kiro_profile_required", "Kiro account lacks the required profile"],
+      [400, "target_incompatible", "this target cannot represent the requested tool choice"],
     ] as const;
     for (const [status, code, message] of retryable) {
       expect(comboFailureDecision(status, message, { code })).toBe("hop");

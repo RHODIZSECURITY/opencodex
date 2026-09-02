@@ -2064,7 +2064,11 @@ export function formatErrorResponse(
   options?: { code?: string | null; retryAfter?: string | null },
 ): Response {
   const error = classifyError(status, type, message);
-  if (isCyberPolicyCode(options?.code)) {
+  const explicitCode = typeof options?.code === "string" && options.code.trim()
+    ? options.code.trim()
+    : null;
+  if (explicitCode) error.code = explicitCode;
+  if (isCyberPolicyCode(explicitCode)) {
     error.code = CYBER_POLICY_ERROR_CODE;
     error.type = cyberPolicyErrorType(type);
   }

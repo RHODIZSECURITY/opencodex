@@ -199,7 +199,7 @@ describe("Responses provider input overflow", () => {
     }
   });
 
-  test("a combo stops on 413 and does not dispatch a second oversized target", async () => {
+  test("a combo tries the next target after 413 and reports overflow only after exhaustion", async () => {
     let firstHits = 0;
     let secondHits = 0;
     const first = upstream413(() => { firstHits += 1; });
@@ -223,7 +223,7 @@ describe("Responses provider input overflow", () => {
       const failed = await responseFailed(await request(String(server.url), "combo/fallback", true));
       expect((failed.error as { code?: string }).code).toBe("context_length_exceeded");
       expect(firstHits).toBe(1);
-      expect(secondHits).toBe(0);
+      expect(secondHits).toBe(1);
     } finally {
       await server.stop(true);
     }

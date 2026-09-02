@@ -1440,7 +1440,7 @@ export function decodeRequestErrorResponse(err: unknown, label: string): Respons
 
 export function comboUnavailableResponse(
   message: string,
-  options?: { retryAfter?: string | null },
+  options?: { retryAfter?: string | null; status?: number },
 ): Response {
   const headers = new Headers({ "Content-Type": "application/json" });
   const retryAfter = options?.retryAfter?.trim();
@@ -1451,7 +1451,7 @@ export function comboUnavailableResponse(
     JSON.stringify({
       error: { message, type: "server_error", code: "combo_unavailable" },
     }),
-    { status: 503, headers },
+    { status: options?.status ?? 503, headers },
   );
 }
 
@@ -1575,6 +1575,22 @@ export function sanitizedRetryAfter(value: string | null, now: number): string |
 
 
 
+function isKnownTargetIncompatibilityText(text: string): boolean {
+  return text.includes("Kiro supports only automatic tool choice or tool_choice:none")
+    || text.includes("Kiro does not support service tiers")
+    || text.includes("Kiro does not support Responses structured output")
+    || /Kiro .+ does not support reasoning effort /.test(text)
+    || text.includes("ollama-native does not support required or exact named tool_choice")
+    || /ollama-native does not support reasoning level /.test(text)
+    || text.includes("ollama-native does not support structured output on Ollama Cloud")
+    || text.includes("ollama-native does not support forwarded caller credentials")
+    || text.includes("ollama-native cannot send video content in ")
+    || text.includes("ollama-native cannot preserve images in ")
+    || text.includes("azure-openai does not support forward auth mode")
+    || text.includes("tool_choice requires function ") && text.includes("cannot be represented for this destination");
+}
+
+
 export async function consumeComboFailure(
   response: Response,
   signal?: AbortSignal,
@@ -1601,7 +1617,14 @@ export async function consumeComboFailure(
     classificationText = fallback;
   }
   const cyberFailure = isCyberPolicyCode(upstreamCode) || isCyberPolicyMessage(classificationText);
-  const normalizedUpstreamCode = cyberFailure ? CYBER_POLICY_ERROR_CODE : upstreamCode;
+  const targetIncompatible = !cyberFailure
+    && (upstreamCode === undefined || upstreamCode === "invalid_request_error")
+    && isKnownTargetIncompatibilityText(classificationText);
+  const normalizedUpstreamCode = cyberFailure
+    ? CYBER_POLICY_ERROR_CODE
+    : targetIncompatible
+      ? "target_incompatible"
+      : upstreamCode;
   const message = cyberFailure
     ? upstreamMessage
       ?? (isCyberPolicyCode(upstreamCode) ? CYBER_POLICY_FALLBACK_MESSAGE : classificationText)
@@ -2578,13 +2601,24 @@ export async function handleComboResponses(
     if (!nextPick) adoptFailedChildLog(childLog);
     pick = nextPick;
   }
-  if (
-    lastFailure?.status === 413
-    && (rawBody as { stream?: unknown } | null)?.stream === true
-  ) {
-    return streamingContextOverflowResponse(requestedModel, options.translatorBudget);
+  if (lastFailure?.status === 413) {
+    if ((rawBody as { stream?: unknown } | null)?.stream === true) {
+      return streamingContextOverflowResponse(requestedModel, options.translatorBudget);
+    }
+    return formatErrorResponse(
+      413,
+      "request_too_large",
+      `No target in combo "${comboId}" can accept this request`,
+      { code: "combo_input_too_large" },
+    );
   }
-  return lastFailure!;
+  // Every failure that reached this point was classified as replay-safe and every declared
+  // target was attempted or excluded. Keep provider payloads in internal attempts/logs, but do
+  // not leak the last provider's billing/rate-limit/error body into the client conversation.
+  return comboUnavailableResponse(`All targets exhausted for combo: ${comboId}`, {
+    retryAfter: lastFailure?.headers.get("retry-after") ?? comboCooldownRetryAfterSeconds(comboId),
+    status: lastFailure?.status ?? 503,
+  });
 }
 
 
@@ -3752,8 +3786,30 @@ async function handleResponsesInner(
       // unstructured 500 — and no request log — depending only on whether a rotation ran first.
       // Same shape for a tool_choice this proxy cannot honor: the destination rejects a schema the
       // catalog had to drop, so the selector naming it is a client input error, not a 500.
-      if (error instanceof NamespaceToolCollisionError || error instanceof XaiToolSchemaCompatibilityError) {
+      if (error instanceof NamespaceToolCollisionError) {
         return formatErrorResponse(400, "invalid_request_error", redactSecretString(error.message));
+      }
+      const targetIncompatible = error instanceof XaiToolSchemaCompatibilityError
+        || (error instanceof Error && (
+          error.message === "Kiro supports only automatic tool choice or tool_choice:none"
+          || error.message === "Kiro does not support service tiers"
+          || error.message === "Kiro does not support Responses structured output"
+          || /^Kiro .+ does not support reasoning effort /.test(error.message)
+          || error.message === "ollama-native does not support required or exact named tool_choice"
+          || /^ollama-native does not support reasoning level /.test(error.message)
+          || error.message === "ollama-native does not support structured output on Ollama Cloud"
+          || error.message === "ollama-native does not support forwarded caller credentials"
+          || /^ollama-native cannot send video content in /.test(error.message)
+          || /^ollama-native cannot preserve images in /.test(error.message)
+          || error.message === "azure-openai does not support forward auth mode"
+        ));
+      if (targetIncompatible) {
+        return formatErrorResponse(
+          400,
+          "invalid_request_error",
+          redactSecretString(error instanceof Error ? error.message : String(error)),
+          { code: "target_incompatible" },
+        );
       }
       throw error;
     }
