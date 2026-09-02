@@ -282,7 +282,18 @@ export function comboFailureCooldownScope(
   message: string,
   options?: { code?: string | null },
 ): ComboFailureCooldownScope {
-  return isProviderScopedQuotaCap(status, message, options?.code) ? "provider" : "target";
+  const code = normalizedFailureCode(options?.code);
+  if (isProviderScopedQuotaCap(status, message, code)) return "provider";
+  if (status === 401 || status === 402) return "provider";
+  if ([
+    "invalid_api_key",
+    "insufficient_quota",
+    "subscription_required",
+    "payment_required",
+    "billing_error",
+    "insufficient_balance",
+  ].includes(code)) return "provider";
+  return "target";
 }
 
 function isModelLifecycleGone(
@@ -341,26 +352,32 @@ export function comboFailureDecision(
   // an upstream already controls other hop signals (429, 5xx), and traversal is finite: policy
   // tries each candidate once via `tried`, and combo excludes each attempted target. So this is
   // structured-code-only, not provably local.
-  if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
-    return "hop";
-  }
-  if (isProviderScopedQuotaCap(status, message, options?.code || error.code)) {
-    return "hop";
-  }
-  if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
-    return "stop";
-  }
-  if ([401, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
+  const failureCode = normalizedFailureCode(options?.code || error.code);
+  const targetLocalCodes = new Set([
+    "input_admission_refused",
+    "context_length_exceeded",
+    "tool_catalog_too_large",
+    "model_not_found",
+    "model_unavailable",
+    "unsupported_model",
+  ]);
+  if (targetLocalCodes.has(failureCode)) return "hop";
+  const lowerMessage = message.toLowerCase();
+  if (/\b(?:model not found|model unavailable|unsupported model)\b/.test(lowerMessage)) return "hop";
+  if (isProviderScopedQuotaCap(status, message, failureCode)) return "hop";
   if ([
     "permission_denied",
     "subscription_required",
     "invalid_api_key",
     "insufficient_quota",
+    "payment_required",
+    "billing_error",
+    "insufficient_balance",
     "rate_limit_exceeded",
     "server_is_overloaded",
     "upstream_server_error",
-  ].includes(error.code ?? "")) {
-    return "hop";
-  }
+  ].includes(failureCode)) return "hop";
+  if ([401, 402, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
+  if (["origin_rejected", "invalid_request_error"].includes(error.code ?? "")) return "stop";
   return "stop";
 }

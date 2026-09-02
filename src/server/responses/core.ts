@@ -2,6 +2,7 @@ import type { Server } from "bun";
 import { randomUUID } from "node:crypto";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import { formatPassthroughUpstreamError } from "./passthrough-error";
+import { requestPacingOverloadResponse } from "./pacing-overload";
 import {
   createResponsesFieldBackfillBlockRewrite,
   backfillResponsesFieldsJson,
@@ -2440,7 +2441,12 @@ export async function handleComboResponses(
         retainCancelledAttempt();
         return clientCancelledResponse();
       }
-      throw error;
+      const pacingOverload = requestPacingOverloadResponse(error);
+      if (!pacingOverload) throw error;
+      // A local queue admission failure happened before this combo child reached the
+      // provider and before any output was committed. Treat it exactly like a retryable
+      // pre-stream 429 so an explicitly declared combo can try its next target.
+      response = pacingOverload;
     }
 
     if (options.abortSignal?.aborted) {
@@ -2536,7 +2542,10 @@ export async function handleComboResponses(
     (logCtx.attempts ??= []).push(attempt);
     attemptRetained = true;
     lastFailure = failure.response;
-    if (storedPool401ReplayDispatched) {
+    if (storedPool401ReplayDispatched && attempt.firstOutputMs !== undefined) {
+      // Once a replay has emitted output, replaying the logical turn on another provider
+      // would duplicate visible content. A stored replay that failed before first output
+      // remains safe to classify and fail over inside an explicitly declared combo.
       adoptFailedChildLog(childLog);
       return lastFailure;
     }

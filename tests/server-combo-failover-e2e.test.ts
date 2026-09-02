@@ -37,6 +37,7 @@ import {
 } from "../src/responses/state";
 import { clearCursorThreadContinuityForTests } from "../src/adapters/cursor/thread-continuity";
 import { COMPACT_PROMPT, encodeCompactionSummary } from "../src/responses/compaction";
+import { RequestPacingQueueOverloadError } from "../src/providers/request-pacing";
 
 // Full-suite Windows load: startServer + combo rename/delete management flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
@@ -411,6 +412,42 @@ async function within<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
 }
 
 describe("server combo failover 030 activation matrix", () => {
+  test("target-local context, billing, and unsupported-model failures reach the healthy fallback", async () => {
+    const hits: string[] = [];
+    const make = (name: string, response: () => Response) => serve(() => { hits.push(name); return response(); });
+    const a = make("context", () => Response.json({ error: { code: "context_length_exceeded", message: "maximum context exceeded" } }, { status: 400 }));
+    const b = make("billing", () => Response.json({ error: { code: "insufficient_quota", message: "payment required" } }, { status: 402 }));
+    const c = make("model", () => Response.json({ error: { code: "unsupported_model", message: "unsupported model" } }, { status: 400 }));
+    const d = make("healthy", () => chatSuccess("deep fallback", "m4"));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "ka"),
+      b: provider("openai-chat", baseUrl(b), "kb"),
+      c: provider("openai-chat", baseUrl(c), "kc"),
+      d: provider("openai-chat", baseUrl(d), "kd"),
+    });
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("deep fallback");
+    expect(hits).toEqual(["context", "billing", "model", "healthy"]);
+  });
+
+  test("local pacing overload before dispatch hops to the next combo target", async () => {
+    let backupHits = 0;
+    customFetchResponse = async request => {
+      const model = (JSON.parse(String(request.body)) as { model?: string }).model;
+      if (model === "m1") throw new RequestPacingQueueOverloadError("a", "queue_full", 2);
+      backupHits += 1;
+      return chatSuccess("pacing backup", "m2");
+    };
+    const config = comboConfig({
+      a: provider("test-response", "https://test.invalid/v1", "ka"),
+      b: provider("test-response", "https://test.invalid/v1", "kb"),
+    });
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("pacing backup");
+    expect(backupHits).toBe(1);
+  });
   test("dispatches a selected concrete target despite a shadowing combo alias", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
@@ -1514,20 +1551,22 @@ describe("server combo failover 030 activation matrix", () => {
     expect(modelHits.every(hit => hit.hasWebTool)).toBe(true);
   });
 
-  test("context 400 stops while exhausted retryable targets return the sanitized last status", async () => {
+  test("context 400 hops while exhausted retryable targets return the sanitized last status", async () => {
     let stopBackupHits = 0;
     const context = serve(() => Response.json({ error: { code: "context_length_exceeded", message: "too many tokens" } }, { status: 400 }));
     const unused = serve(() => {
       stopBackupHits += 1;
-      return chatSuccess("must not run");
+      return chatSuccess("context backup");
     });
     const stopConfig = comboConfig({
       a: provider("openai-chat", baseUrl(context), "key-a"),
       b: provider("openai-chat", baseUrl(unused), "key-b"),
     });
     const stopped = await post(stopConfig);
-    expect(stopped.status).toBe(400);
-    expect(stopBackupHits).toBe(0);
+    expect(stopped.status).toBe(200);
+    expect(stopBackupHits).toBe(1);
+    expect(JSON.stringify(await stopped.json())).toContain("context backup");
+    clearComboTargetCooldowns("free");
 
     const order: string[] = [];
     const first = serve(() => {
