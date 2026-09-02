@@ -478,7 +478,7 @@ describe("combo failure policy and advancement", () => {
     for (const status of [401, 403, 404, 408, 429, 500, 503]) {
       expect(comboFailureDecision(status, "provider failure")).toBe("hop");
     }
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
     expect(comboFailureDecision(403, '{"code":"origin_rejected"}')).toBe("stop");
     expect(comboFailureDecision(413, "request too large")).toBe("stop");
     expect(comboFailureDecision(409, "conflict")).toBe("stop");
@@ -497,9 +497,10 @@ describe("combo failure policy and advancement", () => {
     // verdict by echoing the token, so that shape must NOT hop.
     expect(comboFailureDecision(413, 'refused', { code: 'input_admission_refused' })).toBe('hop');
     expect(comboFailureDecision(400, 'upstream mentions input_admission_refused in prose')).toBe('stop');
-    // An UPSTREAM context verdict still stops: retrying that elsewhere is guesswork, and a
-    // generic 413 with no structured code keeps its existing conservative handling.
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    // An upstream context verdict is target-local in an explicit combo: another declared
+    // model can have a larger context window. A generic 413 without context evidence remains
+    // terminal because replaying an arbitrary oversized request would be guesswork.
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
     expect(comboFailureDecision(413, "request too large")).toBe("stop");
   });
 
@@ -526,6 +527,25 @@ describe("combo failure policy and advancement", () => {
       code: "1302",
       message: "Rate limit reached for requests",
     })).toBe(true);
+  });
+
+  test("structured provider and target-local failures cannot be swallowed by generic status classification", () => {
+    const retryable = [
+      [402, "insufficient_quota", "payment required"],
+      [402, "subscription_required", "billing required"],
+      [422, "invalid_api_key", "bad credential"],
+      [400, "model_not_found", "model not found"],
+      [400, "unsupported_model", "unsupported model"],
+      [400, "context_length_exceeded", "maximum context exceeded"],
+      [413, "tool_catalog_too_large", "tool catalog too large"],
+    ] as const;
+    for (const [status, code, message] of retryable) {
+      expect(comboFailureDecision(status, message, { code })).toBe("hop");
+    }
+    expect(comboFailureCooldownScope(402, "payment required", { code: "insufficient_quota" })).toBe("provider");
+    expect(comboFailureCooldownScope(422, "bad credential", { code: "invalid_api_key" })).toBe("provider");
+    expect(comboFailureCooldownScope(400, "model not found", { code: "model_not_found" })).toBe("target");
+    expect(comboFailureDecision(422, "ordinary unprocessable request", { code: "invalid_request_error" })).toBe("stop");
   });
 
   test("failover skips providers with fresh exhausted quota evidence before dispatch", () => {
