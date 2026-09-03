@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { apiKeyPoolEntryId } from "../src/providers/api-keys";
 import {
   clearKeyCooldowns,
   getKeyCooldownUntil,
@@ -80,16 +81,58 @@ describe("hasKeyPoolFailover", () => {
 });
 
 describe("rotateKeyOn429", () => {
+  test("manual pool ids never reach persisted cooldown state or rotation logs", () => {
+    const now = Date.now();
+    const config = makeConfig({
+      apiKey: "key-alpha-000111222333",
+      apiKeyPool: [
+        { id: "customer-secret-label", key: "key-alpha-000111222333" },
+        { id: "replacement-label", key: "key-beta-444555666777" },
+      ],
+    });
+    hydrateKeyQuotaCooldownsFromDisk(now);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      setCachedProviderQuotaForTests("p", { monthlyPercent: 100, monthlyResetAt: now + 2 * 60 * 60_000, updatedAt: now });
+      expect(rotateKeyOn429(config, "p", null, now)).not.toBeNull();
+      expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 2 * 60 * 60_000);
+      flushKeyQuotaCooldownPersistForTests(now);
+      const raw = readFileSync(join(home, "provider-key-quota-cooldowns.json"), "utf8");
+      expect(raw).not.toContain("customer-secret-label");
+      expect(raw).not.toContain("replacement-label");
+      expect(raw).toContain(`p\\u0000${apiKeyPoolEntryId("key-alpha-000111222333")}`);
+      const warnings = warn.mock.calls.flat().join(" ");
+      expect(warnings).not.toContain("customer-secret-label");
+      expect(warnings).not.toContain("replacement-label");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("key cooldown persistence never writes arbitrary pool ids", () => {
+    const path = join(home, "provider-key-quota-cooldowns.json");
+    const now = Date.now();
+    schedulePersistKeyQuotaCooldowns(home, () => [
+      ["p\0sensitive-user-label", now + 60_000],
+      ["p\0deadbeef", now + 60_000],
+    ]);
+    flushKeyQuotaCooldownPersistForTests(now);
+    const raw = readFileSync(path, "utf8");
+    expect(raw).not.toContain("sensitive-user-label");
+    const parsed = JSON.parse(raw) as { rows?: Record<string, number> };
+    expect(Object.keys(parsed.rows ?? {})).toEqual(["p\0deadbeef"]);
+  });
+
   test("key cooldown persistence cannot be postponed indefinitely by sustained updates", async () => {
     const path = join(home, "provider-key-quota-cooldowns.json");
     const now = Date.now();
-    schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000]]);
+    schedulePersistKeyQuotaCooldowns(home, () => [["p\0deadbeef", now + 60_000]]);
     await Bun.sleep(180);
-    schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000], ["p\0k2", now + 60_000]]);
+    schedulePersistKeyQuotaCooldowns(home, () => [["p\0deadbeef", now + 60_000], ["p\0cafebabe", now + 60_000]]);
     await Bun.sleep(160);
     expect(existsSync(path)).toBe(true);
     const parsed = JSON.parse(readFileSync(path, "utf8")) as { rows?: Record<string, number> };
-    expect(Object.keys(parsed.rows ?? {}).sort()).toEqual(["p\0k1", "p\0k2"]);
+    expect(Object.keys(parsed.rows ?? {}).sort()).toEqual(["p\0cafebabe", "p\0deadbeef"]);
   });
 
   test("rotates to the next key and cools down the exhausted one", () => {
@@ -98,7 +141,7 @@ describe("rotateKeyOn429", () => {
     const rotated = rotateKeyOn429(config, "p", null, now);
     expect(rotated?.apiKey).toBe("key-beta-444555666777");
     expect(config.providers.p.apiKey).toBe("key-beta-444555666777");
-    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 60_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 60_000);
   });
 
   test("uses fresh exhausted quota reset for the failed key instead of the 60s default", () => {
@@ -108,7 +151,7 @@ describe("rotateKeyOn429", () => {
       fiveHourPercent: 100, fiveHourResetAt: now + 2 * 60 * 60_000, updatedAt: now,
     });
     rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
-    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 2 * 60 * 60_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 2 * 60 * 60_000);
   });
 
   test("rotating a key invalidates provider-level quota evidence from the failed key", () => {
@@ -130,7 +173,7 @@ describe("rotateKeyOn429", () => {
       updatedAt: now - 30 * 60_000 - 1,
     });
     rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
-    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 60_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 60_000);
   });
 
   test("long quota cooldown survives a simulated proxy restart", () => {
@@ -144,7 +187,7 @@ describe("rotateKeyOn429", () => {
     flushKeyQuotaCooldownPersistForTests(now);
     resetKeyQuotaCooldownPersistenceForTests();
     hydrateKeyQuotaCooldownsFromDisk(now + 1_000);
-    expect(getKeyCooldownUntil("p", "k1", now + 1_000)).toBe(now + 2 * 60 * 60_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now + 1_000)).toBe(now + 2 * 60 * 60_000);
   });
 
   test("short generic 429 cooldown is not persisted across restart", () => {
@@ -155,21 +198,21 @@ describe("rotateKeyOn429", () => {
     flushKeyQuotaCooldownPersistForTests(now);
     resetKeyQuotaCooldownPersistenceForTests();
     hydrateKeyQuotaCooldownsFromDisk(now + 1_000);
-    expect(getKeyCooldownUntil("p", "k1", now + 1_000)).toBeNull();
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now + 1_000)).toBeNull();
   });
 
   test("respects Retry-After seconds for the cooldown window", () => {
     const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
     const now = 1_000_000;
     rotateKeyOn429(config, "p", "120", now);
-    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 120_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 120_000);
   });
 
   test("caps absurd Retry-After at the max cooldown", () => {
     const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
     const now = 1_000_000;
     rotateKeyOn429(config, "p", "86400", now);
-    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 10 * 60_000);
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBe(now + 10 * 60_000);
   });
 
   test("skips keys already in cooldown and wraps around the pool", () => {
@@ -196,11 +239,11 @@ describe("rotateKeyOn429", () => {
     const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
     const now = 1_000_000;
     rotateKeyOn429(config, "p", null, now);
-    expect(getKeyCooldownUntil("p", "k1", now)).not.toBeNull();
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).not.toBeNull();
     clearKeyCooldowns("other");
-    expect(getKeyCooldownUntil("p", "k1", now)).not.toBeNull();
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).not.toBeNull();
     clearKeyCooldowns("p");
-    expect(getKeyCooldownUntil("p", "k1", now)).toBeNull();
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).toBeNull();
   });
 
   test("concurrent 429s from the SAME key do not cool the innocent replacement (CAS)", () => {
@@ -212,8 +255,8 @@ describe("rotateKeyOn429", () => {
     // it re-cools alpha (harmless) and retries with the healthy live key.
     const second = rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
     expect(second?.apiKey).toBe("key-beta-444555666777");
-    expect(getKeyCooldownUntil("p", "k2", now)).toBeNull(); // beta never cooled
-    expect(getKeyCooldownUntil("p", "k1", now)).not.toBeNull();
+    expect(getKeyCooldownUntil("p", "key-beta-444555666777", now)).toBeNull(); // beta never cooled
+    expect(getKeyCooldownUntil("p", "key-alpha-000111222333", now)).not.toBeNull();
     // A REAL beta failure afterwards still rotates to gamma.
     expect(rotateKeyOn429(config, "p", null, now, "key-beta-444555666777")?.apiKey).toBe("key-gamma-888999000111");
   });

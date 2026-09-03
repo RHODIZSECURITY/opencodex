@@ -8,6 +8,13 @@ const MAX_FUTURE_MS = 31 * 24 * 60 * 60_000;
 const PERSIST_DEBOUNCE_MS = 250;
 type DiskFile = { version: 1; rows: Record<string, number> };
 
+function isSafeCooldownRowKey(value: string): boolean {
+  const split = value.lastIndexOf("\0");
+  if (split <= 0) return false;
+  const keyId = value.slice(split + 1);
+  return /^[0-9a-f]{8}$/.test(keyId);
+}
+
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingRows: (() => Iterable<[string, number]>) | null = null;
 let pendingDirectory: string | null = null;
@@ -24,6 +31,7 @@ export function readPersistedKeyQuotaCooldowns(directory: string, now = Date.now
     const parsed = JSON.parse(readFileSync(path, "utf8")) as DiskFile;
     if (!parsed || parsed.version !== 1 || !parsed.rows || typeof parsed.rows !== "object") return rows;
     for (const [key, until] of Object.entries(parsed.rows)) {
+      if (!isSafeCooldownRowKey(key)) continue;
       if (typeof until !== "number" || !Number.isFinite(until)) continue;
       if (until <= now || until - now > MAX_FUTURE_MS) continue;
       rows.set(key, until);
@@ -37,6 +45,7 @@ function persistNow(directory: string, rows: Iterable<[string, number]>, now = D
   try {
     const out: Record<string, number> = {};
     for (const [key, until] of rows) {
+      if (!isSafeCooldownRowKey(key)) continue;
       if (!Number.isFinite(until) || until <= now || until - now > MAX_FUTURE_MS) continue;
       out[key] = until;
     }

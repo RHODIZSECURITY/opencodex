@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -89,13 +89,18 @@ describe("server listener shutdown", () => {
   test("drainAndShutdown flushes pending durable quota cooldowns before stop", async () => {
     const home = mkdtempSync(join(tmpdir(), "ocx-shutdown-cooldowns-"));
     const now = Date.now();
-    const fake = fakeServer();
+    let boundaryComboRows: Record<string, number> | undefined;
+    let boundaryKeyRows: Record<string, number> | undefined;
+    const fake = fakeServer(() => {
+      boundaryComboRows = (JSON.parse(readFileSync(join(home, "combo-quota-cooldowns.json"), "utf8")) as { rows: Record<string, number> }).rows;
+      boundaryKeyRows = (JSON.parse(readFileSync(join(home, "provider-key-quota-cooldowns.json"), "utf8")) as { rows: Record<string, number> }).rows;
+    });
     try {
       schedulePersistComboQuotaCooldowns(home, () => [["provider:a", now + 60_000]]);
-      schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000]]);
+      schedulePersistKeyQuotaCooldowns(home, () => [["p\0deadbeef", now + 60_000]]);
       await drainAndShutdown(fake.server, 0);
-      expect(existsSync(join(home, "combo-quota-cooldowns.json"))).toBe(true);
-      expect(existsSync(join(home, "provider-key-quota-cooldowns.json"))).toBe(true);
+      expect(boundaryComboRows).toEqual({ "provider:a": now + 60_000 });
+      expect(boundaryKeyRows).toEqual({ "p\0deadbeef": now + 60_000 });
       expect(fake.stops()).toBe(1);
     } finally {
       cancelPendingComboQuotaCooldownPersist();

@@ -11,6 +11,7 @@
 import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig, RateLimitRetryPolicy, TransientRetryPolicy } from "../types";
 import { deleteCachedProviderQuota, getCachedProviderQuota } from "./quota-routing-cache";
+import { apiKeyPoolEntryId } from "./api-keys";
 import type { ProviderQuota } from "./quota-types";
 import {
   keyQuotaCooldownStoreDirectory,
@@ -84,8 +85,8 @@ function scheduleQuotaCooldownPersistence(): void {
   schedulePersistKeyQuotaCooldowns(quotaCooldownPersistenceDirectory, () => persistedQuotaCooldownRows());
 }
 
-function cooldownKey(providerName: string, keyId: string): string {
-  return `${providerName}\0${keyId}`;
+function cooldownKey(providerName: string, apiKey: string): string {
+  return `${providerName}\0${apiKeyPoolEntryId(apiKey)}`;
 }
 
 export function hydrateKeyQuotaCooldownsFromDisk(now = Date.now()): void {
@@ -132,8 +133,8 @@ function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): 
  * True while the given key is inside its 429 cooldown window (lazily evicting the entry once the
  * window expires). Used to skip keys that the upstream just rate-limited during failover.
  */
-function isKeyInCooldown(providerName: string, keyId: string, now = Date.now()): boolean {
-  const key = cooldownKey(providerName, keyId);
+function isKeyInCooldown(providerName: string, apiKey: string, now = Date.now()): boolean {
+  const key = cooldownKey(providerName, apiKey);
   const entry = keyCooldowns.get(key);
   if (!entry) return false;
   if (entry.cooldownUntil <= now) {
@@ -258,7 +259,7 @@ function rotateKeyAfterFailure(
     const headerCooldownMs = failureStatus === 429 ? parseRetryAfterMs(retryAfterHeader, now) : undefined;
     const authCooldownMs = failureStatus === 401 ? MAX_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
     const cooldownMs = Math.max(headerCooldownMs ?? 0, quotaRecoveryMs ?? 0, authCooldownMs);
-    const key = cooldownKey(providerName, currentEntry.id);
+    const key = cooldownKey(providerName, currentEntry.key);
     const cooldownUntil = now + cooldownMs;
     keyCooldowns.set(key, { cooldownUntil });
     const durableLongQuota = quotaRecoveryMs !== undefined && cooldownMs > MAX_COOLDOWN_MS;
@@ -272,18 +273,18 @@ function rotateKeyAfterFailure(
   // CAS: another request may already have rotated away from the exact credential that failed.
   if (attemptedKey !== undefined && provider.apiKey !== attemptedKey) {
     const liveEntry = pool.find(e => e.key === provider.apiKey);
-    if (liveEntry && !isKeyInCooldown(providerName, liveEntry.id, now)) return { ...provider };
+    if (liveEntry && !isKeyInCooldown(providerName, liveEntry.key, now)) return { ...provider };
   }
 
   const currentIndex = currentEntry ? pool.indexOf(currentEntry) : -1;
   for (let i = 1; i < pool.length; i++) {
     const candidate = pool[(currentIndex + i) % pool.length]!;
-    if (isKeyInCooldown(providerName, candidate.id, now)) continue;
+    if (isKeyInCooldown(providerName, candidate.key, now)) continue;
     provider.apiKey = candidate.key;
     deleteCachedProviderQuota(providerName);
     saveConfigPreservingClaudeCode(config);
     console.warn(
-      `[key-failover] ${providerName}: ${failureStatus} on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}`,
+      `[key-failover] ${providerName}: ${failureStatus} on key ${currentEntry ? apiKeyPoolEntryId(currentEntry.key) : "?"}; rotating to key ${apiKeyPoolEntryId(candidate.key)}`,
     );
     return { ...provider };
   }
@@ -401,8 +402,8 @@ export function clearKeyCooldowns(providerName?: string): void {
 }
 
 /** Visible-for-testing: get the cooldown-until timestamp for a key. */
-export function getKeyCooldownUntil(providerName: string, keyId: string, now = Date.now()): number | null {
-  const entry = keyCooldowns.get(cooldownKey(providerName, keyId));
+export function getKeyCooldownUntil(providerName: string, apiKey: string, now = Date.now()): number | null {
+  const entry = keyCooldowns.get(cooldownKey(providerName, apiKey));
   if (!entry) return null;
   return entry.cooldownUntil > now ? entry.cooldownUntil : null;
 }

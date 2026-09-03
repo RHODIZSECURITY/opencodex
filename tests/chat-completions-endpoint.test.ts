@@ -1517,7 +1517,7 @@ test("chat-native records terminal key cooldown after the send budget is exhaust
     expect(response.status).toBe(429);
     await response.text();
     expect(upstreamSends).toBe(1);
-    expect(getKeyCooldownUntil("mock", "one")).not.toBeNull();
+    expect(getKeyCooldownUntil("mock", "key-one")).not.toBeNull();
     expect(loadConfig().providers.mock?.apiKey).toBe("key-two");
   } finally {
     await server.stop(true);
