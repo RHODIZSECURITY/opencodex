@@ -1,7 +1,7 @@
 import type { OcxComboTarget, OcxConfig } from "../types";
 import { getCachedProviderQuota } from "../providers/quota-routing-cache";
 import type { ProviderQuota } from "../providers/quota-types";
-import { coolComboTarget, isComboTargetInCooldown, type ComboFailureCooldownScope } from "./failover";
+import { coolComboProvider, coolComboTarget, isComboTargetInCooldown, type ComboFailureCooldownScope } from "./failover";
 import { quotaResetRemainingMs } from "./reset-window";
 import { getCombo, resolveComboId, targetKey } from "./types";
 import type { NormalizedComboConfig } from "./types";
@@ -155,6 +155,7 @@ export function pickComboTarget(
   const eligible = (target: Required<OcxComboTarget>): boolean =>
     targetProviderIsUsable(config, target)
     && !cachedProviderQuotaIsExhausted(getCachedProviderQuota(target.provider, now), now)
+    && !isComboTargetInCooldown(comboId, target, now)
     && !excluded.has(targetKey(target))
     && (options.eligible?.(target) ?? true);
 
@@ -283,12 +284,13 @@ export function advanceComboAfterFailure(
   } = {},
 ): ComboPick | null {
   noteComboFailure(pick.comboId, pick.target, pick.writerGeneration);
-  const combo = getCombo(config, pick.comboId);
-  const cooldownTargets = options.cooldownScope === "provider" && combo
-    ? combo.targets.filter(target => target.provider === pick.target.provider)
-    : [pick.target];
-  for (const target of cooldownTargets) {
-    coolComboTarget(pick.comboId, target, {
+  if (options.cooldownScope === "provider") {
+    coolComboProvider(pick.target.provider, {
+      ...options,
+      writerGeneration: pick.writerGeneration,
+    });
+  } else if (options.cooldownScope !== "none") {
+    coolComboTarget(pick.comboId, pick.target, {
       ...options,
       writerGeneration: pick.writerGeneration,
     });

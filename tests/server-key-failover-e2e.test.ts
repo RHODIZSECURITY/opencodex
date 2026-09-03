@@ -249,6 +249,50 @@ describe("server 429 key failover (end-to-end)", () => {
     }
   });
 
+  test("routed 401 rotates to the next API key before abandoning the provider", async () => {
+    const seenAuth: string[] = [];
+    upstream = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(req) {
+        seenAuth.push(req.headers.get("authorization") ?? "");
+        if (seenAuth.length === 1) {
+          return Response.json({ error: { type: "authentication_error", code: "invalid_api_key", message: "revoked key" } }, { status: 401 });
+        }
+        return Response.json({
+          id: "chatcmpl-auth-rotate", object: "chat.completion",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok after auth rotate" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        });
+      },
+    });
+    const config: OcxConfig = {
+      port: 0, hostname: "127.0.0.1", defaultProvider: "pooled",
+      providers: {
+        pooled: {
+          adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+          allowPrivateNetwork: true, apiKey: "key-alpha-000111222333",
+          apiKeyPool: [
+            { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
+            { id: "k2", key: "key-beta-444555666777", addedAt: 2 },
+          ],
+        },
+      },
+    } as OcxConfig;
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "pooled/some-model", input: "hello", stream: false }),
+      });
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(await res.json())).toContain("ok after auth rotate");
+      expect(seenAuth).toEqual(["Bearer key-alpha-000111222333", "Bearer key-beta-444555666777"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("reasoning replay misses after a 429 rotates to a different physical key", async () => {
     const model = "reasoning-model";
     const callId = "call_key_rotation";

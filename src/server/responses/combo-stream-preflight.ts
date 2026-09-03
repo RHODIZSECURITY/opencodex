@@ -122,6 +122,19 @@ function failedTerminalResponse(
   });
 }
 
+function streamReadFailureResponse(response: Response): Response {
+  const error = {
+    type: "upstream_error",
+    code: "upstream_reset",
+    message: "Provider stream reset before producing output",
+  };
+  const headers = new Headers(response.headers);
+  headers.set("content-type", "application/json");
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  return new Response(JSON.stringify({ error, response: { error } }), { status: 502, headers });
+}
+
 export type ComboStreamPreflightResult =
   | { kind: "accepted"; response: Response }
   | { kind: "failed"; response: Response };
@@ -135,6 +148,7 @@ export type ComboStreamPreflightResult =
 export async function preflightComboStreamResponse(
   response: Response,
   logCtx: RequestLogContext,
+  abortSignal?: AbortSignal,
 ): Promise<ComboStreamPreflightResult> {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (!response.ok || !response.body || !contentType.includes("text/event-stream")) {
@@ -161,7 +175,14 @@ export async function preflightComboStreamResponse(
 
   try {
     for (;;) {
-      const next = await reader.read();
+      let next: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        if (abortSignal?.aborted) throw error;
+        await reader.cancel("retrying zero-output combo stream read failure").catch(() => undefined);
+        return { kind: "failed", response: streamReadFailureResponse(response) };
+      }
       if (next.done) {
         inspector.finish();
       } else {

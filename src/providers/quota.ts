@@ -590,9 +590,10 @@ async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): 
     ? `API balance ($${balance.toFixed(2)} total, $${grantedBalance.toFixed(2)} granted)`
     : `API balance ($${balance.toFixed(2)})`;
   return report(provider, "deepseek:balance", {
-    // A positive balance is capacity-present but has no meaningful utilization denominator.
-    // Zero, however, is authoritative exhaustion and must be visible to combo preselection.
-    customWindows: [{ label, percent: balance === 0 ? 100 : 0 }],
+    // `is_available=false` is DeepSeek's authoritative statement that the account cannot
+    // serve API calls, even if a small positive nominal balance is still reported. A positive
+    // usable balance has no meaningful utilization denominator; zero is also exhausted.
+    customWindows: [{ label, percent: body?.is_available === false || balance === 0 ? 100 : 0 }],
     updatedAt: Date.now(),
   });
 }

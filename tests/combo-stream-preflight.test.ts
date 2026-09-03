@@ -256,4 +256,19 @@ describe("combo stream preflight", () => {
     });
     expect(JSON.stringify(body)).not.toContain("provider_trace_id");
   });
+  test("converts a zero-output stream read reset into a retryable HTTP failure", async () => {
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull() {
+        throw Object.assign(new Error("provider-secret socket reset"), { code: "ECONNRESET" });
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+
+    const result = await preflightComboStreamResponse(response, { model: "m1", provider: "a" });
+    expect(result.kind).toBe("failed");
+    expect(result.response.status).toBe(502);
+    const body = await result.response.json();
+    expect(body.error).toMatchObject({ type: "upstream_error", code: "upstream_reset" });
+    expect(JSON.stringify(body)).not.toContain("provider-secret");
+  });
+
 });

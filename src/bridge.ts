@@ -1375,11 +1375,15 @@ export function bridgeToResponsesSSE(
           if (currentToolCall) failCurrentToolCall();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
           releasePendingWebSources();
-          const failure = responseError(
-            500,
-            "proxy_error",
-            redactSecretString(err instanceof Error ? err.message : String(err)),
-          );
+          // Unexpected iterator/read exceptions can contain provider URLs, socket details,
+          // gateway payload fragments, or credential-bearing diagnostics. Preserve only a
+          // recognized policy identity after secret redaction; arbitrary transport text must
+          // collapse to a stable public terminal once output has committed.
+          const thrownMessage = redactSecretString(err instanceof Error ? err.message : String(err));
+          const classifiedThrown = adapterFailureFromMessage(thrownMessage);
+          const failure = isCyberPolicyCode(classifiedThrown.error.code)
+            ? classifiedThrown.error
+            : responseError(502, "upstream_error", "Provider stream failed unexpectedly");
           emit("response.failed", {
             response: {
               ...responseSnapshot("failed", finishedItems),

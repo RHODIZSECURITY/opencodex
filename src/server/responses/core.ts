@@ -77,6 +77,7 @@ import {
   getCombo,
   isComboTargetInCooldown,
   comboCooldownRetryAfterSeconds,
+  knownComboFailureRecoveryMs,
   NoAvailableComboTargetsError,
   noteComboSuccess,
   parseRetryAfterMs,
@@ -88,6 +89,7 @@ import {
   CYBER_POLICY_ERROR_CODE,
   CYBER_POLICY_FALLBACK_MESSAGE,
   adapterFailureFromMessage,
+  httpStatusFromTerminalError,
   isCyberPolicyCode,
   isCyberPolicyMessage,
 } from "../../lib/errors";
@@ -234,6 +236,7 @@ import {
   hasKeyPoolFailover,
   rateLimitRetryDelayMs,
   rateLimitRetryPolicyFor,
+  rotateProviderTransportOn401,
   rotateProviderTransportOn429,
   transientRetryPolicyFor,
 } from "../../providers/key-failover";
@@ -1455,10 +1458,86 @@ export function comboUnavailableResponse(
   );
 }
 
-function comboUnavailable(comboId: string, now = Date.now()): Response {
-  return comboUnavailableResponse(`No available targets for combo: ${comboId}`, {
-    retryAfter: comboCooldownRetryAfterSeconds(comboId, now),
-  });
+function comboUnavailable(config: OcxConfig, comboId: string, now = Date.now()): Response {
+  const providers = getCombo(config, comboId)?.targets.map(target => target.provider) ?? [];
+  return comboExhaustedResponse(
+    comboId,
+    [{ provider: "", category: "no_eligible_target" }],
+    comboCooldownRetryAfterSeconds(comboId, now, providers),
+  );
+}
+
+interface ComboFailureSummary {
+  provider: string;
+  category: string;
+  recoveryAt?: number;
+}
+
+function publicComboFailureCategory(status: number, code: string | undefined, message: string): string {
+  const normalized = code?.trim().toLowerCase().replaceAll("-", "_") ?? "";
+  const text = message.toLowerCase();
+  if (
+    normalized === "free_rate_limited"
+    || normalized === "gousagelimiterror"
+    || normalized === "insufficient_quota"
+    || text.includes("monthly usage limit")
+    || text.includes("err_free_prompt_cap")
+  ) return "quota";
+  if (["payment_required", "billing_error", "insufficient_balance", "subscription_required"].includes(normalized) || status === 402) {
+    return "billing";
+  }
+  if (normalized === "invalid_api_key" || status === 401) return "authentication";
+  if (normalized === "permission_denied" || status === 403) return "permission";
+  if ([
+    "input_admission_refused",
+    "context_length_exceeded",
+    "tool_catalog_too_large",
+    "cursor_root_envelope_limit",
+    "kiro_profile_required",
+    "target_incompatible",
+    "model_not_found",
+    "model_unavailable",
+    "unsupported_model",
+    "model_deprecated",
+    "model_end_of_life",
+    "model_eol",
+    "model_retired",
+  ].includes(normalized) || status === 404 || status === 410 || status === 413) return "target_unavailable";
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return "transient_upstream";
+  return "provider_error";
+}
+
+function comboExhaustedResponse(
+  comboId: string,
+  failures: ComboFailureSummary[],
+  retryAfter?: string,
+): Response {
+  const correlationId = `combo-${crypto.randomUUID()}`;
+  const counts = new Map<string, number>();
+  for (const failure of failures) counts.set(failure.category, (counts.get(failure.category) ?? 0) + 1);
+  const causes = [...counts].map(([category, count]) => ({ category, count }));
+  const recoveries = failures
+    .filter((failure): failure is ComboFailureSummary & { recoveryAt: number } =>
+      failure.provider.length > 0 && failure.recoveryAt !== undefined)
+    .map(failure => ({ provider: failure.provider, available_after: new Date(failure.recoveryAt).toISOString() }));
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (retryAfter) headers.set("Retry-After", retryAfter);
+  const lastProvider = [...failures].reverse().find(failure => failure.provider.length > 0)?.provider;
+  console.warn(`[combo] ${comboId}: exhausted correlation=${correlationId} last=${lastProvider ?? "none"} causes=${causes.map(c => `${c.category}:${c.count}`).join(",") || "none"}`);
+  return new Response(JSON.stringify({
+    error: {
+      message: `All targets are currently unavailable for combo: ${comboId}`,
+      type: "server_error",
+      code: "combo_unavailable",
+      details: {
+        combo: comboId,
+        correlation_id: correlationId,
+        ...(lastProvider ? { last_provider: lastProvider } : {}),
+        causes,
+        ...(recoveries.length > 0 ? { recoveries } : {}),
+      },
+    },
+  }), { status: 503, headers });
 }
 
 
@@ -1590,6 +1669,36 @@ function isKnownTargetIncompatibilityText(text: string): boolean {
     || text.includes("tool_choice requires function ") && text.includes("cannot be represented for this destination");
 }
 
+
+async function comboNonStreamingTerminalFailure(response: Response): Promise<Response | null> {
+  if (!response.ok || response.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) return null;
+  let payload: unknown;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return null;
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  if (record.status !== "failed") return null;
+  const candidate = record.error ?? record.last_error;
+  const upstreamError = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate as { type?: unknown; code?: unknown; message?: unknown }
+    : undefined;
+  const error = {
+    ...(typeof upstreamError?.type === "string" ? { type: upstreamError.type } : {}),
+    ...(typeof upstreamError?.code === "string" ? { code: upstreamError.code } : {}),
+    ...(typeof upstreamError?.message === "string" ? { message: upstreamError.message } : {}),
+  };
+  const status = httpStatusFromTerminalError(error);
+  const message = redactSecretString(error.message ?? "Provider returned a failed response before output").slice(0, 500);
+  return formatErrorResponse(
+    status,
+    error.type ?? "upstream_error",
+    message,
+    { ...(error.code ? { code: error.code } : {}) },
+  );
+}
 
 export async function consumeComboFailure(
   response: Response,
@@ -2338,7 +2447,7 @@ export async function handleComboResponses(
         config,
         { parentThreadId: inboundClientThreadId },
       );
-      return comboUnavailable(comboId);
+      return comboUnavailable(config, comboId);
     }
     let recovered = false;
     try {
@@ -2375,13 +2484,14 @@ export async function handleComboResponses(
   }
 
   if (!pick) {
-    return comboUnavailable(comboId);
+    return comboUnavailable(config, comboId);
   }
   // One immutable combo selection trace, before any child dispatch; child
   // adoption below must never replace it with a concrete child route trace.
   logCtx.routeDecision = comboRouteDecisionTrace(config, comboId, pick, requestedModel);
 
   let lastFailure: Response | null = null;
+  const failureSummaries: ComboFailureSummary[] = [];
   while (pick) {
     if (options.abortSignal?.aborted) return clientCancelledResponse();
     const childLog: RequestLogContext = {
@@ -2478,12 +2588,17 @@ export async function handleComboResponses(
       return clientCancelledResponse();
     }
 
+    if (response.ok && (rawBody as { stream?: unknown } | null)?.stream !== true) {
+      const terminalFailure = await comboNonStreamingTerminalFailure(response);
+      if (terminalFailure) response = terminalFailure;
+    }
+
     if (response.ok && !runTurnAdapterSseResponses.has(response)) {
       const nativePassthrough = isNativePassthroughSseResponse(response);
       const eagerRelay = isEagerRelaySseResponse(response);
       let preflight;
       try {
-        preflight = await preflightComboStreamResponse(response, childLog);
+        preflight = await preflightComboStreamResponse(response, childLog, options.abortSignal);
       } catch (error) {
         callbackGate.discard();
         if (options.abortSignal?.aborted) {
@@ -2587,9 +2702,22 @@ export async function handleComboResponses(
     console.warn(
       `[combo] ${comboId}: ${targetKey(pick.target)} failed with ${failure.response.status} after ${Date.now() - started}ms`,
     );
+    const failureNow = Date.now();
+    const knownRecoveryMs = knownComboFailureRecoveryMs({
+      retryAfter: failure.retryAfter,
+      status: failure.response.status,
+      code: failure.upstreamCode,
+      message: failure.classificationText,
+      now: failureNow,
+    });
+    failureSummaries.push({
+      provider: pick.target.provider,
+      category: publicComboFailureCategory(failure.response.status, failure.upstreamCode, failure.classificationText),
+      ...(knownRecoveryMs !== undefined ? { recoveryAt: failureNow + knownRecoveryMs } : {}),
+    });
     const nextPick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
-      now: Date.now(),
+      now: failureNow,
       cooldownScope: comboFailureCooldownScope(failure.response.status, failure.classificationText, {
         code: failure.upstreamCode,
       }),
@@ -2615,10 +2743,12 @@ export async function handleComboResponses(
   // Every failure that reached this point was classified as replay-safe and every declared
   // target was attempted or excluded. Keep provider payloads in internal attempts/logs, but do
   // not leak the last provider's billing/rate-limit/error body into the client conversation.
-  return comboUnavailableResponse(`All targets exhausted for combo: ${comboId}`, {
-    retryAfter: lastFailure?.headers.get("retry-after") ?? comboCooldownRetryAfterSeconds(comboId),
-    status: lastFailure?.status ?? 503,
-  });
+  return comboExhaustedResponse(
+    comboId,
+    failureSummaries,
+    comboCooldownRetryAfterSeconds(comboId, Date.now(), combo.targets.map(target => target.provider))
+      ?? lastFailure?.headers.get("retry-after") ?? undefined,
+  );
 }
 
 
@@ -2978,7 +3108,7 @@ async function handleResponsesInner(
     logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
-      return comboUnavailable(err.comboId);
+      return comboUnavailable(config, err.comboId);
     }
     if (err instanceof NoEligiblePolicyCandidateError) {
       // Persist the evaluation trace (per-candidate exclusions + the
@@ -3088,7 +3218,7 @@ async function handleResponsesInner(
         logCtx.routeDecision = route.routeDecision;
       } catch (err) {
         if (err instanceof NoAvailableComboTargetsError) {
-          return comboUnavailable(err.comboId);
+          return comboUnavailable(config, err.comboId);
         }
         if (err instanceof NoEligiblePolicyCandidateError) {
           logCtx.routeDecision = err.trace;
@@ -3212,7 +3342,7 @@ async function handleResponsesInner(
               logCtx.routeDecision = route.routeDecision;
             } catch (err) {
               if (err instanceof NoAvailableComboTargetsError) {
-                return comboUnavailable(err.comboId);
+                return comboUnavailable(config, err.comboId);
               }
               if (err instanceof NoEligiblePolicyCandidateError) {
                 logCtx.routeDecision = err.trace;
@@ -6071,6 +6201,33 @@ async function handleResponsesInner(
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
+      }
+
+      // Static API-key pools can recover a credential-scoped 401 without abandoning the
+      // provider. OAuth providers use the refresh/account paths above and never enter here.
+      while (upstreamResponse.status === 401 && hasKeyPoolFailover(route.provider)) {
+        const rotated = rotateProviderTransportOn401(config, route.providerName, route.provider, {
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
+        if (!rotated) break;
+        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+        route.provider = rotated;
+        invalidateSameTargetRequest();
+        activeAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
+          config.cacheRetention,
+        );
+        bindRouteReasoningReplayScope({
+          parsed,
+          providerName: route.providerName,
+          provider: route.provider,
+          adapterName: activeAdapter.name,
+        });
+        const result = await rebuildAndRefetch("key-401");
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
       }
 
       // Same-target 429 wait-and-retry (opt-in `retryOn429`, issue #487). Codex never retries

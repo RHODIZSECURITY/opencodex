@@ -678,7 +678,8 @@ describe("server local API auth", () => {
         },
       });
 
-      expect(response.status).toBe(429);
+      expect(response.status).toBe(503);
+      expect(await response.clone().text()).toContain("combo_unavailable");
       expect(acceptedCount).toBe(1);
       expect(upstreamModels).toEqual(["first-model", "second-model"]);
     } finally {

@@ -7,10 +7,21 @@ import {
   clearKeyCooldowns,
   getKeyCooldownUntil,
   hasKeyPoolFailover,
+  hydrateKeyQuotaCooldownsFromDisk,
+  resetKeyQuotaCooldownPersistenceForTests,
   rotateKeyOn429,
   rotateProviderTransportOn429,
 } from "../src/providers/key-failover";
 import { deriveXaiConvId } from "../src/providers/xai-transport";
+import {
+  cancelPendingKeyQuotaCooldownPersist,
+  flushKeyQuotaCooldownPersistForTests,
+} from "../src/providers/key-cooldown-disk";
+import {
+  clearCachedProviderQuotas,
+  getCachedProviderQuota,
+  setCachedProviderQuotaForTests,
+} from "../src/providers/quota-routing-cache";
 import { routeModel } from "../src/router";
 import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { removeTreeWithRetry } from "./helpers/remove-tree";
@@ -42,13 +53,19 @@ function pool3(): OcxProviderConfig["apiKeyPool"] {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ocx-keyfailover-"));
   process.env.OPENCODEX_HOME = home;
+  cancelPendingKeyQuotaCooldownPersist();
+  resetKeyQuotaCooldownPersistenceForTests();
   clearKeyCooldowns();
+  clearCachedProviderQuotas();
 });
 
 afterEach(() => {
+  cancelPendingKeyQuotaCooldownPersist();
+  resetKeyQuotaCooldownPersistenceForTests();
+  clearKeyCooldowns();
+  clearCachedProviderQuotas();
   delete process.env.OPENCODEX_HOME;
   removeTreeWithRetry(home);
-  clearKeyCooldowns();
 });
 
 describe("hasKeyPoolFailover", () => {
@@ -69,6 +86,63 @@ describe("rotateKeyOn429", () => {
     expect(rotated?.apiKey).toBe("key-beta-444555666777");
     expect(config.providers.p.apiKey).toBe("key-beta-444555666777");
     expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 60_000);
+  });
+
+  test("uses fresh exhausted quota reset for the failed key instead of the 60s default", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 1_000_000;
+    setCachedProviderQuotaForTests("p", {
+      fiveHourPercent: 100, fiveHourResetAt: now + 2 * 60 * 60_000, updatedAt: now,
+    });
+    rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 2 * 60 * 60_000);
+  });
+
+  test("rotating a key invalidates provider-level quota evidence from the failed key", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 1_000_000;
+    setCachedProviderQuotaForTests("p", {
+      fiveHourPercent: 100, fiveHourResetAt: now + 2 * 60 * 60_000, updatedAt: now,
+    });
+    expect(getCachedProviderQuota("p", now)).not.toBeNull();
+    rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    expect(getCachedProviderQuota("p", now)).toBeNull();
+  });
+
+  test("stale exhausted quota does not create a long key cooldown", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 50_000_000;
+    setCachedProviderQuotaForTests("p", {
+      fiveHourPercent: 100, fiveHourResetAt: now + 2 * 60 * 60_000,
+      updatedAt: now - 30 * 60_000 - 1,
+    });
+    rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    expect(getKeyCooldownUntil("p", "k1", now)).toBe(now + 60_000);
+  });
+
+  test("long quota cooldown survives a simulated proxy restart", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 1_000_000;
+    hydrateKeyQuotaCooldownsFromDisk(now);
+    setCachedProviderQuotaForTests("p", {
+      fiveHourPercent: 100, fiveHourResetAt: now + 2 * 60 * 60_000, updatedAt: now,
+    });
+    rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    flushKeyQuotaCooldownPersistForTests(now);
+    resetKeyQuotaCooldownPersistenceForTests();
+    hydrateKeyQuotaCooldownsFromDisk(now + 1_000);
+    expect(getKeyCooldownUntil("p", "k1", now + 1_000)).toBe(now + 2 * 60 * 60_000);
+  });
+
+  test("short generic 429 cooldown is not persisted across restart", () => {
+    const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
+    const now = 1_000_000;
+    hydrateKeyQuotaCooldownsFromDisk(now);
+    rotateKeyOn429(config, "p", null, now, "key-alpha-000111222333");
+    flushKeyQuotaCooldownPersistForTests(now);
+    resetKeyQuotaCooldownPersistenceForTests();
+    hydrateKeyQuotaCooldownsFromDisk(now + 1_000);
+    expect(getKeyCooldownUntil("p", "k1", now + 1_000)).toBeNull();
   });
 
   test("respects Retry-After seconds for the cooldown window", () => {

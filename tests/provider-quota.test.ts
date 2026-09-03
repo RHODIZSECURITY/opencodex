@@ -850,6 +850,18 @@ describe("fetchProviderQuotaReports", () => {
     }]);
   });
 
+  test("DeepSeek quota treats is_available=false as authoritative exhaustion even with positive balance", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      is_available: false,
+      balance_infos: [{ currency: "USD", total_balance: "0.01", topped_up_balance: "0.01" }],
+    }), { status: 200 })) as typeof fetch;
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("DeepSeek", "https://api.deepseek.com"), true);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota.customWindows).toEqual([{
+      label: "API balance ($0.01)", percent: 100,
+    }]);
+  });
+
   test("DeepSeek quota never sends the key to a non-canonical base URL", async () => {
     const seen: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
