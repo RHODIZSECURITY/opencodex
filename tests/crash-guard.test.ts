@@ -86,7 +86,9 @@ describe("crash-guard diagnostics", () => {
 
   test("dumps recent fetch origins (pending/rejected) in the breadcrumb", async () => {
     installCrashGuards(); // idempotent; wraps global fetch once
-    await fetch("https://opencodex.invalid.test/v1/models?token=secret").catch(() => {});
+    const controller = new AbortController();
+    controller.abort();
+    await fetch("https://opencodex.invalid.test/v1/models?token=secret", { signal: controller.signal }).catch(() => {});
     const entry = formatCrashEntry("unhandledRejection", new TypeError("null is not an object"));
     expect(entry).toContain("fetches:");
     expect(entry).toContain("opencodex.invalid.test/v1/models");
