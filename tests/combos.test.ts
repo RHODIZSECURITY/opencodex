@@ -681,6 +681,8 @@ describe("combo failure policy and advancement", () => {
       code: "GoUsageLimitError",
       message: "Monthly usage limit reached. Resets in 14 days.",
     })).toBe(false);
+    expect(comboFailureCooldownScope(429, "Free model capacity is limited right now. Retry shortly.", { code: "free_rate_limited" })).toBe("target");
+    expect(comboFailureDecision(429, "Free model capacity is limited right now. Retry shortly.", { code: "free_rate_limited" })).toBe("hop");
     expect(comboFailureCooldownScope(429, "Rate limit reached for requests", { code: "1302" })).toBe("target");
     expect(isTransientRequestRateLimit({
       status: 429,

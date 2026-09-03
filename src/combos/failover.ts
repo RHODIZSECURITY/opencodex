@@ -488,9 +488,22 @@ function isProviderScopedQuotaCap(
   ) {
     return true;
   }
-  return normalizedCode === "free_rate_limited"
-    || text.includes("err_free_prompt_cap")
+  return text.includes("err_free_prompt_cap")
     || (text.includes("free tier") && text.includes("single request"));
+}
+
+function isRequestLocalFreePromptCap(
+  status: number | undefined,
+  message: string,
+  code?: string | null,
+): boolean {
+  if (status !== 400) return false;
+  const normalizedCode = normalizedFailureCode(code);
+  const text = message.toLowerCase();
+  if (text.includes("err_free_prompt_cap")) return true;
+  return normalizedCode === "free_rate_limited"
+    && text.includes("free tier")
+    && (text.includes("single request") || text.includes("prompt"));
 }
 
 export function comboFailureCooldownScope(
@@ -503,8 +516,7 @@ export function comboFailureCooldownScope(
   // Request-shape limits must exclude only this attempt. Cooling the provider globally would
   // make an unrelated shorter/simpler request skip a provider that is still healthy.
   if (
-    code === "free_rate_limited"
-    || text.includes("err_free_prompt_cap")
+    isRequestLocalFreePromptCap(status, message, code)
     || [
       "input_admission_refused",
       "context_length_exceeded",
@@ -609,6 +621,7 @@ export function comboFailureDecision(
     "billing_error",
     "insufficient_balance",
     "rate_limit_exceeded",
+    "free_rate_limited",
     "server_is_overloaded",
     "upstream_server_error",
     "provider_unavailable",

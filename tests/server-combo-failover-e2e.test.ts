@@ -481,6 +481,56 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toEqual(["a:m1:SECRET_PROMPT_X"]);
   });
 
+  test("a transient 429 cooldown survives into the next independent request", async () => {
+    const hits: string[] = [];
+    const limited = serve(() => {
+      hits.push("limited");
+      return Response.json({ error: {
+        type: "rate_limit_error",
+        code: "free_rate_limited",
+        message: "Free model capacity is limited right now. Retry shortly.",
+      } }, { status: 429, headers: { "retry-after": "600" } });
+    });
+    const backup = serve(() => { hits.push("backup"); return chatSuccess("ok", "m2"); });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(limited), "key-a"),
+      b: provider("openai-chat", baseUrl(backup), "key-b"),
+    });
+
+    const first = await post(config);
+    expect(first.status).toBe(200);
+    await first.text();
+    const second = await post(config);
+    expect(second.status).toBe(200);
+    await second.text();
+    expect(hits).toEqual(["limited", "backup", "backup"]);
+  });
+
+  test("target cooldown survives live state reconciliation between requests", async () => {
+    const { setLiveStateStoreConfig, reconcileLiveStateStores } = await import("../src/lib/state-store-registrations");
+    const hits: string[] = [];
+    const limited = serve(() => { hits.push("limited"); return Response.json({ error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Free model capacity is limited right now. Retry shortly." } }, { status: 429 }); });
+    const backup = serve(() => { hits.push("backup"); return chatSuccess("ok", "m2"); });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(limited), "key-a"), b: provider("openai-chat", baseUrl(backup), "key-b") });
+    setLiveStateStoreConfig(config); reconcileLiveStateStores();
+    const first = await post(config); expect(first.status).toBe(200); await first.text();
+    reconcileLiveStateStores();
+    const second = await post(config); expect(second.status).toBe(200); await second.text();
+    expect(hits).toEqual(["limited", "backup", "backup"]);
+  });
+
+  test("chat surface preserves transient combo cooldown across independent requests", async () => {
+    const { handleChatCompletions } = await import("../src/server/chat-completions");
+    const hits: string[] = [];
+    const limited = serve(() => { hits.push("limited"); return Response.json({ error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Free model capacity is limited right now. Retry shortly." } }, { status: 429 }); });
+    const backup = serve(() => { hits.push("backup"); return chatStream("ok"); });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(limited), "key-a"), b: provider("openai-chat", baseUrl(backup), "key-b") });
+    const send = () => handleChatCompletions(new Request("http://localhost/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "combo/free", stream: false, messages: [{ role: "user", content: "hello" }] }) }), config, { model: "", provider: "" });
+    const first = await send(); expect(first.status).toBe(200); await first.text();
+    const second = await send(); expect(second.status).toBe(200); await second.text();
+    expect(hits).toEqual(["limited", "backup", "backup"]);
+  });
+
   test("monthly quota then Orca free-prompt cap continues to a healthy third provider", async () => {
     const hits: string[] = [];
     const go = serve(async request => {
