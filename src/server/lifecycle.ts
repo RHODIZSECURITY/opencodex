@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { flushAntigravityReplay } from "../adapters/google-antigravity-replay";
 import { flushResponseState } from "../responses/state";
+import { flushPendingComboQuotaCooldownPersist } from "../combos/cooldown-disk";
+import { flushPendingKeyQuotaCooldownPersist } from "../providers/key-cooldown-disk";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import {
   abortStorageCleanupPolicyJobAsync,
@@ -490,6 +492,12 @@ export async function drainAndShutdown(
     // Debounced replay-state snapshots may still be pending; flush so the last completed turn's
     // previous_response_id chain and antigravity thought signatures survive the restart this
     // shutdown is usually part of.
+    // Long-lived provider/key quota cooldowns use a bounded debounce during normal traffic.
+    // Flush pending rows before listener teardown so a restart cannot immediately retry
+    // credentials or providers that were already proven exhausted.
+    flushPendingComboQuotaCooldownPersist();
+    flushPendingKeyQuotaCooldownPersist();
+
     const stateFlush = await Promise.allSettled([flushResponseState(), flushAntigravityReplay()]);
     if (stateFlush[0]?.status === "rejected") {
       shutdownSucceeded = false;

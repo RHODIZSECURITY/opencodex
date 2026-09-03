@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
@@ -16,6 +16,7 @@ import { deriveXaiConvId } from "../src/providers/xai-transport";
 import {
   cancelPendingKeyQuotaCooldownPersist,
   flushKeyQuotaCooldownPersistForTests,
+  schedulePersistKeyQuotaCooldowns,
 } from "../src/providers/key-cooldown-disk";
 import {
   clearCachedProviderQuotas,
@@ -79,6 +80,18 @@ describe("hasKeyPoolFailover", () => {
 });
 
 describe("rotateKeyOn429", () => {
+  test("key cooldown persistence cannot be postponed indefinitely by sustained updates", async () => {
+    const path = join(home, "provider-key-quota-cooldowns.json");
+    const now = Date.now();
+    schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000]]);
+    await Bun.sleep(180);
+    schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000], ["p\0k2", now + 60_000]]);
+    await Bun.sleep(160);
+    expect(existsSync(path)).toBe(true);
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { rows?: Record<string, number> };
+    expect(Object.keys(parsed.rows ?? {}).sort()).toEqual(["p\0k1", "p\0k2"]);
+  });
+
   test("rotates to the next key and cools down the exhausted one", () => {
     const config = makeConfig({ apiKey: "key-alpha-000111222333", apiKeyPool: pool3() });
     const now = 1_000_000;

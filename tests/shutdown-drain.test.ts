@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { create } from "@bufbuild/protobuf";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -33,6 +36,9 @@ import {
   setBackgroundShellRuntimeForTests,
 } from "../src/adapters/cursor/native-exec-shell";
 import { BackgroundShellSpawnArgsSchema, ExecServerMessageSchema } from "../src/adapters/cursor/gen/agent_pb";
+import { cancelPendingComboQuotaCooldownPersist, schedulePersistComboQuotaCooldowns } from "../src/combos/cooldown-disk";
+import { cancelPendingKeyQuotaCooldownPersist, schedulePersistKeyQuotaCooldowns } from "../src/providers/key-cooldown-disk";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 class ShutdownFakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -80,6 +86,24 @@ function fakeServer(stopImpl?: (closeActiveConnections?: boolean) => void | Prom
 }
 
 describe("server listener shutdown", () => {
+  test("drainAndShutdown flushes pending durable quota cooldowns before stop", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-shutdown-cooldowns-"));
+    const now = Date.now();
+    const fake = fakeServer();
+    try {
+      schedulePersistComboQuotaCooldowns(home, () => [["provider:a", now + 60_000]]);
+      schedulePersistKeyQuotaCooldowns(home, () => [["p\0k1", now + 60_000]]);
+      await drainAndShutdown(fake.server, 0);
+      expect(existsSync(join(home, "combo-quota-cooldowns.json"))).toBe(true);
+      expect(existsSync(join(home, "provider-key-quota-cooldowns.json"))).toBe(true);
+      expect(fake.stops()).toBe(1);
+    } finally {
+      cancelPendingComboQuotaCooldownPersist();
+      cancelPendingKeyQuotaCooldownPersist();
+      removeTreeWithRetry(home);
+    }
+  });
+
   test("single-flights stop(true) and keeps every waiter pending until close completes", async () => {
     let resolveStop!: () => void;
     const fake = fakeServer(() => new Promise<void>(resolve => { resolveStop = resolve; }));

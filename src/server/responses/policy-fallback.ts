@@ -163,7 +163,7 @@ export async function handleResponsesWithPolicyFallback(
     if (!next) {
       return response.status === 413
         ? formatErrorResponse(413, "request_too_large", "No eligible policy candidate can accept this request", { code: "policy_input_too_large" })
-        : formatErrorResponse(response.status, "server_error", "All eligible policy candidates are temporarily unavailable", { code: "policy_unavailable", retryAfter: response.headers.get("retry-after") ?? undefined });
+        : formatErrorResponse(503, "server_error", "All eligible policy candidates are temporarily unavailable", { code: "policy_unavailable", retryAfter: response.headers.get("retry-after") ?? undefined });
     }
     tried.add(candidateKey(next));
 

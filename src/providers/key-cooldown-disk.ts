@@ -49,7 +49,9 @@ function persistNow(directory: string, rows: Iterable<[string, number]>, now = D
 export function schedulePersistKeyQuotaCooldowns(directory: string, rows: () => Iterable<[string, number]>): void {
   pendingDirectory = directory;
   pendingRows = rows;
-  if (persistTimer) clearTimeout(persistTimer);
+  // Keep the first debounce deadline. Repeated failures update the pending snapshot
+  // but cannot postpone durable persistence indefinitely.
+  if (persistTimer) return;
   persistTimer = setTimeout(() => {
     persistTimer = null;
     const snapshot = pendingRows;
@@ -59,7 +61,7 @@ export function schedulePersistKeyQuotaCooldowns(directory: string, rows: () => 
     if (snapshot && targetDirectory) persistNow(targetDirectory, snapshot());
   }, PERSIST_DEBOUNCE_MS);
 }
-export function flushKeyQuotaCooldownPersistForTests(now = Date.now()): void {
+export function flushPendingKeyQuotaCooldownPersist(now = Date.now()): void {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = null;
   const snapshot = pendingRows;
@@ -67,6 +69,10 @@ export function flushKeyQuotaCooldownPersistForTests(now = Date.now()): void {
   pendingRows = null;
   pendingDirectory = null;
   if (snapshot && targetDirectory) persistNow(targetDirectory, snapshot(), now);
+}
+
+export function flushKeyQuotaCooldownPersistForTests(now = Date.now()): void {
+  flushPendingKeyQuotaCooldownPersist(now);
 }
 
 export function cancelPendingKeyQuotaCooldownPersist(): void {

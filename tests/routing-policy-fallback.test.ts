@@ -130,7 +130,10 @@ describe("policy candidate fallback", () => {
 
     const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, { runCore });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(503);
+    const text = await response.text();
+    expect(text).toContain("policy_unavailable");
+    expect(text).not.toContain("context length exceeded");
     expect(seenModels).toEqual(["policy/daily", "provider-b/model-b", "provider-c/model-c"]);
   });
   test("retries the next policy candidate and keeps distinct physical attempts", async () => {
@@ -257,11 +260,30 @@ describe("policy candidate fallback", () => {
         return Response.json({ error: { message: "provider-secret-detail", type: "rate_limit_error" } }, { status: 429 });
       },
     });
-    expect(response.status).toBe(429);
+    expect(response.status).toBe(503);
     const text = await response.text();
     expect(text).toContain("All eligible policy candidates are temporarily unavailable");
     expect(text).not.toContain("provider-secret-detail");
     expect(seenModels).toEqual(["policy/daily", "provider-b/model-b", "provider-c/model-c"]);
+  });
+
+  test("upstream auth exhaustion never masquerades as caller authentication failure", async () => {
+    for (const status of [401, 402, 403, 404, 408, 410, 425]) {
+      const trace = policyTrace();
+      const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
+      const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {
+        runCore: async (req, _config, childLog) => {
+          const body = await req.clone().json() as { model: string };
+          childLog.routeDecision = trace;
+          seedAttempt(childLog, "provider", body.model);
+          return Response.json({ error: { message: "provider-secret-detail", type: "provider_error" } }, { status });
+        },
+      });
+      expect(response.status).toBe(503);
+      const text = await response.text();
+      expect(text).toContain("policy_unavailable");
+      expect(text).not.toContain("provider-secret-detail");
+    }
   });
 
   test("does not switch candidates for terminal client/input failures", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -66,7 +66,7 @@ import {
 } from "../src/providers/quota-routing-cache";
 import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 import { removeTreeWithRetry } from "./helpers/remove-tree";
-import { cancelPendingComboQuotaCooldownPersist, flushComboQuotaCooldownPersistForTests } from "../src/combos/cooldown-disk";
+import { cancelPendingComboQuotaCooldownPersist, flushComboQuotaCooldownPersistForTests, schedulePersistComboQuotaCooldowns } from "../src/combos/cooldown-disk";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -505,6 +505,24 @@ describe("combo target cooldowns", () => {
       resetComboQuotaCooldownPersistenceForTests();
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
+
+  test("combo cooldown persistence cannot be postponed indefinitely by sustained updates", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-combo-debounce-"));
+    const path = join(home, "combo-quota-cooldowns.json");
+    const now = Date.now();
+    try {
+      schedulePersistComboQuotaCooldowns(home, () => [["provider:a", now + 60_000]]);
+      await Bun.sleep(180);
+      schedulePersistComboQuotaCooldowns(home, () => [["provider:a", now + 60_000], ["provider:b", now + 60_000]]);
+      await Bun.sleep(160);
+      expect(existsSync(path)).toBe(true);
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as { rows?: Record<string, number> };
+      expect(Object.keys(parsed.rows ?? {}).sort()).toEqual(["provider:a", "provider:b"]);
+    } finally {
+      cancelPendingComboQuotaCooldownPersist();
       removeTreeWithRetry(home);
     }
   });
