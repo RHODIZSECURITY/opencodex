@@ -21,6 +21,8 @@ import {
   websocketsEnabled,
 } from "../config";
 import { grokDefaultReasoningEffort } from "../grok/effort";
+import { hydrateComboQuotaCooldownsFromDisk } from "../combos";
+import { hydrateKeyQuotaCooldownsFromDisk } from "../providers/key-failover";
 import { flushConfigDirHardening } from "../config/paths";
 import { reconcileOAuthProviders } from "../oauth";
 import { withCatalogWriteSerialization } from "../codex/catalog-write-serialization";
@@ -645,6 +647,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // Captured before loadConfig() starts the optional ACL flight so stop() drains the same dir
   // even if OPENCODEX_HOME changes underneath a long-lived process.
   const startupConfigDir = getConfigDir();
+  hydrateComboQuotaCooldownsFromDisk();
+  hydrateKeyQuotaCooldownsFromDisk();
   const config = runModelRenameStartupMigration(runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig())));
   warnAgentTaskRecoveryStartup(config);
   setLiveStateStoreConfig(config);

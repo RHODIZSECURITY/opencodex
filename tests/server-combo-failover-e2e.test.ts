@@ -37,6 +37,7 @@ import {
 } from "../src/responses/state";
 import { clearCursorThreadContinuityForTests } from "../src/adapters/cursor/thread-continuity";
 import { COMPACT_PROMPT, encodeCompactionSummary } from "../src/responses/compaction";
+import { RequestPacingQueueOverloadError } from "../src/providers/request-pacing";
 
 // Full-suite Windows load: startServer + combo rename/delete management flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
@@ -411,6 +412,46 @@ async function within<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
 }
 
 describe("server combo failover 030 activation matrix", () => {
+  test("target-local context, billing, and unsupported-model failures reach the healthy fallback", async () => {
+    const hits: string[] = [];
+    const make = (name: string, response: () => Response) => serve(() => { hits.push(name); return response(); });
+    const a = make("context", () => Response.json({ error: { code: "context_length_exceeded", message: "maximum context exceeded" } }, { status: 400 }));
+    const b = make("billing", () => Response.json({ error: { code: "insufficient_quota", message: "payment required" } }, { status: 402 }));
+    const c = make("model", () => Response.json({ error: { code: "unsupported_model", message: "unsupported model" } }, { status: 400 }));
+    const d = make("gone", () => Response.json({ error: { message: "resource gone" } }, { status: 410 }));
+    const e = make("too-large", () => Response.json({ error: { message: "request too large" } }, { status: 413 }));
+    const f = make("healthy", () => chatSuccess("deep fallback", "m6"));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "ka"),
+      b: provider("openai-chat", baseUrl(b), "kb"),
+      c: provider("openai-chat", baseUrl(c), "kc"),
+      d: provider("openai-chat", baseUrl(d), "kd"),
+      e: provider("openai-chat", baseUrl(e), "ke"),
+      f: provider("openai-chat", baseUrl(f), "kf"),
+    });
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("deep fallback");
+    expect(hits).toEqual(["context", "billing", "model", "gone", "too-large", "healthy"]);
+  });
+
+  test("local pacing overload before dispatch hops to the next combo target", async () => {
+    let backupHits = 0;
+    customFetchResponse = async request => {
+      const model = (JSON.parse(String(request.body)) as { model?: string }).model;
+      if (model === "m1") throw new RequestPacingQueueOverloadError("a", "queue_full", 2);
+      backupHits += 1;
+      return chatSuccess("pacing backup", "m2");
+    };
+    const config = comboConfig({
+      a: provider("test-response", "https://test.invalid/v1", "ka"),
+      b: provider("test-response", "https://test.invalid/v1", "kb"),
+    });
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("pacing backup");
+    expect(backupHits).toBe(1);
+  });
   test("dispatches a selected concrete target despite a shadowing combo alias", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
@@ -480,6 +521,140 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toEqual(["go:m1", "orca:m2", "backup:m3"]);
   });
 
+  test("paid DeepSeek last resort wins after free quota failures without leaking intermediate errors", async () => {
+    const hits: string[] = [];
+    const monthly = serve(() => {
+      hits.push("free-monthly");
+      return Response.json({ error: { type: "GoUsageLimitError", message: "Monthly usage limit reached. Resets in 14 days." } }, { status: 429 });
+    });
+    const capped = serve(() => {
+      hits.push("free-prompt-cap");
+      return Response.json({ error: {
+        type: "invalid_request_error",
+        code: "free_rate_limited",
+        message: "This prompt is longer than the free tier allows for a single request.",
+        metadata: { reason: "err_free_prompt_cap" },
+      } }, { status: 400 });
+    });
+    const paid = serve(() => {
+      hits.push("DeepSeek-paid");
+      return chatSuccess("paid-last-resort-ok", "deepseek-v4-flash-vision-exp");
+    });
+    const config = comboConfig({
+      free1: provider("openai-chat", baseUrl(monthly), "key-free1"),
+      free2: provider("openai-chat", baseUrl(capped), "key-free2"),
+      DeepSeek: provider("openai-chat", baseUrl(paid), "key-paid"),
+    }, [
+      { provider: "free1", model: "m1" },
+      { provider: "free2", model: "m2" },
+      { provider: "DeepSeek", model: "deepseek-v4-flash-vision-exp" },
+    ]);
+
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain("paid-last-resort-ok");
+    expect(text).not.toContain("Monthly usage limit");
+    expect(text).not.toContain("free_rate_limited");
+    expect(text).not.toContain("err_free_prompt_cap");
+    expect(hits).toEqual(["free-monthly", "free-prompt-cap", "DeepSeek-paid"]);
+  });
+
+  test("all-target exhaustion with DeepSeek 402 returns only sanitized combo metadata", async () => {
+    const hits: string[] = [];
+    const free = serve(() => {
+      hits.push("free");
+      return Response.json({ error: { type: "GoUsageLimitError", message: "FREE-RAW monthly usage limit reached. Resets in 14 days." } }, { status: 429 });
+    });
+    const paid = serve(() => {
+      hits.push("DeepSeek");
+      return Response.json({ error: { type: "insufficient_balance", code: "insufficient_balance", message: "DEEPSEEK-RAW account balance is zero" } }, { status: 402 });
+    });
+    const config = comboConfig({
+      free: provider("openai-chat", baseUrl(free), "key-free"),
+      DeepSeek: provider("openai-chat", baseUrl(paid), "key-paid"),
+    }, [
+      { provider: "free", model: "m1" },
+      { provider: "DeepSeek", model: "deepseek-v4-flash" },
+    ]);
+    const response = await post(config);
+    expect(response.status).toBe(503);
+    const body = await response.json() as any;
+    expect(body.error.code).toBe("combo_unavailable");
+    expect(body.error.details.last_provider).toBe("DeepSeek");
+    expect(body.error.details.correlation_id).toMatch(/^combo-/);
+    expect(body.error.details.causes).toEqual(expect.arrayContaining([
+      { category: "quota", count: 1 }, { category: "billing", count: 1 },
+    ]));
+    const text = JSON.stringify(body);
+    expect(text).not.toContain("FREE-RAW");
+    expect(text).not.toContain("DEEPSEEK-RAW");
+    expect(text).not.toContain("key-paid");
+    expect(hits).toEqual(["free", "DeepSeek"]);
+  });
+
+  test("concurrent turns share a newly learned cooldown and call the paid fallback once per logical request", async () => {
+    let freeHits = 0;
+    let paidHits = 0;
+    const firstPaidEntered = deferred();
+    const releasePaid = deferred();
+    const free = serve(() => {
+      freeHits += 1;
+      return Response.json({ error: { message: "rate limited" } }, {
+        status: 429,
+        headers: { "retry-after": "120" },
+      });
+    });
+    const paid = serve(async () => {
+      paidHits += 1;
+      if (paidHits === 1) firstPaidEntered.resolve();
+      await releasePaid.promise;
+      return chatSuccess(`paid-${paidHits}`, "deepseek-v4-flash-vision-exp");
+    });
+    const config = comboConfig({
+      free: provider("openai-chat", baseUrl(free), "key-free"),
+      DeepSeek: provider("openai-chat", baseUrl(paid), "key-paid"),
+    }, [
+      { provider: "free", model: "m1" },
+      { provider: "DeepSeek", model: "deepseek-v4-flash-vision-exp" },
+    ]);
+
+    const first = post(config);
+    await within(firstPaidEntered.promise);
+    const second = post(config);
+    await within((async () => { while (paidHits < 2) await new Promise(resolve => setTimeout(resolve, 1)); })());
+    releasePaid.resolve();
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(freeHits).toBe(1);
+    expect(paidHits).toBe(2);
+  });
+
+  test("adapter-local tool-choice incompatibility hops before upstream dispatch", async () => {
+    let ollamaHits = 0;
+    const ollama = serve(() => {
+      ollamaHits += 1;
+      return Response.json({ message: { role: "assistant", content: "must not dispatch" }, done: true });
+    });
+    const backup = serve(async request => {
+      const body = await request.json() as { model?: string };
+      return chatSuccess("tool-choice fallback", body.model ?? "m2");
+    });
+    const config = comboConfig({
+      a: provider("ollama-native", baseUrl(ollama), "ka"),
+      b: provider("openai-chat", baseUrl(backup), "kb"),
+    });
+
+    const response = await post(config, {
+      tools: [{ type: "function", name: "read", description: "read", parameters: { type: "object", properties: {} } }],
+      tool_choice: "required",
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("tool-choice fallback");
+    expect(ollamaHits).toBe(0);
+  });
+
   test("ordinary openai-chat 503 hops to backup for non-stream and stream", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
@@ -505,6 +680,57 @@ describe("server combo failover 030 activation matrix", () => {
     expect(streaming.status).toBe(200);
     expect(JSON.stringify(await collectSse(streaming))).toContain("stream backup");
     expect(hits).toEqual(["a:false", "b:false", "a:true", "b:true"]);
+  });
+
+  test("HTTP 200 Orca-style free prompt cap hops request-locally without cooling the provider", async () => {
+    const hits: string[] = [];
+    const capped = serve(() => {
+      hits.push("orca");
+      const frame = `data: ${JSON.stringify({ error: {
+        type: "invalid_request_error", code: "free_rate_limited",
+        message: "ORCA-RAW free tier prompt cap err_free_prompt_cap",
+      } })}\n\ndata: [DONE]\n\n`;
+      return new Response(frame, { headers: { "content-type": "text/event-stream" } });
+    });
+    const backup = serve(() => { hits.push("backup"); return chatStream("sse-cap-backup"); });
+    const config = comboConfig({
+      orca: provider("openai-chat", baseUrl(capped), "key-orca"),
+      backup: provider("openai-chat", baseUrl(backup), "key-b"),
+    });
+    for (let turn = 0; turn < 2; turn += 1) {
+      const response = await post(config, { stream: true });
+      expect(response.status).toBe(200);
+      const text = JSON.stringify(await collectSse(response));
+      expect(text).toContain("sse-cap-backup");
+      expect(text).not.toContain("ORCA-RAW");
+    }
+    expect(hits).toEqual(["orca", "backup", "orca", "backup"]);
+  });
+
+  test("HTTP 200 stream body reset before output hops through the real adapter", async () => {
+    const hits: string[] = [];
+    customFetchResponse = async request => {
+      const model = (JSON.parse(String(request.body)) as { model?: string }).model;
+      hits.push(String(model));
+      if (model === "m1") {
+        return new Response(new ReadableStream<Uint8Array>({
+          pull() {
+            throw Object.assign(new Error("upstream-body-secret reset"), { code: "ECONNRESET" });
+          },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return chatStream("backup after body reset");
+    };
+    const config = comboConfig({
+      a: provider("test-response", "https://test.invalid/v1", "key-a"),
+      b: provider("test-response", "https://test.invalid/v1", "key-b"),
+    });
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await collectSse(response));
+    expect(text).toContain("backup after body reset");
+    expect(text).not.toContain("upstream-body-secret");
+    expect(hits).toEqual(["m1", "m2"]);
   });
 
   test("zero-output terminal SSE failure hops before committing the child stream", async () => {
@@ -575,6 +801,113 @@ describe("server combo failover 030 activation matrix", () => {
       });
       expect(receipt.attempts[0]).not.toHaveProperty("firstOutputMs");
     }
+  });
+
+  test("HTTP 200 invalid JSON before output hops to the next combo target", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response("{invalid-json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return chatSuccess("backup after invalid json", "m2");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("backup after invalid json");
+    expect(hits).toEqual(["a", "b"]);
+  });
+
+  test("HTTP 200 malformed SSE before output hops without leaking the malformed frame", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response("data: {not-json}\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return chatStream("backup after malformed sse");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(200);
+    const frames = await collectSse(response);
+    const text = JSON.stringify(frames);
+    expect(text).toContain("backup after malformed sse");
+    expect(text).not.toContain("not-json");
+    expect(hits).toEqual(["a", "b"]);
+  });
+
+  test("malformed SSE after visible output never replays on a backup target", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      const frames = [
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "visible-before-malformed" }, finish_reason: null }] })}\n\n`,
+        "data: {MALFORMED-RAW\n\n",
+      ].join("");
+      return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = serve(() => { hits.push("b"); return chatStream("must-not-replay"); });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await collectSse(response));
+    expect(text).toContain("visible-before-malformed");
+    expect(text).not.toContain("must-not-replay");
+    expect(text).not.toContain("MALFORMED-RAW");
+    expect(hits).toEqual(["a"]);
+  });
+
+  test("raw stream reset after output never replays on a backup target", async () => {
+    const hits: string[] = [];
+    const encoder = new TextEncoder();
+    customFetchResponse = async request => {
+      const model = (JSON.parse(String(request.body)) as { model?: string }).model;
+      hits.push(String(model));
+      if (model !== "m1") return chatStream("must-not-run-backup");
+      let sent = false;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "visible-once" }, finish_reason: null }] })}\n\n`));
+            return;
+          }
+          controller.error(Object.assign(new Error("late-upstream-secret reset"), { code: "ECONNRESET" }));
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const config = comboConfig({
+      a: provider("test-response", "https://test.invalid/v1", "key-a"),
+      b: provider("test-response", "https://test.invalid/v1", "key-b"),
+    });
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await collectSse(response));
+    expect(text).toContain("visible-once");
+    expect(text).not.toContain("must-not-run-backup");
+    expect(text).not.toContain("late-upstream-secret");
+    expect(hits).toEqual(["m1"]);
   });
 
   test("terminal SSE failure after output stays on the first target and never replays", async () => {
@@ -1104,7 +1437,8 @@ describe("server combo failover 030 activation matrix", () => {
     ].join("\n"), { headers: { "content-type": "text/event-stream" } });
 
     const response = await post(config, { stream: true });
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
+    expect(await response.clone().text()).toContain("combo_unavailable");
     expect(getCodexUpstreamHealth(rawAccountId)).toMatchObject({
       consecutiveFailures: 1,
       lastFailureStatus: 502,
@@ -1204,8 +1538,8 @@ describe("server combo failover 030 activation matrix", () => {
     };
 
     const response = await postLogged(config);
-    expect(response.status).toBe(429);
-    await response.text();
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("combo_unavailable");
     expect(calls).toBe(1);
     expect(getCodexUpstreamHealth(rawAccountId)?.cooldownSource).toBe("retry-after");
   });
@@ -1385,6 +1719,70 @@ describe("server combo failover 030 activation matrix", () => {
     expect(JSON.stringify(await response.json())).toContain("connected backup");
   });
 
+  test("exhausts invalid API keys within a provider before hopping to the next combo provider", async () => {
+    const seenAuth: string[] = [];
+    const a = serve(req => {
+      seenAuth.push(req.headers.get("authorization") ?? "");
+      return Response.json({ error: { type: "authentication_error", code: "invalid_api_key", message: "bad pooled credential" } }, { status: 401 });
+    });
+    let backupHits = 0;
+    const b = serve(() => {
+      backupHits += 1;
+      return chatSuccess("healthy provider after key pool", "m2");
+    });
+    const first = provider("openai-chat", baseUrl(a), "key-alpha-000111222333", {
+      apiKeyPool: [
+        { id: "k1", key: "key-alpha-000111222333", addedAt: 1 },
+        { id: "k2", key: "key-beta-444555666777", addedAt: 2 },
+      ],
+    });
+    const config = comboConfig({
+      pooled: first,
+      backup: provider("openai-chat", baseUrl(b), "key-backup-000111222333"),
+    }, [
+      { provider: "pooled", model: "m1" },
+      { provider: "backup", model: "m2" },
+    ]);
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    const text = JSON.stringify(await response.json());
+    expect(text).toContain("healthy provider after key pool");
+    expect(text).not.toContain("bad pooled credential");
+    expect(seenAuth).toEqual(["Bearer key-alpha-000111222333", "Bearer key-beta-444555666777"]);
+    expect(backupHits).toBe(1);
+  });
+
+  test("transport exception matrix hops to backup without leaking intermediate details", async () => {
+    const cases = [
+      Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+      Object.assign(new Error("getaddrinfo ENOTFOUND provider.invalid"), { code: "ENOTFOUND" }),
+      Object.assign(new Error("getaddrinfo EAI_AGAIN provider.invalid"), { code: "EAI_AGAIN" }),
+      Object.assign(new Error('ERR_TLS_CERT_ALTNAME_INVALID fetching "https://user:provider-secret@[::1]/v1"'), { code: "ERR_TLS_CERT_ALTNAME_INVALID" }),
+      Object.assign(new Error("Timeout elapsed"), { name: "TimeoutError" }),
+    ];
+    for (const failure of cases) {
+      clearComboSelectionState();
+      clearComboTargetCooldowns();
+      let backupHits = 0;
+      customFetchResponse = async request => {
+        const model = (JSON.parse(String(request.body)) as { model?: string }).model;
+        if (model === "m1") throw failure;
+        backupHits += 1;
+        return chatSuccess("transport backup", "m2");
+      };
+      const config = comboConfig({
+        a: provider("test-response", "https://test.invalid/v1", "key-a"),
+        b: provider("test-response", "https://test.invalid/v1", "key-b"),
+      });
+      const response = await post(config);
+      expect(response.status).toBe(200);
+      const text = JSON.stringify(await response.json());
+      expect(text).toContain("transport backup");
+      expect(text).not.toContain("provider-secret");
+      expect(backupHits).toBe(1);
+    }
+  });
+
   test("Azure passthrough 403 hops into ordinary openai-chat", async () => {
     const hits: string[] = [];
     const a = serve(() => {
@@ -1514,20 +1912,22 @@ describe("server combo failover 030 activation matrix", () => {
     expect(modelHits.every(hit => hit.hasWebTool)).toBe(true);
   });
 
-  test("context 400 stops while exhausted retryable targets return the sanitized last status", async () => {
+  test("context 400 hops while exhausted retryable targets return the sanitized last status", async () => {
     let stopBackupHits = 0;
     const context = serve(() => Response.json({ error: { code: "context_length_exceeded", message: "too many tokens" } }, { status: 400 }));
     const unused = serve(() => {
       stopBackupHits += 1;
-      return chatSuccess("must not run");
+      return chatSuccess("context backup");
     });
     const stopConfig = comboConfig({
       a: provider("openai-chat", baseUrl(context), "key-a"),
       b: provider("openai-chat", baseUrl(unused), "key-b"),
     });
     const stopped = await post(stopConfig);
-    expect(stopped.status).toBe(400);
-    expect(stopBackupHits).toBe(0);
+    expect(stopped.status).toBe(200);
+    expect(stopBackupHits).toBe(1);
+    expect(JSON.stringify(await stopped.json())).toContain("context backup");
+    clearComboTargetCooldowns("free");
 
     const order: string[] = [];
     const first = serve(() => {
@@ -1542,9 +1942,21 @@ describe("server combo failover 030 activation matrix", () => {
       a: provider("openai-chat", baseUrl(first), "key-a"),
       b: provider("openai-chat", baseUrl(last), "key-b"),
     }));
-    expect(exhausted.status).toBe(404);
+    expect(exhausted.status).toBe(503);
     expect(order).toEqual(["a", "b"]);
-    expect(await exhausted.text()).not.toContain("sk-a-should-redact");
+    const exhaustedBody = await exhausted.json() as {
+      error?: { code?: string; details?: { combo?: string; correlation_id?: string; last_provider?: string; causes?: unknown[] } };
+    };
+    expect(exhaustedBody.error?.code).toBe("combo_unavailable");
+    expect(exhaustedBody.error?.details).toMatchObject({
+      combo: "free",
+      last_provider: "b",
+    });
+    expect(exhaustedBody.error?.details?.correlation_id).toMatch(/^combo-/);
+    expect(exhaustedBody.error?.details?.causes?.length).toBeGreaterThan(0);
+    const exhaustedText = JSON.stringify(exhaustedBody);
+    expect(exhaustedText).not.toContain("missing model");
+    expect(exhaustedText).not.toContain("sk-a-should-redact");
   });
 
   test("429 Retry-After 120 keeps A cooling at 60 seconds and restores it at 120", async () => {
@@ -2483,7 +2895,8 @@ describe("server combo failover 030 activation matrix", () => {
         ...(includeC ? [{ provider: "c", model: "m3" }] : []),
       ];
       const response = await post(comboConfig(providers, targets));
-      expect(response.status).toBe(includeC ? 200 : 401);
+      expect(response.status).toBe(includeC ? 200 : 503);
+      if (!includeC) expect(await response.clone().text()).toContain("combo_unavailable");
       expect(refreshHits).toBe(0);
       expect(backupAuth).toEqual(["Bearer key-b"]);
       expect([...captured].join("\n")).not.toContain("xai-refreshed-secret");

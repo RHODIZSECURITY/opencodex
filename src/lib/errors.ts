@@ -365,6 +365,10 @@ export function inferHttpStatusFromAdapterMessage(message: string): number {
     lower.includes("temporarily") ||
     lower.includes("server is busy")
   ) return 503;
+  // Malformed bytes produced by the upstream are a provider protocol failure, not a bad
+  // client request. Keep this ahead of the generic "malformed" -> 400 branch so an explicit
+  // combo can safely fail over when no output has been committed.
+  if (lower.includes("malformed upstream")) return 502;
   if (
     lower.includes("invalid") ||
     lower.includes("not found") ||

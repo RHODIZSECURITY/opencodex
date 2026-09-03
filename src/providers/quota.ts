@@ -590,7 +590,10 @@ async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): 
     ? `API balance ($${balance.toFixed(2)} total, $${grantedBalance.toFixed(2)} granted)`
     : `API balance ($${balance.toFixed(2)})`;
   return report(provider, "deepseek:balance", {
-    customWindows: [{ label, percent: 0 }],
+    // `is_available=false` is DeepSeek's authoritative statement that the account cannot
+    // serve API calls, even if a small positive nominal balance is still reported. A positive
+    // usable balance has no meaningful utilization denominator; zero is also exhausted.
+    customWindows: [{ label, percent: body?.is_available === false || balance === 0 ? 100 : 0 }],
     updatedAt: Date.now(),
   });
 }
@@ -2330,7 +2333,9 @@ async function maybeFetchProviderQuota(
     if ((provider.authMode ?? "key") === "key" && name === "openrouter") {
       return fetchOpenRouterQuota(name, provider);
     }
-    if ((provider.authMode ?? "key") === "key" && name === "deepseek") {
+    if ((provider.authMode ?? "key") === "key"
+      && (registryEntryForProviderDestination(provider)?.id === "deepseek"
+        || name.toLowerCase() === "deepseek")) {
       return fetchDeepSeekQuota(name, provider);
     }
     if ((provider.authMode ?? "key") === "key" && name === "cline-pass") {

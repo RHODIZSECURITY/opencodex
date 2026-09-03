@@ -2030,13 +2030,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       let parsed: unknown;
       try {
         parsed = await response.json();
-      } catch (error) {
+      } catch {
         tierMetadata?.markResponseUnparseable();
-        throw error;
+        return [{ type: "error", message: "malformed upstream JSON response" }];
       }
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
         tierMetadata?.markResponseUnparseable();
-        throw new Error("upstream response was not a JSON object");
+        return [{ type: "error", message: "malformed upstream JSON response" }];
       }
       const json = parsed as Record<string, unknown>;
       if (Object.hasOwn(json, "service_tier")) {

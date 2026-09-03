@@ -22,6 +22,7 @@ import {
   coolComboTarget,
   earliestQuotaResetAt,
   getCombo,
+  hydrateComboQuotaCooldownsFromDisk,
   isComboTargetInCooldown,
   isValidComboId,
   listComboIds,
@@ -35,6 +36,7 @@ import {
   pickComboTarget,
   preservesPhysicalComboProvider,
   resetComboEffortWarningStateForTests,
+  resetComboQuotaCooldownPersistenceForTests,
   resolveComboId,
   targetKey,
   tryPickComboModel,
@@ -43,7 +45,9 @@ import {
 import {
   comboFailureCooldownScope,
   comboFailureDecision,
+  coolComboProvider,
   isTransientRequestRateLimit,
+  reconcileComboTargetCooldowns,
 } from "../src/combos/failover";
 import { comboUnavailableResponse } from "../src/server/responses/core";
 import { getConfigPath, readConfigDiagnostics, saveConfig } from "../src/config";
@@ -62,6 +66,7 @@ import {
 } from "../src/providers/quota-routing-cache";
 import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 import { removeTreeWithRetry } from "./helpers/remove-tree";
+import { cancelPendingComboQuotaCooldownPersist, flushComboQuotaCooldownPersistForTests } from "../src/combos/cooldown-disk";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -443,6 +448,109 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("free", target, 1_000 + 60_000)).toBe(false);
   });
 
+  test("structured quota-window codes honor explicit long recovery clocks", () => {
+    const now = Date.parse("2026-09-02T00:00:00.000Z");
+    coolComboTarget("free", target, {
+      now, status: 429, code: "1308", message: "Usage limit reached for 5 hour", retryAfter: "86400",
+    });
+    expect(isComboTargetInCooldown("free", target, now + 23 * 60 * 60_000)).toBe(true);
+    expect(isComboTargetInCooldown("free", target, now + 24 * 60 * 60_000)).toBe(false);
+
+    clearComboTargetCooldowns();
+    coolComboProvider("a", {
+      now, status: 429, code: "insufficient_quota", message: "quota exhausted", retryAfter: "1209600",
+    });
+    expect(isComboTargetInCooldown("another", target, now + 13 * 24 * 60 * 60_000)).toBe(true);
+    expect(isComboTargetInCooldown("another", target, now + 14 * 24 * 60 * 60_000)).toBe(false);
+  });
+
+  test("keeps an explicit monthly-reset quota failure cooling until its known reset", () => {
+    const now = Date.parse("2026-09-02T00:00:00.000Z");
+    coolComboTarget("free", target, {
+      now,
+      status: 429,
+      code: "GoUsageLimitError",
+      message: "Monthly usage limit reached. Resets in 14 days.",
+    });
+    expect(isComboTargetInCooldown("free", target, now + 13 * 24 * 60 * 60_000)).toBe(true);
+    expect(isComboTargetInCooldown("free", target, now + 14 * 24 * 60 * 60_000)).toBe(false);
+
+    clearComboTargetCooldowns("free");
+    coolComboTarget("free", target, { now, status: 503, message: "temporary overload" });
+    expect(isComboTargetInCooldown("free", target, now + 60_000)).toBe(false);
+  });
+
+  test("long provider quota cooldown survives a proxy restart without persisting transient failures", () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "ocx-combo-quota-cooldown-"));
+    const now = Date.parse("2026-09-02T00:00:00.000Z");
+    process.env.OPENCODEX_HOME = home;
+    try {
+      resetComboQuotaCooldownPersistenceForTests();
+      hydrateComboQuotaCooldownsFromDisk(now);
+      coolComboTarget("free", target, {
+        now,
+        status: 429,
+        code: "GoUsageLimitError",
+        message: "Monthly usage limit reached. Resets in 14 days.",
+      });
+      flushComboQuotaCooldownPersistForTests(now);
+
+      resetComboQuotaCooldownPersistenceForTests();
+      hydrateComboQuotaCooldownsFromDisk(now + 1_000);
+      expect(isComboTargetInCooldown("free", target, now + 13 * 24 * 60 * 60_000)).toBe(true);
+      expect(isComboTargetInCooldown("free", target, now + 14 * 24 * 60 * 60_000)).toBe(false);
+    } finally {
+      cancelPendingComboQuotaCooldownPersist();
+      resetComboQuotaCooldownPersistenceForTests();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
+
+  test("provider-wide long quota cooldown survives restart and applies to another combo", () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "ocx-provider-quota-cooldown-"));
+    const now = Date.parse("2026-09-02T00:00:00.000Z");
+    process.env.OPENCODEX_HOME = home;
+    try {
+      resetComboQuotaCooldownPersistenceForTests();
+      hydrateComboQuotaCooldownsFromDisk(now);
+      coolComboProvider("a", {
+        now, status: 429, code: "GoUsageLimitError",
+        message: "Monthly usage limit reached. Resets in 14 days.",
+      });
+      flushComboQuotaCooldownPersistForTests(now);
+      resetComboQuotaCooldownPersistenceForTests();
+      hydrateComboQuotaCooldownsFromDisk(now + 1_000);
+      expect(isComboTargetInCooldown("another", target, now + 13 * 24 * 60 * 60_000)).toBe(true);
+      expect(comboCooldownRetryAfterSeconds("another", now + 1_000, ["a"])).toBe("1209599");
+      expect(comboCooldownRetryAfterSeconds("another", now + 1_000, ["b"])).toBeUndefined();
+    } finally {
+      cancelPendingComboQuotaCooldownPersist();
+      resetComboQuotaCooldownPersistenceForTests();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
+
+  test("config reconciliation removes orphaned provider and target cooldowns", () => {
+    coolComboProvider("a", { now: 1_000, cooldownMs: 60_000 });
+    coolComboTarget("free", { provider: "b", model: "m2" }, { now: 1_000, cooldownMs: 60_000 });
+    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(true);
+    expect(isComboTargetInCooldown("free", { provider: "b", model: "m2" }, 1_001)).toBe(true);
+    const removed = reconcileComboTargetCooldowns({
+      generation: 1, providerNames: new Set(["b"]), comboIds: new Set(["free"]),
+      comboTargets: new Set(["free::b/m3"]), codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(), configRoots: new Set(),
+    });
+    expect(removed).toBe(2);
+    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(false);
+    expect(isComboTargetInCooldown("free", { provider: "b", model: "m2" }, 1_001)).toBe(false);
+  });
+
   test("honors explicit Retry-After over the request-rate default", () => {
     coolComboTarget("free", target, {
       now: 1_000,
@@ -478,11 +586,12 @@ describe("combo failure policy and advancement", () => {
     for (const status of [401, 403, 404, 408, 429, 500, 503]) {
       expect(comboFailureDecision(status, "provider failure")).toBe("hop");
     }
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
     expect(comboFailureDecision(403, '{"code":"origin_rejected"}')).toBe("stop");
-    expect(comboFailureDecision(413, "request too large")).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("hop");
     expect(comboFailureDecision(409, "conflict")).toBe("stop");
-    expect(comboFailureDecision(410, "resource is gone")).toBe("stop");
+    expect(comboFailureDecision(425, "too early")).toBe("hop");
+    expect(comboFailureDecision(410, "resource is gone")).toBe("hop");
     expect(comboFailureDecision(410, "The model has reached its end of life and is no longer available.")).toBe("hop");
     expect(comboFailureDecision(410, "The model is scheduled for retirement.")).toBe("hop");
     expect(comboFailureDecision(410, "gone", { code: "model_retired" })).toBe("hop");
@@ -497,10 +606,44 @@ describe("combo failure policy and advancement", () => {
     // verdict by echoing the token, so that shape must NOT hop.
     expect(comboFailureDecision(413, 'refused', { code: 'input_admission_refused' })).toBe('hop');
     expect(comboFailureDecision(400, 'upstream mentions input_admission_refused in prose')).toBe('stop');
-    // An UPSTREAM context verdict still stops: retrying that elsewhere is guesswork, and a
-    // generic 413 with no structured code keeps its existing conservative handling.
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
-    expect(comboFailureDecision(413, "request too large")).toBe("stop");
+    // An upstream context verdict is target-local in an explicit combo: another declared
+    // model can have a larger context window. A generic 413 without context evidence remains
+    // terminal because replaying an arbitrary oversized request would be guesswork.
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
+    expect(comboFailureDecision(413, "request too large")).toBe("hop");
+  });
+
+  test("HTTP status matrix keeps retryable target failures distinct from terminal request failures", () => {
+    const matrix = [
+      [400, "ordinary invalid request", "stop", "target"],
+      [401, "authentication failed", "hop", "provider"],
+      [402, "payment required", "hop", "provider"],
+      [403, "permission denied", "hop", "provider"],
+      [404, "model route not found", "hop", "target"],
+      [408, "upstream request timeout", "hop", "target"],
+      [409, "request conflict", "stop", "target"],
+      [410, "resource is gone", "hop", "target"],
+      [413, "request too large", "hop", "none"],
+      [422, "ordinary unprocessable request", "stop", "target"],
+      [425, "too early", "hop", "target"],
+      [429, "rate limited", "hop", "target"],
+      [500, "internal server error", "hop", "target"],
+      [502, "bad gateway", "hop", "target"],
+      [503, "temporarily unavailable", "hop", "target"],
+      [504, "gateway timeout", "hop", "target"],
+    ] as const;
+    for (const [status, message, decision, scope] of matrix) {
+      expect(comboFailureDecision(status, message)).toBe(decision);
+      expect(comboFailureCooldownScope(status, message)).toBe(scope);
+    }
+
+    // Structured evidence overrides a generic status only when the failure is scoped to a
+    // different target/provider. Request-shape limits are request-local and must not poison
+    // later short requests; provider auth/billing failures exclude sibling models too.
+    expect(comboFailureDecision(400, "maximum context exceeded", { code: "context_length_exceeded" })).toBe("hop");
+    expect(comboFailureCooldownScope(400, "maximum context exceeded", { code: "context_length_exceeded" })).toBe("none");
+    expect(comboFailureDecision(422, "bad credential", { code: "invalid_api_key" })).toBe("hop");
+    expect(comboFailureCooldownScope(422, "bad credential", { code: "invalid_api_key" })).toBe("provider");
   });
 
   test("provider-scoped free-tier and monthly quota failures hop without weakening generic 400 handling", () => {
@@ -510,7 +653,7 @@ describe("combo failure policy and advancement", () => {
       message: "This prompt is longer than the free tier allows for a single request.",
     }});
     expect(comboFailureDecision(400, orca, { code: "free_rate_limited" })).toBe("hop");
-    expect(comboFailureCooldownScope(400, orca, { code: "free_rate_limited" })).toBe("provider");
+    expect(comboFailureCooldownScope(400, orca, { code: "free_rate_limited" })).toBe("none");
     expect(comboFailureDecision(400, "ordinary invalid request", { code: "invalid_request_error" })).toBe("stop");
     expect(comboFailureCooldownScope(429, "Monthly usage limit reached. Resets in 14 days.", {
       code: "GoUsageLimitError",
@@ -528,6 +671,28 @@ describe("combo failure policy and advancement", () => {
     })).toBe(true);
   });
 
+  test("structured provider and target-local failures cannot be swallowed by generic status classification", () => {
+    const retryable = [
+      [402, "insufficient_quota", "payment required"],
+      [402, "subscription_required", "billing required"],
+      [422, "invalid_api_key", "bad credential"],
+      [400, "model_not_found", "model not found"],
+      [400, "unsupported_model", "unsupported model"],
+      [400, "context_length_exceeded", "maximum context exceeded"],
+      [413, "tool_catalog_too_large", "tool catalog too large"],
+      [400, "cursor_root_envelope_limit", "Cursor request envelope is too large"],
+      [400, "kiro_profile_required", "Kiro account lacks the required profile"],
+      [400, "target_incompatible", "this target cannot represent the requested tool choice"],
+    ] as const;
+    for (const [status, code, message] of retryable) {
+      expect(comboFailureDecision(status, message, { code })).toBe("hop");
+    }
+    expect(comboFailureCooldownScope(402, "payment required", { code: "insufficient_quota" })).toBe("provider");
+    expect(comboFailureCooldownScope(422, "bad credential", { code: "invalid_api_key" })).toBe("provider");
+    expect(comboFailureCooldownScope(400, "model not found", { code: "model_not_found" })).toBe("target");
+    expect(comboFailureDecision(422, "ordinary unprocessable request", { code: "invalid_request_error" })).toBe("stop");
+  });
+
   test("failover skips providers with fresh exhausted quota evidence before dispatch", () => {
     const now = 50_000;
     const config = baseConfig();
@@ -538,6 +703,30 @@ describe("combo failure policy and advancement", () => {
     });
     const pick = pickComboTarget(config, "free", { now });
     expect(pick?.target.provider).toBe("b");
+  });
+
+  test("stale exhausted quota fails open instead of blacklisting the provider", () => {
+    const now = 50_000_000;
+    const config = baseConfig();
+    setCachedProviderQuotaForTests("a", {
+      monthlyPercent: 100, monthlyResetAt: now + 14 * 24 * 60 * 60_000,
+      updatedAt: now - 30 * 60_000 - 1,
+    });
+    expect(pickComboTarget(config, "free", { now })?.target.provider).toBe("a");
+  });
+
+  test("balance-only quota skips zero capacity but keeps positive capacity eligible", () => {
+    const now = 50_000;
+    const config = baseConfig();
+    setCachedProviderQuotaForTests("a", {
+      customWindows: [{ label: "API balance ($0.00)", percent: 100 }], updatedAt: now,
+    });
+    expect(pickComboTarget(config, "free", { now })?.target.provider).toBe("b");
+    clearCachedProviderQuotas();
+    setCachedProviderQuotaForTests("a", {
+      customWindows: [{ label: "API balance ($47.26)", percent: 0 }], updatedAt: now,
+    });
+    expect(pickComboTarget(config, "free", { now })?.target.provider).toBe("a");
   });
 
   test("elapsed quota reset does not permanently blacklist a provider", () => {
@@ -562,6 +751,24 @@ describe("combo failure policy and advancement", () => {
     expect(pickComboTarget(config, "free", { now })?.target.provider).toBe("b");
   });
 
+  test("request-local failures exclude only the attempted target for this turn", () => {
+    const config = baseConfig({
+      combos: {
+        free: {
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+        },
+      },
+    });
+    const first = pickComboTarget(config, "free", { now: 1_000 })!;
+    const next = advanceComboAfterFailure(config, first, { now: 1_000, cooldownScope: "none" })!;
+    expect(next.target.provider).toBe("b");
+    expect(isComboTargetInCooldown("free", first.target, 1_001)).toBe(false);
+    expect(pickComboTarget(config, "free", { now: 1_001 })?.target.provider).toBe("a");
+  });
+
   test("provider-scoped cooldown skips sibling models but leaves other providers eligible", () => {
     const config = baseConfig({
       combos: {
@@ -580,6 +787,40 @@ describe("combo failure policy and advancement", () => {
     expect(next.target.provider).toBe("b");
     expect(isComboTargetInCooldown("free", { provider: "a", model: "m1b" }, 1_001)).toBe(true);
     expect(isComboTargetInCooldown("free", { provider: "b", model: "m2" }, 1_001)).toBe(false);
+  });
+
+
+  test("provider-scoped quota cooldown is shared across combos", () => {
+    const config = baseConfig({
+      combos: {
+        first: {
+          strategy: "failover",
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+        },
+        second: {
+          strategy: "failover",
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+        },
+      },
+    });
+    const now = Date.parse("2026-09-02T00:00:00.000Z");
+    const first = pickComboTarget(config, "first", { now })!;
+    const next = advanceComboAfterFailure(config, first, {
+      now,
+      cooldownScope: "provider",
+      status: 429,
+      code: "GoUsageLimitError",
+      message: "Monthly usage limit reached. Resets in 14 days.",
+    })!;
+    expect(next.target.provider).toBe("b");
+    expect(isComboTargetInCooldown("second", { provider: "a", model: "m1" }, now + 1)).toBe(true);
+    expect(pickComboTarget(config, "second", { now: now + 1 })?.target.provider).toBe("b");
   });
 
   test("failure clears the active sticky target without adding a success", () => {

@@ -2,6 +2,11 @@ import { classifyError, isCyberPolicyCode } from "../lib/errors";
 import type { OcxComboTarget } from "../types";
 import { targetKey } from "./types";
 import {
+  comboQuotaCooldownStoreDirectory,
+  readPersistedComboQuotaCooldowns,
+  schedulePersistComboQuotaCooldowns,
+} from "./cooldown-disk";
+import {
   captureConfigGeneration,
   sweepExpiredOnWrite,
   type GenerationContext,
@@ -13,6 +18,8 @@ interface TargetCooldown {
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 10 * 60_000;
+/** Long provider quota windows may legitimately span days; keep this bounded. */
+const MAX_QUOTA_COOLDOWN_MS = 31 * 24 * 60 * 60_000;
 /** Short cooldown for request-rate 429s (for example provider code 1302) that omit Retry-After. */
 export const COMBO_REQUEST_RATE_COOLDOWN_MS = 5_000;
 
@@ -36,16 +43,58 @@ const HTTP_MONTH_INDEX: Record<string, number> = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-/** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
+/** Target keys are combo-local; provider keys represent provider-wide evidence shared by every combo. */
+const PROVIDER_COOLDOWN_PREFIX = "\u0001provider\0";
 const targetCooldowns = new Map<string, TargetCooldown>();
+const persistedQuotaCooldownKeys = new Set<string>();
+let quotaCooldownPersistenceDirectory: string | undefined;
 let lastReconciledGeneration = 0;
 let liveComboTargets = new Set<string>();
+let liveProviders = new Set<string>();
+
+function providerCooldownMapKey(provider: string): string {
+  return `${PROVIDER_COOLDOWN_PREFIX}${provider}`;
+}
 
 function cooldownMapKey(
   comboId: string,
   target: Pick<OcxComboTarget, "provider" | "model">,
 ): string {
   return `${comboId}\0${targetKey(target)}`;
+}
+
+function persistedQuotaCooldownRows(): Iterable<[string, number]> {
+  return [...persistedQuotaCooldownKeys].flatMap(key => {
+    const state = targetCooldowns.get(key);
+    return state ? [[key, state.cooldownUntil] as [string, number]] : [];
+  });
+}
+
+function scheduleQuotaCooldownPersistence(): void {
+  if (!quotaCooldownPersistenceDirectory) return;
+  schedulePersistComboQuotaCooldowns(
+    quotaCooldownPersistenceDirectory,
+    () => persistedQuotaCooldownRows(),
+  );
+}
+
+/** Hydrate only durable long quota cooldowns; transient transport/rate cooldowns stay process-local. */
+export function hydrateComboQuotaCooldownsFromDisk(now = Date.now()): void {
+  const directory = comboQuotaCooldownStoreDirectory();
+  if (quotaCooldownPersistenceDirectory === directory) return;
+  for (const key of persistedQuotaCooldownKeys) targetCooldowns.delete(key);
+  persistedQuotaCooldownKeys.clear();
+  quotaCooldownPersistenceDirectory = directory;
+  for (const [key, cooldownUntil] of readPersistedComboQuotaCooldowns(directory, now)) {
+    targetCooldowns.set(key, { cooldownUntil });
+    persistedQuotaCooldownKeys.add(key);
+  }
+}
+
+export function resetComboQuotaCooldownPersistenceForTests(): void {
+  for (const key of persistedQuotaCooldownKeys) targetCooldowns.delete(key);
+  persistedQuotaCooldownKeys.clear();
+  quotaCooldownPersistenceDirectory = undefined;
 }
 
 function parseUtcDateParts(
@@ -113,9 +162,10 @@ function parseHttpDate(value: string, now: number): number | undefined {
   );
 }
 
-export function parseRetryAfterMs(
+function parseRetryAfterMsWithLimit(
   value: string | null | undefined,
-  now = Date.now(),
+  now: number,
+  maxMs: number,
   options?: { preserveImmediate?: boolean },
 ): number | undefined {
   const text = value?.trim();
@@ -126,14 +176,66 @@ export function parseRetryAfterMs(
       Number.isFinite(seconds)
       && (seconds > 0 || (options?.preserveImmediate && seconds === 0))
     ) {
-      return Math.min(Math.max(Math.ceil(seconds * 1000), 1), MAX_COOLDOWN_MS);
+      return Math.min(Math.max(Math.ceil(seconds * 1000), 1), maxMs);
     }
   }
   const timestamp = parseHttpDate(text, now);
   if (timestamp === undefined) return undefined;
   const delay = timestamp - now;
-  if (delay > 0) return Math.min(delay, MAX_COOLDOWN_MS);
+  if (delay > 0) return Math.min(delay, maxMs);
   return options?.preserveImmediate ? 1 : undefined;
+}
+
+export function parseRetryAfterMs(
+  value: string | null | undefined,
+  now = Date.now(),
+  options?: { preserveImmediate?: boolean },
+): number | undefined {
+  return parseRetryAfterMsWithLimit(value, now, MAX_COOLDOWN_MS, options);
+}
+
+function parseQuotaResetHintMs(message: string): number | undefined {
+  const match = /\bresets?\s+in\s+((?:\d+(?:\.\d+)?\s*(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)\s*){1,4})/i.exec(message);
+  if (!match?.[1]) return undefined;
+  const unitMs: Record<string, number> = {
+    day: 86_400_000, days: 86_400_000,
+    hour: 3_600_000, hours: 3_600_000, hr: 3_600_000, hrs: 3_600_000,
+    minute: 60_000, minutes: 60_000, min: 60_000, mins: 60_000,
+    second: 1_000, seconds: 1_000, sec: 1_000, secs: 1_000,
+  };
+  let total = 0;
+  const parts = match[1].matchAll(/(\d+(?:\.\d+)?)\s*(days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)/gi);
+  for (const part of parts) {
+    const value = Number(part[1]);
+    const unit = unitMs[part[2]!.toLowerCase()];
+    if (!Number.isFinite(value) || value < 0 || unit === undefined) return undefined;
+    total += value * unit;
+  }
+  if (!Number.isFinite(total) || total <= 0) return undefined;
+  return Math.min(Math.ceil(total), MAX_QUOTA_COOLDOWN_MS);
+}
+
+function isDurableQuotaFailure(
+  status: number | undefined,
+  message: string,
+  code?: string | null,
+): boolean {
+  return isProviderScopedQuotaCap(status, message, code)
+    || QUOTA_LIMIT_CODES.has(normalizedFailureCode(code));
+}
+
+export function knownComboFailureRecoveryMs(input: {
+  retryAfter?: string | null;
+  status?: number;
+  code?: string | null;
+  message?: string;
+  now?: number;
+}): number | undefined {
+  const now = input.now ?? Date.now();
+  const durableQuota = isDurableQuotaFailure(input.status, input.message ?? "", input.code);
+  const maxMs = durableQuota ? MAX_QUOTA_COOLDOWN_MS : MAX_COOLDOWN_MS;
+  return parseRetryAfterMsWithLimit(input.retryAfter, now, maxMs)
+    ?? (durableQuota ? parseQuotaResetHintMs(input.message ?? "") : undefined);
 }
 
 export function isComboTargetInCooldown(
@@ -141,11 +243,20 @@ export function isComboTargetInCooldown(
   target: Pick<OcxComboTarget, "provider" | "model">,
   now = Date.now(),
 ): boolean {
+  const providerKey = providerCooldownMapKey(target.provider);
+  const providerEntry = targetCooldowns.get(providerKey);
+  if (providerEntry) {
+    if (providerEntry.cooldownUntil > now) return true;
+    targetCooldowns.delete(providerKey);
+    if (persistedQuotaCooldownKeys.delete(providerKey)) scheduleQuotaCooldownPersistence();
+  }
+
   const key = cooldownMapKey(comboId, target);
   const entry = targetCooldowns.get(key);
   if (!entry) return false;
   if (entry.cooldownUntil <= now) {
     targetCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) scheduleQuotaCooldownPersistence();
     return false;
   }
   return true;
@@ -171,14 +282,24 @@ export function isTransientRequestRateLimit(input: {
   return text.includes("rate limit reached for requests");
 }
 
-export function remainingComboCooldownMs(comboId: string, now = Date.now()): number | undefined {
+export function remainingComboCooldownMs(
+  comboId: string,
+  now = Date.now(),
+  providers?: Iterable<string>,
+): number | undefined {
   const prefix = `${comboId}\0`;
+  const providerSet = providers === undefined ? undefined : new Set(providers);
   let soonest: number | undefined;
   for (const [key, cooldown] of targetCooldowns) {
-    if (!key.startsWith(prefix)) continue;
+    const comboLocal = key.startsWith(prefix);
+    const providerGlobal = providerSet !== undefined
+      && key.startsWith(PROVIDER_COOLDOWN_PREFIX)
+      && providerSet.has(key.slice(PROVIDER_COOLDOWN_PREFIX.length));
+    if (!comboLocal && !providerGlobal) continue;
     const remaining = cooldown.cooldownUntil - now;
     if (remaining <= 0) {
       targetCooldowns.delete(key);
+      if (persistedQuotaCooldownKeys.delete(key)) scheduleQuotaCooldownPersistence();
       continue;
     }
     if (soonest === undefined || remaining < soonest) soonest = remaining;
@@ -186,10 +307,59 @@ export function remainingComboCooldownMs(comboId: string, now = Date.now()): num
   return soonest;
 }
 
-export function comboCooldownRetryAfterSeconds(comboId: string, now = Date.now()): string | undefined {
-  const remainingMs = remainingComboCooldownMs(comboId, now);
+export function comboCooldownRetryAfterSeconds(
+  comboId: string,
+  now = Date.now(),
+  providers?: Iterable<string>,
+): string | undefined {
+  const remainingMs = remainingComboCooldownMs(comboId, now, providers);
   if (remainingMs === undefined) return undefined;
   return String(Math.max(1, Math.ceil(remainingMs / 1000)));
+}
+
+export function coolComboProvider(
+  provider: string,
+  options?: {
+    retryAfter?: string | null;
+    now?: number;
+    cooldownMs?: number;
+    writerGeneration?: number;
+    status?: number;
+    code?: string | null;
+    message?: string;
+  },
+): void {
+  const now = options?.now ?? Date.now();
+  const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
+  if (writerGeneration < lastReconciledGeneration && !liveProviders.has(provider)) return;
+  const durableQuota = isDurableQuotaFailure(
+    options?.status,
+    options?.message ?? "",
+    options?.code,
+  );
+  const maxCooldownMs = durableQuota ? MAX_QUOTA_COOLDOWN_MS : MAX_COOLDOWN_MS;
+  const cooldownMs = options?.cooldownMs
+    ?? knownComboFailureRecoveryMs({
+      retryAfter: options?.retryAfter,
+      status: options?.status,
+      code: options?.code,
+      message: options?.message,
+      now,
+    })
+    ?? (isTransientRequestRateLimit({
+      status: options?.status,
+      code: options?.code,
+      message: options?.message,
+    }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
+  const key = providerCooldownMapKey(provider);
+  const cooldownUntil = now + Math.min(Math.max(cooldownMs, 1), maxCooldownMs);
+  targetCooldowns.set(key, { cooldownUntil });
+  const durableLongQuota = durableQuota && cooldownUntil - now > MAX_COOLDOWN_MS;
+  const persistenceChanged = durableLongQuota
+    ? (persistedQuotaCooldownKeys.add(key), true)
+    : persistedQuotaCooldownKeys.delete(key);
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
+  sweepExpiredOnWrite(now);
 }
 
 export function coolComboTarget(
@@ -209,24 +379,61 @@ export function coolComboTarget(
   const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return;
+  const durableQuota = isDurableQuotaFailure(
+    options?.status,
+    options?.message ?? "",
+    options?.code,
+  );
+  const maxCooldownMs = durableQuota ? MAX_QUOTA_COOLDOWN_MS : MAX_COOLDOWN_MS;
   const cooldownMs = options?.cooldownMs
-    ?? parseRetryAfterMs(options?.retryAfter, now)
+    ?? knownComboFailureRecoveryMs({
+      retryAfter: options?.retryAfter,
+      status: options?.status,
+      code: options?.code,
+      message: options?.message,
+      now,
+    })
     ?? (isTransientRequestRateLimit({
       status: options?.status,
       code: options?.code,
       message: options?.message,
     }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
-  targetCooldowns.set(cooldownMapKey(comboId, target), {
-    cooldownUntil: now + Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS),
-  });
+  const key = cooldownMapKey(comboId, target);
+  const cooldownUntil = now + Math.min(Math.max(cooldownMs, 1), maxCooldownMs);
+  targetCooldowns.set(key, { cooldownUntil });
+  const durableLongQuota = durableQuota && cooldownUntil - now > MAX_COOLDOWN_MS;
+  const persistenceChanged = durableLongQuota
+    ? (persistedQuotaCooldownKeys.add(key), true)
+    : persistedQuotaCooldownKeys.delete(key);
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
   sweepExpiredOnWrite(now);
 }
 
 export function reconcileComboTargetCooldowns(context: GenerationContext): number {
   if (context.generation <= lastReconciledGeneration) return 0;
+  let removed = 0;
+  let persistenceChanged = false;
+  for (const key of targetCooldowns.keys()) {
+    let live = false;
+    if (key.startsWith(PROVIDER_COOLDOWN_PREFIX)) {
+      live = context.providerNames.has(key.slice(PROVIDER_COOLDOWN_PREFIX.length));
+    } else {
+      const separator = key.indexOf("\0");
+      if (separator >= 0) {
+        const ownerKey = `${key.slice(0, separator)}::${key.slice(separator + 1)}`;
+        live = context.comboTargets.has(ownerKey);
+      }
+    }
+    if (live) continue;
+    targetCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) persistenceChanged = true;
+    removed += 1;
+  }
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
   liveComboTargets = new Set(context.comboTargets);
+  liveProviders = new Set(context.providerNames);
   lastReconciledGeneration = context.generation;
-  return 0;
+  return removed;
 }
 
 export function sweepExpiredComboTargetCooldowns(now = Date.now()): number {
@@ -234,6 +441,7 @@ export function sweepExpiredComboTargetCooldowns(now = Date.now()): number {
   for (const [key, cooldown] of targetCooldowns) {
     if (cooldown.cooldownUntil > now) continue;
     targetCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) scheduleQuotaCooldownPersistence();
     removed += 1;
   }
   return removed;
@@ -242,18 +450,26 @@ export function sweepExpiredComboTargetCooldowns(now = Date.now()): number {
 export function clearComboTargetCooldowns(comboId?: string): void {
   if (comboId === undefined) {
     targetCooldowns.clear();
+    const persistenceChanged = persistedQuotaCooldownKeys.size > 0;
+    persistedQuotaCooldownKeys.clear();
+    if (persistenceChanged) scheduleQuotaCooldownPersistence();
     liveComboTargets.clear();
+    liveProviders.clear();
     lastReconciledGeneration = 0;
     return;
   }
   const prefix = `${comboId}\0`;
+  let persistenceChanged = false;
   for (const key of targetCooldowns.keys()) {
-    if (key.startsWith(prefix)) targetCooldowns.delete(key);
+    if (!key.startsWith(prefix)) continue;
+    targetCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) persistenceChanged = true;
   }
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
 }
 
 export type ComboFailureDecision = "hop" | "stop";
-export type ComboFailureCooldownScope = "target" | "provider";
+export type ComboFailureCooldownScope = "none" | "target" | "provider";
 
 function normalizedFailureCode(code?: string | null): string {
   return code?.trim().toLowerCase().replaceAll("-", "_") ?? "";
@@ -282,7 +498,34 @@ export function comboFailureCooldownScope(
   message: string,
   options?: { code?: string | null },
 ): ComboFailureCooldownScope {
-  return isProviderScopedQuotaCap(status, message, options?.code) ? "provider" : "target";
+  const code = normalizedFailureCode(options?.code);
+  const text = message.toLowerCase();
+  // Request-shape limits must exclude only this attempt. Cooling the provider globally would
+  // make an unrelated shorter/simpler request skip a provider that is still healthy.
+  if (
+    code === "free_rate_limited"
+    || text.includes("err_free_prompt_cap")
+    || [
+      "input_admission_refused",
+      "context_length_exceeded",
+      "tool_catalog_too_large",
+      "cursor_root_envelope_limit",
+      "target_incompatible",
+    ].includes(code)
+    || status === 413
+  ) return "none";
+  if (isProviderScopedQuotaCap(status, message, code)) return "provider";
+  if (status === 401 || status === 402 || status === 403) return "provider";
+  if ([
+    "invalid_api_key",
+    "insufficient_quota",
+    "subscription_required",
+    "payment_required",
+    "billing_error",
+    "insufficient_balance",
+    "provider_unavailable",
+  ].includes(code)) return "provider";
+  return "target";
 }
 
 function isModelLifecycleGone(
@@ -341,26 +584,36 @@ export function comboFailureDecision(
   // an upstream already controls other hop signals (429, 5xx), and traversal is finite: policy
   // tries each candidate once via `tried`, and combo excludes each attempted target. So this is
   // structured-code-only, not provably local.
-  if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
-    return "hop";
-  }
-  if (isProviderScopedQuotaCap(status, message, options?.code || error.code)) {
-    return "hop";
-  }
-  if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
-    return "stop";
-  }
-  if ([401, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
+  const failureCode = normalizedFailureCode(options?.code || error.code);
+  const targetLocalCodes = new Set([
+    "input_admission_refused",
+    "context_length_exceeded",
+    "tool_catalog_too_large",
+    "cursor_root_envelope_limit",
+    "kiro_profile_required",
+    "target_incompatible",
+    "model_not_found",
+    "model_unavailable",
+    "unsupported_model",
+  ]);
+  if (targetLocalCodes.has(failureCode)) return "hop";
+  const lowerMessage = message.toLowerCase();
+  if (/\b(?:model not found|model unavailable|unsupported model)\b/.test(lowerMessage)) return "hop";
+  if (isProviderScopedQuotaCap(status, message, failureCode)) return "hop";
   if ([
     "permission_denied",
     "subscription_required",
     "invalid_api_key",
     "insufficient_quota",
+    "payment_required",
+    "billing_error",
+    "insufficient_balance",
     "rate_limit_exceeded",
     "server_is_overloaded",
     "upstream_server_error",
-  ].includes(error.code ?? "")) {
-    return "hop";
-  }
+    "provider_unavailable",
+  ].includes(failureCode)) return "hop";
+  if ([401, 402, 403, 404, 408, 410, 413, 425, 429].includes(status) || status >= 500) return "hop";
+  if (["origin_rejected", "invalid_request_error"].includes(error.code ?? "")) return "stop";
   return "stop";
 }

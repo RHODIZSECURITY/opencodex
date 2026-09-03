@@ -28,6 +28,18 @@ async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?:
     });
 }
 
+describe("explicit internal error codes", () => {
+  test("formatErrorResponse preserves a trusted explicit non-cyber code", async () => {
+    const response = formatErrorResponse(400, "invalid_request_error", "target cannot represent tool choice", {
+      code: "target_incompatible",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { type: "invalid_request_error", code: "target_incompatible" },
+    });
+  });
+});
+
 describe("error fidelity", () => {
   test("classifyError maps Codex-recognized context/quota/rate failures", () => {
     expect(classifyError(400, "upstream_error", "Your input exceeds the context window")).toMatchObject({

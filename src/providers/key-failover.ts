@@ -10,6 +10,13 @@
  */
 import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig, RateLimitRetryPolicy, TransientRetryPolicy } from "../types";
+import { deleteCachedProviderQuota, getCachedProviderQuota } from "./quota-routing-cache";
+import type { ProviderQuota } from "./quota-types";
+import {
+  keyQuotaCooldownStoreDirectory,
+  readPersistedKeyQuotaCooldowns,
+  schedulePersistKeyQuotaCooldowns,
+} from "./key-cooldown-disk";
 import { resolveProviderTransport, type OcxProviderTransport } from "./xai-transport";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 
@@ -21,6 +28,23 @@ interface KeyCooldown {
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 10 * 60_000; // cap at 10 min for api-key rotation
+const MAX_QUOTA_COOLDOWN_MS = 31 * 24 * 60 * 60_000;
+
+function exhaustedQuotaRecoveryMs(quota: ProviderQuota | null, now: number): number | undefined {
+  if (!quota) return undefined;
+  const resets: number[] = [];
+  const add = (percent: number | undefined, resetAt: number | undefined) => {
+    if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 100) return;
+    if (typeof resetAt !== "number" || !Number.isFinite(resetAt) || resetAt <= now) return;
+    resets.push(resetAt);
+  };
+  add(quota.fiveHourPercent, quota.fiveHourResetAt);
+  add(quota.weeklyPercent, quota.weeklyResetAt);
+  add(quota.monthlyPercent, quota.monthlyResetAt);
+  for (const window of quota.customWindows ?? []) add(window.percent, window.resetAt);
+  if (resets.length === 0) return undefined;
+  return Math.min(Math.max(...resets) - now, MAX_QUOTA_COOLDOWN_MS);
+}
 
 /**
  * Default same-target 429 retry policy used when a provider opts in via a bare
@@ -45,9 +69,41 @@ const DEFAULT_TRANSIENT_RETRY = {
 
 /** Map<`${providerName}\0${keyId}`, KeyCooldown> */
 const keyCooldowns = new Map<string, KeyCooldown>();
+const persistedQuotaCooldownKeys = new Set<string>();
+let quotaCooldownPersistenceDirectory: string | undefined;
+
+function persistedQuotaCooldownRows(): Iterable<[string, number]> {
+  return [...persistedQuotaCooldownKeys].flatMap(key => {
+    const state = keyCooldowns.get(key);
+    return state ? [[key, state.cooldownUntil] as [string, number]] : [];
+  });
+}
+
+function scheduleQuotaCooldownPersistence(): void {
+  if (!quotaCooldownPersistenceDirectory) return;
+  schedulePersistKeyQuotaCooldowns(quotaCooldownPersistenceDirectory, () => persistedQuotaCooldownRows());
+}
 
 function cooldownKey(providerName: string, keyId: string): string {
   return `${providerName}\0${keyId}`;
+}
+
+export function hydrateKeyQuotaCooldownsFromDisk(now = Date.now()): void {
+  const directory = keyQuotaCooldownStoreDirectory();
+  if (quotaCooldownPersistenceDirectory === directory) return;
+  for (const key of persistedQuotaCooldownKeys) keyCooldowns.delete(key);
+  persistedQuotaCooldownKeys.clear();
+  quotaCooldownPersistenceDirectory = directory;
+  for (const [key, cooldownUntil] of readPersistedKeyQuotaCooldowns(directory, now)) {
+    keyCooldowns.set(key, { cooldownUntil });
+    persistedQuotaCooldownKeys.add(key);
+  }
+}
+
+export function resetKeyQuotaCooldownPersistenceForTests(): void {
+  keyCooldowns.clear();
+  persistedQuotaCooldownKeys.clear();
+  quotaCooldownPersistenceDirectory = undefined;
 }
 
 /**
@@ -77,10 +133,12 @@ function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): 
  * window expires). Used to skip keys that the upstream just rate-limited during failover.
  */
 function isKeyInCooldown(providerName: string, keyId: string, now = Date.now()): boolean {
-  const entry = keyCooldowns.get(cooldownKey(providerName, keyId));
+  const key = cooldownKey(providerName, keyId);
+  const entry = keyCooldowns.get(key);
   if (!entry) return false;
   if (entry.cooldownUntil <= now) {
-    keyCooldowns.delete(cooldownKey(providerName, keyId));
+    keyCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) scheduleQuotaCooldownPersistence();
     return false;
   }
   return true;
@@ -176,9 +234,10 @@ export function rateLimitRetryDelayMs(
  * not assign it to an active route wholesale; use `rotateProviderTransportOn429`, which
  * takes only the swapped key and keeps the routed provider intact.
  */
-export function rotateKeyOn429(
+function rotateKeyAfterFailure(
   config: OcxConfig,
   providerName: string,
+  failureStatus: 401 | 429,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
   attemptedKey?: string,
@@ -186,60 +245,84 @@ export function rotateKeyOn429(
   const provider = config.providers[providerName];
   if (!provider) return null;
   if (provider.authMode === "oauth" || provider.authMode === "forward") return null;
-
   const pool = provider.apiKeyPool;
   if (!pool || pool.length < 2) return null;
 
-  // Cool the key that ACTUALLY failed. Under concurrent 429s another request may already have
-  // rotated provider.apiKey — cooling the live key would punish an innocent replacement and can
-  // exhaust a 2-key pool from a single bad key. CAS semantics: callers pass the key they used.
   const failedKey = attemptedKey ?? provider.apiKey;
+  const failedKeyWasActive = failedKey === provider.apiKey;
+  const quotaRecoveryMs = failureStatus === 429 && failedKeyWasActive
+    ? exhaustedQuotaRecoveryMs(getCachedProviderQuota(providerName, now), now)
+    : undefined;
   const currentEntry = pool.find(e => e.key === failedKey);
   if (currentEntry) {
-    const cooldownMs = parseRetryAfterMs(retryAfterHeader, now) ?? DEFAULT_COOLDOWN_MS;
-    keyCooldowns.set(cooldownKey(providerName, currentEntry.id), {
-      cooldownUntil: now + cooldownMs,
-    });
+    const headerCooldownMs = failureStatus === 429 ? parseRetryAfterMs(retryAfterHeader, now) : undefined;
+    const authCooldownMs = failureStatus === 401 ? MAX_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
+    const cooldownMs = Math.max(headerCooldownMs ?? 0, quotaRecoveryMs ?? 0, authCooldownMs);
+    const key = cooldownKey(providerName, currentEntry.id);
+    const cooldownUntil = now + cooldownMs;
+    keyCooldowns.set(key, { cooldownUntil });
+    const durableLongQuota = quotaRecoveryMs !== undefined && cooldownMs > MAX_COOLDOWN_MS;
+    const persistenceChanged = durableLongQuota
+      ? (persistedQuotaCooldownKeys.add(key), true)
+      : persistedQuotaCooldownKeys.delete(key);
+    if (persistenceChanged) scheduleQuotaCooldownPersistence();
     sweepExpiredOnWrite(now);
   }
 
-  // Lost the race: someone already rotated away from the failed key. If the live key is healthy,
-  // retry with it as-is instead of rotating a second time.
+  // CAS: another request may already have rotated away from the exact credential that failed.
   if (attemptedKey !== undefined && provider.apiKey !== attemptedKey) {
     const liveEntry = pool.find(e => e.key === provider.apiKey);
-    if (liveEntry && !isKeyInCooldown(providerName, liveEntry.id, now)) {
-      return { ...provider };
-    }
+    if (liveEntry && !isKeyInCooldown(providerName, liveEntry.id, now)) return { ...provider };
   }
 
-  // Pick the next key that is NOT in cooldown
   const currentIndex = currentEntry ? pool.indexOf(currentEntry) : -1;
   for (let i = 1; i < pool.length; i++) {
     const candidate = pool[(currentIndex + i) % pool.length]!;
-    if (!isKeyInCooldown(providerName, candidate.id, now)) {
-      // Swap active key
-      provider.apiKey = candidate.key;
-      saveConfigPreservingClaudeCode(config);
-      console.warn(
-        // Log ids only — labels are user-supplied free text and could carry secret material.
-        `[key-failover] ${providerName}: 429 on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}`,
-      );
-      return { ...provider };
-    }
+    if (isKeyInCooldown(providerName, candidate.id, now)) continue;
+    provider.apiKey = candidate.key;
+    deleteCachedProviderQuota(providerName);
+    saveConfigPreservingClaudeCode(config);
+    console.warn(
+      `[key-failover] ${providerName}: ${failureStatus} on key ${currentEntry?.id ?? "?"}; rotating to key ${candidate.id}`,
+    );
+    return { ...provider };
   }
 
-  // All keys in cooldown
-  console.warn(`[key-failover] ${providerName}: all ${pool.length} keys in cooldown; returning 429 to client`);
+  console.warn(
+    `[key-failover] ${providerName}: all ${pool.length} keys in cooldown after ${failureStatus}; no replacement available`,
+  );
   return null;
+}
+
+export function rotateKeyOn429(
+  config: OcxConfig,
+  providerName: string,
+  retryAfterHeader: string | null | undefined,
+  now = Date.now(),
+  attemptedKey?: string,
+): OcxProviderConfig | null {
+  return rotateKeyAfterFailure(config, providerName, 429, retryAfterHeader, now, attemptedKey);
+}
+
+export function rotateKeyOn401(
+  config: OcxConfig,
+  providerName: string,
+  now = Date.now(),
+  attemptedKey?: string,
+): OcxProviderConfig | null {
+  return rotateKeyAfterFailure(config, providerName, 401, null, now, attemptedKey);
 }
 
 export function sweepExpiredApiKeyCooldowns(now = Date.now()): number {
   let removed = 0;
+  let persistenceChanged = false;
   for (const [key, cooldown] of keyCooldowns) {
     if (cooldown.cooldownUntil > now) continue;
     keyCooldowns.delete(key);
+    if (persistedQuotaCooldownKeys.delete(key)) persistenceChanged = true;
     removed += 1;
   }
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
   return removed;
 }
 
@@ -283,16 +366,38 @@ export function rotateProviderTransportOn429(
     : null;
 }
 
+export function rotateProviderTransportOn401(
+  config: OcxConfig,
+  providerName: string,
+  routedProvider: OcxProviderTransport,
+  options: Omit<RotateProviderTransportOptions, "retryAfter"> = {},
+): OcxProviderTransport | null {
+  const rotated = rotateKeyOn401(config, providerName, options.now, options.attemptedKey);
+  return rotated
+    ? resolveProviderTransport(
+        providerName,
+        { ...routedProvider, apiKey: rotated.apiKey },
+        options.promptCacheKey,
+      )
+    : null;
+}
+
 /** Clear cooldown state for a provider (e.g. after manual key management). */
 export function clearKeyCooldowns(providerName?: string): void {
+  let persistenceChanged = false;
   if (!providerName) {
     keyCooldowns.clear();
-    return;
+    persistenceChanged = persistedQuotaCooldownKeys.size > 0;
+    persistedQuotaCooldownKeys.clear();
+  } else {
+    const prefix = `${providerName}\0`;
+    for (const key of keyCooldowns.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      keyCooldowns.delete(key);
+      if (persistedQuotaCooldownKeys.delete(key)) persistenceChanged = true;
+    }
   }
-  const prefix = `${providerName}\0`;
-  for (const key of keyCooldowns.keys()) {
-    if (key.startsWith(prefix)) keyCooldowns.delete(key);
-  }
+  if (persistenceChanged) scheduleQuotaCooldownPersistence();
 }
 
 /** Visible-for-testing: get the cooldown-until timestamp for a key. */

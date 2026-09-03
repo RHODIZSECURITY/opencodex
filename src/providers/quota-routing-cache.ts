@@ -6,6 +6,10 @@ export function clearCachedProviderQuotas(): void {
   quotaCache.clear();
 }
 
+export function deleteCachedProviderQuota(provider: string): void {
+  quotaCache.delete(provider);
+}
+
 export function replaceCachedProviderQuotas(reports: ProviderQuotaReport[]): void {
   quotaCache.clear();
   for (const report of reports) {

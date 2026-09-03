@@ -1,4 +1,5 @@
 import { comboFailureDecision } from "../../combos/failover";
+import { formatErrorResponse } from "../../bridge";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { readJsonRequestBody } from "../request-decompress";
 import { finishRequestAttempt, type RequestLogContext } from "../request-log";
@@ -144,8 +145,8 @@ export async function handleResponsesWithPolicyFallback(
     response = await runCore(req, config, logCtx, coreOptions);
   } catch (error) {
     const overload = requestPacingOverloadResponse(error);
-    if (overload) return overload;
-    throw error;
+    if (!overload) throw error;
+    response = overload;
   }
   const initialTrace = logCtx.routeDecision;
   const initialRequestedModel = logCtx.requestedModel;
@@ -155,10 +156,15 @@ export async function handleResponsesWithPolicyFallback(
     candidateKey({ provider: initialTrace.selected.provider, model: initialTrace.selected.model }),
   ]);
 
-  while (!storedPool401ReplayDispatched && await shouldHopPolicyCandidate(response, req.signal)) {
+  while (!(storedPool401ReplayDispatched && logCtx.activeAttempt?.firstOutputMs !== undefined)
+    && await shouldHopPolicyCandidate(response, req.signal)) {
     if (req.signal.aborted) return response;
     const next = rankPolicyFallbackCandidates(initialTrace, tried)[0];
-    if (!next) return response;
+    if (!next) {
+      return response.status === 413
+        ? formatErrorResponse(413, "request_too_large", "No eligible policy candidate can accept this request", { code: "policy_input_too_large" })
+        : formatErrorResponse(response.status, "server_error", "All eligible policy candidates are temporarily unavailable", { code: "policy_unavailable", retryAfter: response.headers.get("retry-after") ?? undefined });
+    }
     tried.add(candidateKey(next));
 
     finishFailedPolicyAttempt(logCtx, response.status);
@@ -168,8 +174,8 @@ export async function handleResponsesWithPolicyFallback(
         response = await runCore(retryRequest, config, logCtx, coreOptions);
       } catch (error) {
         const overload = requestPacingOverloadResponse(error);
-        if (overload) return overload;
-        throw error;
+        if (!overload) throw error;
+        response = overload;
       }
     } finally {
       logCtx.requestedModel = initialRequestedModel;
