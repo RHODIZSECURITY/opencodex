@@ -94,9 +94,14 @@ Utilisez l'assistant pour les versions :
 
 ```bash
 bun run release <version>           # commits/pushes the bump; publish workflow is dry-run by default
+bun run release --bump minor        # calcule la prochaine version patch, minor ou major depuis les tags et canaux npm
 bun run release <version> --publish # publish after the CI-gated dry run is understood
 bun run release:watch               # watch the newest Release workflow run
 ```
+
+`--bump patch|minor|major` remplace une version explicite. Dès qu’un tag de préversion ouvre un
+core supérieur, `--bump patch` refuse de prolonger l’ancienne ligne stable ; publiez plutôt le
+correctif dans le core de préversion ouvert.
 
 ## Branches
 

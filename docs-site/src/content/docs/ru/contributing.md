@@ -76,9 +76,14 @@ GitHub Actions намеренно остаются компактными:
 
 ```bash
 bun run release <version>           # коммитит/пушит bump версии; publish workflow по умолчанию dry-run
+bun run release --bump minor        # вычисляет следующую patch, minor или major версию по тегам и каналам npm
 bun run release <version> --publish # publish после осознанного CI-gated dry-run
 bun run release:watch               # наблюдение за последним запуском Release workflow
 ```
+
+`--bump patch|minor|major` можно использовать вместо явной версии. После появления preview-тега
+для более высокого core команда `--bump patch` откажется продолжать старую stable patch-линию;
+включите исправление в уже открытую preview-версию.
 
 ## Ветки
 

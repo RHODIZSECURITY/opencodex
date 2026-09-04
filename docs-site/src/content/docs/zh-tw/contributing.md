@@ -72,9 +72,13 @@ GitHub Actions 有意只保留必要步驟：
 
 ```bash
 bun run release <version>           # commit/push 版本 bump；publish workflow 預設 dry-run
+bun run release --bump minor        # 依 tag 與 npm channel 推導下一個 patch、minor 或 major 版本
 bun run release <version> --publish # 確認 CI-gated dry-run 後真正 publish
 bun run release:watch               # 觀察最新的 Release workflow run
 ```
+
+可用 `--bump patch|minor|major` 取代明確版本。較高 core 的 preview tag 建立後，`--bump patch`
+會拒絕延續舊的 stable patch 版本線；請把修正納入已開啟的 preview core 中釋出。
 
 ## 分支
 

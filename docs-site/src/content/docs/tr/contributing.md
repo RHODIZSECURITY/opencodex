@@ -108,9 +108,14 @@ Sürümler için yardımcıyı kullanın:
 
 ```bash
 bun run release <version>           # sürüm artışını commit/push eder; yayınlama iş akışı varsayılan olarak kuru çalıştırmadır (dry-run)
+bun run release --bump minor        # tag'ler ve npm kanallarından sonraki patch, minor veya major sürümü türetir
 bun run release <version> --publish # CI onaylı kuru çalıştırma anlaşıldıktan sonra yayınlayın
 bun run release:watch               # en yeni Sürüm iş akışı çalıştırmasını izleyin
 ```
+
+Açık bir sürüm yerine `--bump patch|minor|major` kullanılabilir. Daha yüksek bir core için preview
+tag'i açıldıktan sonra `--bump patch`, eski stable patch hattını sürdürmeyi reddeder; düzeltmeyi açık
+preview core içinde yayınlayın.
 
 ## Dallar
 

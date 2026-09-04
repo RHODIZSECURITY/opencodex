@@ -76,9 +76,14 @@ GitHub Actions は必要な作業のみを行います。
 
 ```bash
 bun run release <version>           # バージョン bump を commit/push、publish ワークフローはデフォルト dry-run
+bun run release --bump minor        # tag と npm channel から次の patch、minor、major バージョンを導出
 bun run release <version> --publish # CI-gated dry-run を確認した後、実際の publish
 bun run release:watch               # 直近の Release ワークフロー run を監視
 ```
+
+明示的なバージョンの代わりに `--bump patch|minor|major` を指定できます。上位 core の preview tag が
+作られた後は、`--bump patch` は古い stable patch ラインの継続を拒否します。その修正は開いている
+preview core に含めてください。
 
 ## ブランチ
 

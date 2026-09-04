@@ -3,6 +3,8 @@ import {
   compareTagsLenient,
   compareVersions,
   nextDevelopmentVersion,
+  nextPreviewRelease,
+  nextStableRelease,
   parseVersion,
 } from "../scripts/version-line";
 
@@ -64,5 +66,142 @@ describe("version line algebra", () => {
     expect(() => nextDevelopmentVersion("not-a-version")).toThrow(/not parseable/);
     expect(() => nextDevelopmentVersion("2.36")).toThrow(/not parseable/);
     expect(() => nextDevelopmentVersion("garbage")).toThrow(/not parseable/);
+  });
+
+  test("a future same-core preview does not raise the stable bump base", () => {
+    expect(nextStableRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTags: ["v2.43.0-preview.1"],
+    })).toBe("2.43.0");
+  });
+
+  test("refuses a stable patch below an open higher-core preview", () => {
+    expect(() => nextStableRelease({
+      kind: "patch",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTags: ["v2.43.0-preview.1"],
+    })).toThrow(/cannot bump stable patch.*v2\.43\.0-preview\.1/);
+  });
+
+  test("allows a stable patch when no higher-core preview is open", () => {
+    expect(nextStableRelease({
+      kind: "patch",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTags: ["v2.42.0-preview.9"],
+    })).toBe("2.42.1");
+  });
+
+  test("starts the next preview core above the latest stable", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: null,
+      previewTags: [],
+      stamp: "20260904",
+    })).toBe("2.43.0-preview.20260904");
+  });
+
+  test("adds an ordinal when the same-core preview stamp already exists", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: null,
+      previewTags: ["v2.43.0-preview.20260904"],
+      stamp: "20260904",
+    })).toBe("2.43.0-preview.20260904.2");
+  });
+
+  test("honours the preview bump kind when resolving its core", () => {
+    expect(nextPreviewRelease({
+      kind: "major",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: null,
+      previewTags: [],
+      stamp: "20260904",
+    })).toBe("3.0.0-preview.20260904");
+  });
+
+  test("continues the ordinal from the incumbent", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: null,
+      previewTags: ["v2.43.0-preview.20260904.3"],
+      stamp: "20260904",
+    })).toBe("2.43.0-preview.20260904.4");
+  });
+
+  test("uses an equal-stamp npm preview tip as the incumbent", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: "2.43.0-preview.20260910",
+      previewTags: [],
+      stamp: "20260910",
+    })).toBe("2.43.0-preview.20260910.2");
+  });
+
+  test("uses an equal-stamp preview tag as the incumbent when the npm tip is behind", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: "2.40.0-preview.20260902",
+      previewTags: ["v2.43.0-preview.20260910"],
+      stamp: "20260910",
+    })).toBe("2.43.0-preview.20260910.2");
+  });
+
+  test("refuses a preview stamp older than the incumbent stamp", () => {
+    expect(() => nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: "2.43.0-preview.20260910",
+      previewTags: [],
+      stamp: "20260904",
+    })).toThrow(/20260904.*20260910/);
+  });
+
+  test("uses stable tags rather than the preview channel to resolve the preview core", () => {
+    expect(nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.40.0",
+      stableTags: ["v2.42.0"],
+      previewTip: "2.40.0-preview.20260902",
+      previewTags: [],
+      stamp: "20260904",
+    })).toBe("2.43.0-preview.20260904");
+  });
+
+  test("promotes a same-core preview to the intended stable version", () => {
+    expect(nextStableRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTags: ["v2.43.0-preview.20260904"],
+    })).toBe("2.43.0");
+  });
+
+  test("a preview successor strictly outranks its incumbent", () => {
+    const incumbent = "v2.43.0-preview.20260904.3";
+    const result = nextPreviewRelease({
+      kind: "minor",
+      stableTip: "2.42.0",
+      stableTags: [],
+      previewTip: null,
+      previewTags: [incumbent],
+      stamp: "20260904",
+    });
+    expect(compareVersions(result, incumbent)).toBeGreaterThan(0);
   });
 });
