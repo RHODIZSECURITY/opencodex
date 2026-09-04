@@ -2245,8 +2245,137 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(rawDeltaBody.input).toHaveLength(1);
   });
 
+  test("api-key mode preserves delegated tool output text when call_id is missing", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key" as const,
+      apiKey: "xai-test",
+    });
+
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      previousResponseId: undefined,
+      _rawBody: {
+        model: "grok-4.6",
+        input: [
+          {
+            type: "function_call_output",
+            id: "fco_delegation",
+            output: "<codex_delegation>Inspect the adapter.</codex_delegation>",
+          },
+        ],
+      },
+    }, meta).body) as { input: Record<string, unknown>[] };
+
+    expect(body.input).toEqual([{
+      type: "message",
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: "[tool output for unknown call]\n<codex_delegation>Inspect the adapter.</codex_delegation>",
+      }],
+    }]);
+  });
+
+  test("api-key mode keeps stateful tool outputs with call_id intact", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key" as const,
+      apiKey: "xai-test",
+    });
+    const statefulOutput = {
+      type: "function_call_output",
+      call_id: "call_from_previous_response",
+      output: "tool result",
+    };
+
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: {
+        model: "grok-4.6",
+        previous_response_id: "resp_stateful",
+        input: [statefulOutput],
+      },
+    }, meta).body) as { previous_response_id?: string; input: Record<string, unknown>[] };
+
+    expect(body.previous_response_id).toBe("resp_stateful");
+    expect(body.input).toEqual([statefulOutput]);
+  });
+
+  test("api-key mode preserves images when repairing output without call_id", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key" as const,
+      apiKey: "xai-test",
+    });
+    const image = {
+      type: "input_image",
+      image_url: "data:image/png;base64,AAAA",
+      detail: "high",
+    };
+
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: {
+        model: "grok-4.6",
+        input: [{
+          type: "function_call_output",
+          output: [
+            { type: "input_text", text: "screenshot" },
+            image,
+            { type: "encrypted_content", encrypted_content: "opaque-tool-state" },
+          ],
+        }],
+      },
+    }, meta).body) as { input: Array<{ content: Record<string, unknown>[] }> };
+
+    expect(body.input[0]?.content).toEqual([
+      { type: "input_text", text: "[tool output for unknown call]" },
+      { type: "input_text", text: "screenshot" },
+      image,
+      { type: "input_text", text: "[encrypted content omitted]" },
+    ]);
+  });
+
+  test("api-key mode leaves invalid output without call_id fail-closed", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key" as const,
+      apiKey: "xai-test",
+    });
+    const invalidOutputs = [
+      { type: "custom_tool_call_output" },
+      { type: "function_call_output", output: [{ type: "bogus", value: "not a tool-output part" }] },
+      {
+        type: "function_call_output",
+        output: [{ type: "input_image", image_url: "data:image/png;base64,AAAA", detail: ["high"] }],
+      },
+      {
+        type: "function_call_output",
+        output: [{ type: "input_image", image_url: 42, file_id: "file_1" }],
+      },
+      { type: "function_call_output", output: [{ type: "input_image", image_url: "" }] },
+      {
+        type: "function_call_output",
+        output: [{ type: { toString: null, valueOf: null }, text: "must not coerce" }],
+      },
+    ];
+
+    const body = JSON.parse(adapter.buildRequest({
+      ...parsedBase,
+      _rawBody: { model: "grok-4.6", input: invalidOutputs },
+    }, meta).body) as { input: Record<string, unknown>[] };
+
+    expect(body.input).toEqual(invalidOutputs);
+  });
+
   test("forward unexpanded miss converts orphan tool outputs and drops reasoning", () => {
     const adapter = createResponsesPassthroughAdapter(provider);
+    const image = { type: "input_image", image_url: "data:image/png;base64,AAAA" };
     const body = JSON.parse(adapter.buildRequest({
       ...parsedBase,
       _rawBody: {
@@ -2255,7 +2384,11 @@ describe("OpenAI Responses passthrough sanitization", () => {
         input: [
           { type: "reasoning", id: "rs_1", summary: [] },
           { type: "function_call_output", call_id: "call_orphan", output: "tool said hi" },
-          { type: "custom_tool_call_output", call_id: "call_custom", output: [{ type: "output_text", text: "custom out" }] },
+          {
+            type: "custom_tool_call_output",
+            call_id: "call_custom",
+            output: [{ type: "output_text", text: "custom out" }, image],
+          },
           { role: "user", content: "next question" },
         ],
       },
@@ -2272,7 +2405,11 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(body.input[1]).toMatchObject({
       type: "message",
       role: "user",
-      content: [{ type: "input_text", text: "[tool output for call_custom]\ncustom out" }],
+      content: [
+        { type: "input_text", text: "[tool output for call_custom]" },
+        { type: "input_text", text: "custom out" },
+        image,
+      ],
     });
     expect(body.input[2]).toMatchObject({ role: "user", content: "next question" });
   });
@@ -3835,5 +3972,98 @@ describe("reasoning input content channel", () => {
     });
     expect(out.content).toEqual([]);
     expect(out.encrypted_content).toBe("upstream-issued-blob");
+  });
+});
+
+
+describe("raw usage passthrough on the forward path (#41980 parity, #37138 adjacency)", () => {
+  const usageExtras = {
+    input_tokens: 7,
+    output_tokens: 4,
+    total_tokens: 11,
+    subscription: { window: { used_percent: 12 } },
+    future_counter_v2: "wire-value",
+  };
+  const config = {
+    port: 0,
+    defaultProvider: "fixture",
+    providers: {
+      fixture: {
+        adapter: "openai-responses",
+        baseUrl: "https://fixture.test/v1",
+        authMode: "key" as const,
+        apiKey: "fixture-key",
+      },
+    },
+  } as OcxConfig;
+  const requestBody = (stream: boolean) => JSON.stringify({
+    model: "fixture/model",
+    stream,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+  });
+  const call = (stream: boolean) => handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: requestBody(stream),
+  }), config, { model: "", provider: "" });
+
+  test("streamed response.completed with usage extras reaches the client byte-identical", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response([
+      'event: response.completed',
+      `data: ${JSON.stringify({ type: "response.completed", response: {
+        id: "resp_x", status: "completed", output: [
+          { type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] },
+        ], usage: usageExtras,
+      } })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const response = await call(true);
+      const text = await response.text();
+      const completedLine = text.split("\n").find(line => line.startsWith("data:") && line.includes("response.completed"));
+      expect(completedLine).toBeDefined();
+      const payload = JSON.parse(completedLine!.slice(5).trim()) as { response: { usage: unknown } };
+      expect(payload.response.usage).toEqual(usageExtras);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("non-streaming forward JSON keeps usage extras", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: "resp_x",
+      status: "completed",
+      output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] }],
+      usage: usageExtras,
+    }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const response = await call(false);
+      const json = await response.json() as { usage: unknown };
+      expect(json.usage).toEqual(usageExtras);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("response.completed without usage is accepted (Codex tolerates usage: null, #37138)", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response([
+      'data: {"type":"response.completed","response":{"id":"resp_x","status":"completed","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"hi"}]}]}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const response = await call(true);
+      const text = await response.text();
+      expect(text).toContain("response.completed");
+      expect(text).not.toContain('"usage"');
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });

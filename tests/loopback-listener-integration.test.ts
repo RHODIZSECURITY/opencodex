@@ -285,14 +285,18 @@ describe("unauthenticated loopback listener", () => {
         { method: "GET", path: "/readyz" },
         { method: "POST", path: "/v1/chat/completions", body: '{"model":"x","messages":[]}' },
         { method: "POST", path: "/v1/messages", body: '{"model":"x","messages":[]}' },
-        { method: "POST", path: "/v1/images/generations", body: '{"prompt":"x"}' },
         { method: "GET", path: "/v1/opencodex/artifacts/x" },
-        { method: "POST", path: "/v1/live", body: "{}" },
-        { method: "POST", path: "/v1/realtime/calls", body: "{}" },
+        // Voice call-create is admitted only as POST; the keyed sideband join only as an upgrade.
+        { method: "GET", path: "/v1/live/rtc_x" },
+        { method: "GET", path: "/v1/realtime/calls/rtc_x" },
+        { method: "PUT", path: "/v1/live", body: "{}" },
+        { method: "GET", path: "/v1/realtime/calls" },
         // Allowlisted paths still reject the methods they do not serve.
         { method: "DELETE", path: "/v1/responses" },
         { method: "POST", path: "/v1/models" },
         { method: "GET", path: "/v1/alpha/search" },
+        { method: "GET", path: "/v1/images/generations" },
+        { method: "GET", path: "/v1/images/edits" },
       ];
       for (const { method, path, body } of denied) {
         const res = await fetch(`${base}${path}`, {
@@ -345,6 +349,46 @@ describe("unauthenticated loopback listener", () => {
     }
   });
 
+  test("admits the exact standalone Images POST routes so they reach the relay (#3428)", async () => {
+    const loopbackPort = await freePort();
+    saveConfig(baseConfig(loopbackPort));
+    const server = startServer(0);
+    const headers = { "content-type": "application/json" };
+    try {
+      for (const path of ["/v1/images/generations", "/v1/images/edits"]) {
+        const viaLoopback = await fetch(`http://127.0.0.1:${loopbackPort}${path}`, {
+          method: "POST",
+          body: '{"prompt":"x"}',
+          headers,
+        });
+        const loopbackBody = await viaLoopback.json() as { error?: { message?: string } };
+        expect(viaLoopback.status).not.toBe(404);
+        // What proves the gate is open is that the answer comes from BEHIND it, exactly as in
+        // the /v1/alpha/search case above: the relay's own rejection for a request it accepted
+        // but cannot serve without a credential (401), a 400 for the deliberately thin body, or
+        // 503 while native-main maintenance holds. Which one arrives depends on how far the
+        // relay gets before it runs out of credential, so pinning a single status makes this
+        // test assert the environment rather than the allowlist.
+        expect([400, 401, 503]).toContain(viaLoopback.status);
+        expect(loopbackBody.error?.message).toBeDefined();
+        expect(loopbackBody.error?.message).not.toBe("opencodex API key required");
+
+        // The public listener remains credential-gated. Only the separately bound loopback
+        // listener gets the narrow route exception.
+        const viaPublic = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+          method: "POST",
+          body: '{"prompt":"x"}',
+          headers,
+        });
+        expect(viaPublic.status).toBe(401);
+        const publicBody = await viaPublic.json() as { error?: { message?: string } };
+        expect(publicBody.error?.message).toBe("opencodex API key required");
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("admits standalone realtime voice WebSocket upgrades, HTTP stays rejected", async () => {
     const loopbackPort = await freePort();
     saveConfig(baseConfig(loopbackPort));
@@ -369,6 +413,45 @@ describe("unauthenticated loopback listener", () => {
       // Plain HTTP on the same paths remains outside the allowlist.
       expect((await fetch(`${base}/v1/realtime?model=m`)).status).toBe(404);
       expect((await fetch(`${base}/v1/live?model=m`)).status).toBe(404);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("admits WebRTC voice call-create POSTs and keyed sideband upgrades (openai/codex #35830)", async () => {
+    const loopbackPort = await freePort();
+    saveConfig(baseConfig(loopbackPort));
+    const server = startServer(0);
+    const base = `http://127.0.0.1:${loopbackPort}`;
+    const upgradeHeaders = {
+      connection: "upgrade",
+      upgrade: "websocket",
+      "sec-websocket-version": "13",
+      "sec-websocket-key": Buffer.from("0123456789abcdef").toString("base64"),
+    };
+    try {
+      // Desktop v3 voice creates the WebRTC call through the provider base (POST /v1/live)
+      // and, with the injected experimental_realtime_ws_base_url, joins the sideband on the
+      // keyed path. Both must clear the allowlist; the relay's own auth answer proves it.
+      for (const path of ["/v1/live", "/v1/realtime/calls"]) {
+        const res = await fetch(`${base}${path}`, {
+          method: "POST", body: "{}", headers: { "content-type": "application/json" },
+        });
+        expect({ path, status: res.status }).not.toEqual({ path, status: 404 });
+      }
+      for (const path of ["/v1/live/rtc_x", "/v1/realtime/calls/rtc_x", "/v1/realtime?call_id=rtc_x"]) {
+        const res = await fetch(`${base}${path}`, { headers: upgradeHeaders });
+        expect({ path, status: res.status }).not.toEqual({ path, status: 404 });
+      }
+      // Plain HTTP on the keyed join paths stays rejected.
+      expect((await fetch(`${base}/v1/live/rtc_x`)).status).toBe(404);
+      expect((await fetch(`${base}/v1/realtime/calls/rtc_x`)).status).toBe(404);
+      // A malformed escape in the call id is a JSON 404, not a 500.
+      for (const path of ["/v1/live/%ZZ", "/v1/realtime/calls/%ZZ"]) {
+        const res = await fetch(`${base}${path}`, { headers: upgradeHeaders });
+        expect({ path, status: res.status }).toEqual({ path, status: 404 });
+        expect(res.headers.get("content-type")).toContain("application/json");
+      }
     } finally {
       await server.stop(true);
     }
