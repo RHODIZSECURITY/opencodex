@@ -86,6 +86,16 @@ route-specific results rather than repeating this table.
 For the concepts behind the model roster and encrypted worker-task behavior, see
 [Sub-agent Surface](/guides/sub-agent-surface/).
 
+### Client integration rollback journal
+
+| Method and path | Purpose | Notable errors |
+| --- | --- | --- |
+| `GET /api/client-integrations/journal?client=...` | List rollback operations, optionally for one client. Each row includes the server-computed `deletable` flag. | 400 invalid client |
+| `DELETE /api/client-integrations/journal?opId=...` | Retire one older rollback operation and remove its snapshot when possible. Success returns `snapshotRemoved`; `false` means cleanup was retained for maintenance retry. | 400 missing `opId`; 404 missing or already retired operation; 409 newest operation for that client |
+
+Deletion appends a tombstone instead of rewriting the journal. The newest operation for each client
+is protected server-side so the current undo point remains available.
+
 ### Combos
 
 | Method and path | Purpose | Notable errors |
