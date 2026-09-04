@@ -24,6 +24,7 @@
  * behaves exactly as before.
  */
 import { commandInvocation } from "../src/lib/win-exec";
+import { compareVersions as compareReleaseVersions } from "./version-line";
 
 const args = process.argv.slice(2);
 interface GhRun {
@@ -298,43 +299,7 @@ async function githubReleaseExists(tagName: string): Promise<boolean> {
   process.exit(1);
 }
 
-/** Order two semver strings per the semver.org rules (numeric identifiers numerically,
- * numeric < alphanumeric prerelease, prerelease < release). Returns negative/0/positive. */
-export function compareReleaseVersions(left: string, right: string): number {
-  // SemVer 2.0.0: build metadata (+...) is valid and ignored for precedence, but
-  // anything else unparseable must fail CLOSED. Number() on a garbage core used to
-  // yield NaN, and NaN comparisons made the forward guard pass any candidate.
-  const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-  const parse = (value: string) => {
-    const match = SEMVER.exec(value.trim());
-    if (!match) throw new Error(`unparseable release version: ${JSON.stringify(value)}`);
-    const nums = [Number(match[1]), Number(match[2]), Number(match[3])];
-    return { nums, pre: match[4] ? match[4].split(".") : null };
-  };
-  const a = parse(left);
-  const b = parse(right);
-  for (let i = 0; i < 3; i += 1) {
-    const delta = (a.nums[i] ?? 0) - (b.nums[i] ?? 0);
-    if (delta !== 0) return delta;
-  }
-  if (a.pre === null && b.pre === null) return 0;
-  if (a.pre === null) return 1;
-  if (b.pre === null) return -1;
-  const len = Math.max(a.pre.length, b.pre.length);
-  for (let i = 0; i < len; i += 1) {
-    const x = a.pre[i];
-    const y = b.pre[i];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    const xn = /^\d+$/.test(x) ? Number(x) : null;
-    const yn = /^\d+$/.test(y) ? Number(y) : null;
-    if (xn !== null && yn !== null && xn !== yn) return xn - yn;
-    if (xn !== null && yn === null) return -1;
-    if (xn === null && yn !== null) return 1;
-    if (xn === null && yn === null && x !== y) return x < y ? -1 : 1;
-  }
-  return 0;
-}
+export { compareVersions as compareReleaseVersions } from "./version-line";
 
 /** The proposed version must move its npm channel FORWARD: an unused-but-obsolete
  * target (e.g. cut from a dev branch whose version line trails main) would otherwise
