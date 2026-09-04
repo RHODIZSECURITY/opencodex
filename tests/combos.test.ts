@@ -672,6 +672,7 @@ describe("combo failure policy and advancement", () => {
     }});
     expect(comboFailureDecision(400, orca, { code: "free_rate_limited" })).toBe("hop");
     expect(comboFailureCooldownScope(400, orca, { code: "free_rate_limited" })).toBe("none");
+    expect(comboFailureCooldownScope(400, "This prompt is longer than the free tier allows for a single request.")).toBe("none");
     expect(comboFailureDecision(400, "ordinary invalid request", { code: "invalid_request_error" })).toBe("stop");
     expect(comboFailureCooldownScope(429, "Monthly usage limit reached. Resets in 14 days.", {
       code: "GoUsageLimitError",

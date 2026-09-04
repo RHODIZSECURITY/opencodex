@@ -757,6 +757,28 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toEqual(["orca", "backup", "orca", "backup"]);
   });
 
+  test("prose-only HTTP 400 free-tier prompt cap stays request-local across later requests", async () => {
+    const hits: string[] = [];
+    const capped = serve(() => {
+      hits.push("orca");
+      return Response.json({ error: {
+        type: "invalid_request_error",
+        message: "This prompt is longer than the free tier allows for a single request.",
+      } }, { status: 400 });
+    });
+    const backup = serve(() => { hits.push("backup"); return chatSuccess("ok", "m2"); });
+    const config = comboConfig({
+      orca: provider("openai-chat", baseUrl(capped), "key-orca"),
+      backup: provider("openai-chat", baseUrl(backup), "key-b"),
+    });
+    for (let turn = 0; turn < 2; turn += 1) {
+      const response = await post(config);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("ok");
+    }
+    expect(hits).toEqual(["orca", "backup", "orca", "backup"]);
+  });
+
   test("HTTP 200 stream body reset before output hops through the real adapter", async () => {
     const hits: string[] = [];
     customFetchResponse = async request => {

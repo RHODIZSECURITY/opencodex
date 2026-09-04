@@ -498,11 +498,9 @@ function isRequestLocalFreePromptCap(
   code?: string | null,
 ): boolean {
   if (status !== 400) return false;
-  const normalizedCode = normalizedFailureCode(code);
   const text = message.toLowerCase();
   if (text.includes("err_free_prompt_cap")) return true;
-  return normalizedCode === "free_rate_limited"
-    && text.includes("free tier")
+  return text.includes("free tier")
     && (text.includes("single request") || text.includes("prompt"));
 }
 
