@@ -152,6 +152,7 @@ export function sweepExpiredAnthropicRoutingHealth(now = Date.now()): number {
 export function clearAnthropicAccountPoolState(): void {
   upstreamHealth.clear();
   sessionAffinity.clear();
+  quorumCache = null;
 }
 
 export function anthropicSessionAffinitySizeForTests(): number {
@@ -237,6 +238,23 @@ export function getEligibleAnthropicAccounts(now = Date.now()): string[] {
 }
 
 /**
+ * How long a quorum answer may be reused before the store is consulted again.
+ *
+ * This predicate now runs on the INITIAL resolution of every Anthropic request, not just after a
+ * 429, so an uncached implementation puts a synchronous file read in front of ordinary traffic:
+ * `getAccountSet` goes through `loadAuthStore`, which has no cache of its own and chmods the
+ * config dir, chmods the secret, reads the whole file and normalizes it on every call.
+ *
+ * Two seconds matches the generic module's `PRESENCE_CACHE_TTL_MS` for the same reason: short
+ * enough that a login in another window is visible before the operator can switch back and send a
+ * prompt, long enough that a burst of requests shares one read. The cache holds a BOOLEAN derived
+ * from a count — never a credential, never an account id.
+ */
+const QUORUM_CACHE_TTL_MS = 2_000;
+
+let quorumCache: { value: boolean; readAt: number } | null = null;
+
+/**
  * Whether a 429 has somewhere to go: two or more accounts that could serve traffic if asked.
  *
  * Reactive failover is a safety net, not a routing policy. It runs only AFTER upstream refused,
@@ -255,15 +273,28 @@ export function getEligibleAnthropicAccounts(now = Date.now()): string[] {
  * holds: an expired background slot is not a quorum and cannot be adopted.
  */
 export function hasAnthropicFailoverQuorum(now = Date.now()): boolean {
-  const set = getAccountSet(PROVIDER);
-  if (!set) return false;
-  let usable = 0;
-  for (const account of set.accounts) {
-    if (account.needsReauth === true) continue;
-    if (!isPoolCredentialUsable(account.id, now)) continue;
-    if (++usable >= 2) return true;
+  // Monotonic guard: a caller-supplied `now` that predates the cached read (tests pass explicit
+  // clocks) must not be served from a future entry.
+  if (quorumCache && now >= quorumCache.readAt && now - quorumCache.readAt < QUORUM_CACHE_TTL_MS) {
+    return quorumCache.value;
   }
-  return false;
+  const set = getAccountSet(PROVIDER);
+  let value = false;
+  if (set) {
+    let usable = 0;
+    for (const account of set.accounts) {
+      if (account.needsReauth === true) continue;
+      if (!isPoolCredentialUsable(account.id, now)) continue;
+      if (++usable >= 2) { value = true; break; }
+    }
+  }
+  quorumCache = { value, readAt: now };
+  return value;
+}
+
+/** Test seam and manual-recovery hook: force the next quorum question to re-read the store. */
+export function forgetAnthropicFailoverQuorum(): void {
+  quorumCache = null;
 }
 
 /** Earliest remaining cooldown among cooled Anthropic accounts, for client Retry-After. */
@@ -589,6 +620,10 @@ export function clearAnthropicSessionAffinityForAccount(accountId: string): void
   for (const [key, entry] of sessionAffinity) {
     if (entry.accountId === accountId) sessionAffinity.delete(key);
   }
+  // The roster just lost or changed a member. This is the account-removal path, so the next
+  // activation question must re-read rather than answer from a count taken while the account
+  // was still present -- otherwise a delete leaves a stale quorum for the length of the TTL.
+  quorumCache = null;
 }
 
 /**
@@ -620,6 +655,9 @@ export function rotateAnthropicAccountOn429(
   sweepExpiredOnWrite(now);
   clearAnthropicSessionAffinityForAccount(failedAccountId);
   notePoolRotationFailure(POOL_KEY_ANTHROPIC, failedAccountId);
+  // A rotation means the roster in use just changed; do not answer the next activation question
+  // from a count read taken before the failure.
+  quorumCache = null;
 
   const next = pickAlternateAnthropicAccount(config, failedAccountId, now);
   if (!next) {
@@ -650,6 +688,9 @@ export function promoteAnthropicActiveAccount(accountId: string): void {
 export function resetAnthropicRoutingForManualSelection(accountId: string): void {
   sessionAffinity.clear();
   seedPoolRotationAccount(POOL_KEY_ANTHROPIC, accountId);
+  // A manual account selection is an operator statement about the roster; do not answer the
+  // next activation question from a count read before it.
+  quorumCache = null;
 }
 
 /**
