@@ -363,7 +363,7 @@ Native passthrough SSE has TWO shapes, selected per request in
 
 The two-shape contract is mirror-commented in `src/server/index.ts`; the real
 `core.ts` gate is source-invariant-tested by `tests/passthrough-abort.test.ts`,
-and the platform matrix lives in `tests/bun-stream-caps.test.ts`. Keep all three
+and the platform matrix lives in `tests/lib/bun-stream-caps.test.ts`. Keep all three
 in lockstep with any passthrough-policy change.
 
 Canonical ChatGPT forward streaming has one transport-specific exception. A

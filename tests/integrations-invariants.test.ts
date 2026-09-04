@@ -701,7 +701,7 @@ describe("the store's own root stays tidy", () => {
   test("a full lifecycle leaves exactly records, journal and snapshots", () => {
     /*
      * Scoped honestly: listing the root cannot prove nothing was written
-     * OUTSIDE it — `tests/integrations-journal.test.ts` owns that claim by
+     * OUTSIDE it — `tests/clients/integrations-journal.test.ts` owns that claim by
      * asserting the real config dir's manifest is untouched. What this
      * catches is a new bookkeeping file appearing without anyone deciding it
      * should exist.

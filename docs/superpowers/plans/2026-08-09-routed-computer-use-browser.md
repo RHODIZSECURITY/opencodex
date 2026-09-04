@@ -249,7 +249,7 @@ Expected: progressive deltas, strict terminal repair, item IDs, and cancellation
 Run:
 
 ```bash
-bun test tests/vision-sidecar-e2e.test.ts tests/vision-anthropic.test.ts tests/vision-cache.test.ts tests/vision-fail-closed.test.ts tests/catalog-vision-sidecar-modalities.test.ts tests/openai-responses-passthrough.test.ts
+bun test tests/vision/vision-sidecar-e2e.test.ts tests/vision/vision-anthropic.test.ts tests/vision/vision-cache.test.ts tests/vision/vision-fail-closed.test.ts tests/catalog-vision-sidecar-modalities.test.ts tests/openai-responses-passthrough.test.ts
 ```
 
 Expected: captions replace raw image parts in passthrough bodies, empty references do not consume captions, and partial/failure paths omit pixels safely.

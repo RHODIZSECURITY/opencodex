@@ -47,7 +47,7 @@
 
 **Files:**
 - Modify: `src/lib/privacy.ts`
-- Test: `tests/privacy-mask-account.test.ts`
+- Test: `tests/lib/privacy-mask-account.test.ts`
 - Modify (if CLI already prints raw IDs in oauth summary paths later): none in this task beyond helper
 
 **Interfaces:**
@@ -78,7 +78,7 @@ describe("maskAccountId", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `bun test tests/privacy-mask-account.test.ts`
+Run: `bun test tests/lib/privacy-mask-account.test.ts`
 
 Expected: FAIL — `maskAccountId` is not exported
 
@@ -98,14 +98,14 @@ export function maskAccountId(value: string | null | undefined): string | null {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `bun test tests/privacy-mask-account.test.ts`
+Run: `bun test tests/lib/privacy-mask-account.test.ts`
 
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/privacy.ts tests/privacy-mask-account.test.ts
+git add src/lib/privacy.ts tests/lib/privacy-mask-account.test.ts
 git commit -m "$(cat <<'EOF'
 feat(privacy): add maskAccountId for OAuth diagnostics
 
@@ -713,7 +713,7 @@ EOF
 - [ ] **Step 1: Run verification commands**
 
 ```bash
-bun test tests/privacy-mask-account.test.ts tests/oauth-log.test.ts tests/oauth-refresh-generic-lock.test.ts tests/oauth-health.test.ts tests/cli-status-oauth-health.test.ts tests/service/doctor-oauth.test.ts tests/oauth-accounts-api.test.ts tests/codex-metadata-integrity.test.ts
+bun test tests/lib/privacy-mask-account.test.ts tests/oauth-log.test.ts tests/oauth-refresh-generic-lock.test.ts tests/oauth-health.test.ts tests/cli-status-oauth-health.test.ts tests/service/doctor-oauth.test.ts tests/oauth-accounts-api.test.ts tests/codex-metadata-integrity.test.ts
 bun test tests/oauth-refresh.test.ts tests/xai-refresh-lock.test.ts tests/codex-routing.test.ts tests/session-affinity.test.ts tests/codex-auth-context.test.ts
 bun run test
 bun run typecheck

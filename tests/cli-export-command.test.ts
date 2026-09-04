@@ -1,7 +1,7 @@
 /**
  * `ocx export` CLI surface (devlog 260731_client_config_export/020 accept criteria).
  *
- * The serializers themselves are covered by tests/client-config-export.test.ts; this file
+ * The serializers themselves are covered by tests/config/client-config-export.test.ts; this file
  * covers only what the CLI boundary owns: stdout purity under --json, the human framing,
  * --out overwrite refusal, argument validation, the proxy-down path, and the standing
  * no-secret rule.

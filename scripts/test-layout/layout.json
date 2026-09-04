@@ -1227,8 +1227,14 @@
     "zz-pr-coderabbit-readiness-revalidation.test.ts": "ci-workflows"
   },
   "migrated": [
+    "clients",
+    "config",
+    "lib",
     "service",
     "update",
+    "usage",
+    "vision",
+    "web-search",
     "windows"
   ]
 }

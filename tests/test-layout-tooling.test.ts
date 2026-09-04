@@ -36,6 +36,7 @@ describe("rewriteSpecifier", () => {
     (s: string) => `const r = require("${s}");`,
     (s: string) => `const u = import.meta.resolve("${s}");`,
     (s: string) => `const f = new URL("${s}", import.meta.url);`,
+    (s: string) => `mock.module("${s}", () => ({}));`,
   ];
 
   test("every declared prefix is rewritten for depth 1 and 2 in every syntax form", () => {
@@ -173,6 +174,7 @@ describe("scanEscapes", () => {
     expect(scanEscapes('const r = resolve(\n  import.meta.dir,\n  "..",\n);')).toHaveLength(1);
     expect(scanEscapes('const t = `${import.meta.dir}/../src/x.ts`;')).toHaveLength(1);
     expect(scanEscapes('const u = pathToFileURL(join(import.meta.dir, "../src/lib/x.ts")).href;')).toHaveLength(1);
+    expect(scanEscapes('const s = await Bun.file(new URL(file, import.meta.url)).text();')).toHaveLength(1);
     expect(scanEscapes("const self = import.meta.path;")).toEqual([]);
   });
 });

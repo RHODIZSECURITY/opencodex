@@ -34,8 +34,8 @@
 - `src/server/management/model-rows.ts`: exposes effective display names and their source.
 - `src/server/management/model-routes.ts`: sets and resets one provider model display name.
 - `tests/provider-config-validation.test.ts`: covers strict validator behavior.
-- `tests/config-load-degrade.test.ts`: covers safe hand edited config loading.
-- `tests/config-user-edits.test.ts`: covers persistence and concurrent unrelated map edits.
+- `tests/config/config-load-degrade.test.ts`: covers safe hand edited config loading.
+- `tests/config/config-user-edits.test.ts`: covers persistence and concurrent unrelated map edits.
 - `tests/codex-catalog.test.ts`: covers label precedence and routing invariants.
 - `tests/model-display-names-management-api.test.ts`: covers read and mutation API behavior.
 - `docs-site/src/content/docs/reference/configuration/providers.md`: documents the field and exact key rules.
@@ -51,7 +51,7 @@
 - Modify: `src/config/provider-validation.ts`
 - Modify: `src/config.ts`
 - Test: `tests/provider-config-validation.test.ts`
-- Test: `tests/config-load-degrade.test.ts`
+- Test: `tests/config/config-load-degrade.test.ts`
 
 **Interfaces:**
 - Produces: `OcxProviderConfig.modelDisplayNames?: Record<string, string>`
@@ -126,7 +126,7 @@ Write a real config file fixture containing one valid and one invalid label. Ass
 Run:
 
 ```text
-bun test tests/config-load-degrade.test.ts tests/provider-config-validation.test.ts
+bun test tests/config/config-load-degrade.test.ts tests/provider-config-validation.test.ts
 ```
 
 Expected: the candidate accepts unvalidated values or the load path does not sanitize them.
@@ -152,7 +152,7 @@ Add `sanitizeModelDisplayNamesForLoad(parsed)` before `configSchema.safeParse(pa
 Run:
 
 ```text
-bun test tests/config-load-degrade.test.ts tests/provider-config-validation.test.ts
+bun test tests/config/config-load-degrade.test.ts tests/provider-config-validation.test.ts
 ```
 
 Expected: all tests pass with no unexpected warnings.
@@ -160,7 +160,7 @@ Expected: all tests pass with no unexpected warnings.
 - [ ] **Step 9: Commit the config contract**
 
 ```text
-git add src/types/provider.ts src/config/provider-validation.ts src/config.ts tests/provider-config-validation.test.ts tests/config-load-degrade.test.ts
+git add src/types/provider.ts src/config/provider-validation.ts src/config.ts tests/provider-config-validation.test.ts tests/config/config-load-degrade.test.ts
 git commit -m "feat(config): add discovered model display names"
 ```
 
@@ -352,14 +352,14 @@ Expected: all API tests pass.
 
 - [ ] **Step 9: Add concurrent config merge regression**
 
-In `tests/config-user-edits.test.ts`, start with two labels. Change one label in the live config, change the other on disk, call `saveConfigPreservingClaudeCode`, and assert both changes survive. Add a second test where the live writer removes one label while the disk writer adds a different label.
+In `tests/config/config-user-edits.test.ts`, start with two labels. Change one label in the live config, change the other on disk, call `saveConfigPreservingClaudeCode`, and assert both changes survive. Add a second test where the live writer removes one label while the disk writer adds a different label.
 
 - [ ] **Step 10: Run persistence tests and confirm RED or existing support**
 
 Run:
 
 ```text
-bun test tests/config-user-edits.test.ts
+bun test tests/config/config-user-edits.test.ts
 ```
 
 If the first run passes, record that the existing recursive provider merge already satisfies the contract and do not add production merge code. If it fails, make the smallest generic merge correction in `src/config.ts`, then rerun until green.
@@ -367,7 +367,7 @@ If the first run passes, record that the existing recursive provider merge alrea
 - [ ] **Step 11: Commit the management API**
 
 ```text
-git add src/server/management/model-rows.ts src/server/management/model-routes.ts tests/model-display-names-management-api.test.ts tests/config-user-edits.test.ts src/config.ts
+git add src/server/management/model-rows.ts src/server/management/model-routes.ts tests/model-display-names-management-api.test.ts tests/config/config-user-edits.test.ts src/config.ts
 git commit -m "feat(api): manage discovered model display names"
 ```
 
@@ -441,7 +441,7 @@ Check exact ID matching, no route identity changes, no secret fields in DTOs, no
 - [ ] **Step 2: Run focused tests**
 
 ```text
-bun test tests/provider-config-validation.test.ts tests/config-load-degrade.test.ts tests/config-user-edits.test.ts tests/codex-catalog.test.ts tests/model-display-names-management-api.test.ts
+bun test tests/provider-config-validation.test.ts tests/config/config-load-degrade.test.ts tests/config/config-user-edits.test.ts tests/codex-catalog.test.ts tests/model-display-names-management-api.test.ts
 ```
 
 Expected: all pass.

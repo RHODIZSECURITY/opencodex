@@ -280,7 +280,10 @@ export function scanEscapes(source: string): EscapeHit[] {
     const strings = stringTokens.filter(t => t.start >= back && t.end <= end).map(t => source.slice(t.start, t.end));
     const urlSpec = /new\s+URL\s*\(\s*(["'][^"']*["'])\s*,\s*import\.meta\.url/.exec(stmt)?.[1];
     const escapes = strings.some(str => str !== urlSpec && ESCAPE_ARG.test(str));
-    if (escapes || URL_ROOT.test(stmt)) report(at, end);
+    // new URL(<variable>, import.meta.url): the specifier lives somewhere the rewriter cannot
+    // see, so a human has to look.
+    const variableUrl = /new\s+URL\s*\(\s*[A-Za-z_$][\w$.]*\s*,\s*import\.meta\.url/.test(stmt);
+    if (escapes || variableUrl || URL_ROOT.test(stmt)) report(at, end);
   }
   for (const t of tokens) {
     if (t.kind !== "template") continue;
