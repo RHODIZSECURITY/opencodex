@@ -59,4 +59,27 @@ describe("429 failover docs", () => {
       expect(row, `${locale} lost the 429 carve-out`).toContain("429");
     }
   });
+
+  test("the Claude Code guide does not attribute 429 failover to the pool", async () => {
+    // The guide is where an operator decides whether to enable the experimental pool at all, so
+    // a stale sentence here is the most expensive one in the docs: it sells the pool on recovery
+    // that is now unconditional. Checked in the source locale and the three that translate it.
+    //
+    // Asserting only that the intro mentions 429 and carries emphasis is too weak: the ORIGINAL
+    // stale sentence would satisfy both. So each locale bans the phrase pattern that actually
+    // attributed failover to the pool, which is the thing that has to stay gone.
+    const bannedByLocale: Record<string, RegExp> = {
+      "": /adds sticky[\s\S]{0,80}429/i,
+      "zh-tw/": /加入[\s\S]{0,40}429\s*冷卻(故障轉移|容錯移轉)/,
+      "tr/": /bağlılığı ve 429[\s\S]{0,60}yük devretmesi ekler/i,
+      "fr/": /ajoute l['’]affinité de[\s\S]{0,80}basculement[\s\S]{0,40}429/i,
+    };
+    for (const [path, banned] of Object.entries(bannedByLocale)) {
+      const label = path || "en";
+      const source = await Bun.file(`docs-site/src/content/docs/${path}guides/claude-code.md`).text();
+      const intro = source.slice(0, source.indexOf("anthropicAccountPool.strategy"));
+      expect(intro, `${label} guide`).toContain("429");
+      expect(banned.test(intro), `${label} guide re-attributes 429 failover to the pool`).toBe(false);
+    }
+  });
 });
