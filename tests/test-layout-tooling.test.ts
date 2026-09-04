@@ -286,8 +286,8 @@ describe("membership oracle", () => {
     // incorrectly on the day it is added.
     const pinnedOverrides = new Set([
       "openai-responses-passthrough.test.ts",
-      // Placed under routing/ by its author in #3523 (it exercises the oauth routing quorum,
-      // not the Anthropic adapter); the anthropic- seed would say otherwise.
+      // Placed under routing/ by its author (#3523, restored by #3530): it exercises the oauth
+      // routing quorum, not the Anthropic adapter, so the anthropic- seed is wrong for it.
       "anthropic-quorum-cache.test.ts",
     ]);
     const mismatches: string[] = [];
