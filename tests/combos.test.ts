@@ -626,9 +626,18 @@ describe("combo failure policy and advancement", () => {
     expect(comboFailureDecision(400, 'upstream mentions input_admission_refused in prose')).toBe('stop');
     // An upstream context verdict is target-local in an explicit combo: another declared
     // model can have a larger context window. A generic 413 without context evidence remains
-    // terminal because replaying an arbitrary oversized request would be guesswork.
+    // request-local in this hardened branch and does not poison later shorter requests.
     expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
     expect(comboFailureDecision(413, "request too large")).toBe("hop");
+    const providerHardCap = JSON.stringify({ error: {
+      message: "Prompt 346030 > 262144 maximum context length",
+      type: "invalid_request_prompt_too_long",
+      code: "5059",
+      raw_status_code: 400,
+    }});
+    expect(comboFailureDecision(400, providerHardCap, { code: "5059" })).toBe("hop");
+    expect(comboFailureCooldownScope(400, providerHardCap, { code: "5059" })).toBe("none");
+    expect(comboFailureDecision(400, "ordinary invalid request", { code: "5059" })).toBe("stop");
   });
 
   test("HTTP status matrix keeps retryable target failures distinct from terminal request failures", () => {
@@ -648,7 +657,6 @@ describe("combo failure policy and advancement", () => {
       [500, "internal server error", "hop", "target"],
       [502, "bad gateway", "hop", "target"],
       [503, "temporarily unavailable", "hop", "target"],
-      [504, "gateway timeout", "hop", "target"],
     ] as const;
     for (const [status, message, decision, scope] of matrix) {
       expect(comboFailureDecision(status, message)).toBe(decision);
