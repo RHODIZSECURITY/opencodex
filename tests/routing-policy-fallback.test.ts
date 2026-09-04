@@ -111,9 +111,9 @@ describe("policy candidate fallback", () => {
     expect(response.status).toBe(400);
     expect(seenModels).toEqual(["policy/daily"]);
   });
-  test("an upstream context_length_exceeded hops to a larger declared candidate (#1524)", async () => {
-    // In an explicit policy candidate set, context capacity is target-local: another declared
-    // model may have a larger window, so a pre-output context verdict remains replay-safe.
+  test("an ambiguous upstream context_length_exceeded remains terminal (#1524)", async () => {
+    // A generic upstream context verdict does not prove the failure is target-local. Preserve
+    // the original response unless the proxy has explicit admission/hard-cap evidence.
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
     const seenModels: string[] = [];
@@ -130,11 +130,8 @@ describe("policy candidate fallback", () => {
 
     const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, { runCore });
 
-    expect(response.status).toBe(503);
-    const text = await response.text();
-    expect(text).toContain("policy_unavailable");
-    expect(text).not.toContain("context length exceeded");
-    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b", "provider-c/model-c"]);
+    expect(response.status).toBe(400);
+    expect(seenModels).toEqual(["policy/daily"]);
   });
   test("retries the next policy candidate and keeps distinct physical attempts", async () => {
     const trace = policyTrace();
@@ -268,7 +265,7 @@ describe("policy candidate fallback", () => {
   });
 
   test("upstream auth exhaustion never masquerades as caller authentication failure", async () => {
-    for (const status of [401, 402, 403, 404, 408, 410, 425]) {
+    for (const status of [401, 402, 403, 404, 408, 425]) {
       const trace = policyTrace();
       const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
       const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {

@@ -615,7 +615,6 @@ export function comboFailureDecision(
   const failureCode = normalizedFailureCode(options?.code || error.code);
   const targetLocalCodes = new Set([
     "input_admission_refused",
-    "context_length_exceeded",
     "tool_catalog_too_large",
     "cursor_root_envelope_limit",
     "kiro_profile_required",
@@ -642,7 +641,7 @@ export function comboFailureDecision(
     "upstream_server_error",
     "provider_unavailable",
   ].includes(failureCode)) return "hop";
-  if ([401, 402, 403, 404, 408, 410, 413, 425, 429].includes(status) || status >= 500) return "hop";
+  if ([401, 402, 403, 404, 408, 425, 429].includes(status) || status >= 500) return "hop";
   if (["origin_rejected", "invalid_request_error"].includes(error.code ?? "")) return "stop";
   return "stop";
 }

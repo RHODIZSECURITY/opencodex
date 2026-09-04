@@ -604,12 +604,12 @@ describe("combo failure policy and advancement", () => {
     for (const status of [401, 403, 404, 408, 429, 500, 503]) {
       expect(comboFailureDecision(status, "provider failure")).toBe("hop");
     }
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
     expect(comboFailureDecision(403, '{"code":"origin_rejected"}')).toBe("stop");
-    expect(comboFailureDecision(413, "request too large")).toBe("hop");
+    expect(comboFailureDecision(413, "request too large")).toBe("stop");
     expect(comboFailureDecision(409, "conflict")).toBe("stop");
     expect(comboFailureDecision(425, "too early")).toBe("hop");
-    expect(comboFailureDecision(410, "resource is gone")).toBe("hop");
+    expect(comboFailureDecision(410, "resource is gone")).toBe("stop");
     expect(comboFailureDecision(410, "The model has reached its end of life and is no longer available.")).toBe("hop");
     expect(comboFailureDecision(410, "The model is scheduled for retirement.")).toBe("hop");
     expect(comboFailureDecision(410, "gone", { code: "model_retired" })).toBe("hop");
@@ -624,11 +624,11 @@ describe("combo failure policy and advancement", () => {
     // verdict by echoing the token, so that shape must NOT hop.
     expect(comboFailureDecision(413, 'refused', { code: 'input_admission_refused' })).toBe('hop');
     expect(comboFailureDecision(400, 'upstream mentions input_admission_refused in prose')).toBe('stop');
-    // An upstream context verdict is target-local in an explicit combo: another declared
-    // model can have a larger context window. A generic 413 without context evidence remains
-    // request-local in this hardened branch and does not poison later shorter requests.
-    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("hop");
-    expect(comboFailureDecision(413, "request too large")).toBe("hop");
+    // Ambiguous upstream context/request-size verdicts remain terminal. Only explicit
+    // target-local evidence (local admission, model lifecycle, or provider hard-cap shape)
+    // may advance the combo; this avoids replaying globally invalid requests.
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("stop");
     const providerHardCap = JSON.stringify({ error: {
       message: "Prompt 346030 > 262144 maximum context length",
       type: "invalid_request_prompt_too_long",
@@ -649,8 +649,8 @@ describe("combo failure policy and advancement", () => {
       [404, "model route not found", "hop", "target"],
       [408, "upstream request timeout", "hop", "target"],
       [409, "request conflict", "stop", "target"],
-      [410, "resource is gone", "hop", "target"],
-      [413, "request too large", "hop", "none"],
+      [410, "resource is gone", "stop", "target"],
+      [413, "request too large", "stop", "none"],
       [422, "ordinary unprocessable request", "stop", "target"],
       [425, "too early", "hop", "target"],
       [429, "rate limited", "hop", "target"],
@@ -664,9 +664,9 @@ describe("combo failure policy and advancement", () => {
     }
 
     // Structured evidence overrides a generic status only when the failure is scoped to a
-    // different target/provider. Request-shape limits are request-local and must not poison
-    // later short requests; provider auth/billing failures exclude sibling models too.
-    expect(comboFailureDecision(400, "maximum context exceeded", { code: "context_length_exceeded" })).toBe("hop");
+    // different target/provider. Generic context-length evidence remains ambiguous and
+    // terminal; provider auth/billing failures exclude sibling models only when structured.
+    expect(comboFailureDecision(400, "maximum context exceeded", { code: "context_length_exceeded" })).toBe("stop");
     expect(comboFailureCooldownScope(400, "maximum context exceeded", { code: "context_length_exceeded" })).toBe("none");
     expect(comboFailureDecision(422, "bad credential", { code: "invalid_api_key" })).toBe("hop");
     expect(comboFailureCooldownScope(422, "bad credential", { code: "invalid_api_key" })).toBe("provider");
@@ -707,7 +707,6 @@ describe("combo failure policy and advancement", () => {
       [422, "invalid_api_key", "bad credential"],
       [400, "model_not_found", "model not found"],
       [400, "unsupported_model", "unsupported model"],
-      [400, "context_length_exceeded", "maximum context exceeded"],
       [413, "tool_catalog_too_large", "tool catalog too large"],
       [400, "cursor_root_envelope_limit", "Cursor request envelope is too large"],
       [400, "kiro_profile_required", "Kiro account lacks the required profile"],

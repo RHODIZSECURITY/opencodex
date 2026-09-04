@@ -415,11 +415,15 @@ describe("server combo failover 030 activation matrix", () => {
   test("target-local context, billing, and unsupported-model failures reach the healthy fallback", async () => {
     const hits: string[] = [];
     const make = (name: string, response: () => Response) => serve(() => { hits.push(name); return response(); });
-    const a = make("context", () => Response.json({ error: { code: "context_length_exceeded", message: "maximum context exceeded" } }, { status: 400 }));
+    const a = make("context", () => Response.json({ error: {
+      code: "5059",
+      type: "invalid_request_prompt_too_long",
+      message: "Prompt 346030 > 262144 maximum context length",
+    } }, { status: 400 }));
     const b = make("billing", () => Response.json({ error: { code: "insufficient_quota", message: "payment required" } }, { status: 402 }));
     const c = make("model", () => Response.json({ error: { code: "unsupported_model", message: "unsupported model" } }, { status: 400 }));
-    const d = make("gone", () => Response.json({ error: { message: "resource gone" } }, { status: 410 }));
-    const e = make("too-large", () => Response.json({ error: { message: "request too large" } }, { status: 413 }));
+    const d = make("gone", () => Response.json({ error: { code: "model_retired", message: "model retired" } }, { status: 410 }));
+    const e = make("too-large", () => Response.json({ error: { code: "input_admission_refused", message: "request too large" } }, { status: 413 }));
     const f = make("healthy", () => chatSuccess("deep fallback", "m6"));
     const config = comboConfig({
       a: provider("openai-chat", baseUrl(a), "ka"),
@@ -1004,6 +1008,19 @@ describe("server combo failover 030 activation matrix", () => {
     expect(frames.some(frame => frame.data.type === "response.failed")).toBe(true);
     expect(JSON.stringify(frames)).not.toContain("must not replay");
     expect(hits).toEqual(["a"]);
+  });
+
+  test("generic 410 remains terminal before backup", async () => {
+    let backupHits = 0;
+    const a = serve(() => Response.json({ error: { message: "resource is gone" } }, { status: 410 }));
+    const b = serve(() => { backupHits += 1; return chatSuccess("backup", "m2"); });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "ka"),
+      b: provider("openai-chat", baseUrl(b), "kb"),
+    });
+    const response = await post(config);
+    expect(response.status).toBe(410);
+    expect(backupHits).toBe(0);
   });
 
   test("model-lifecycle 410 hops once and cools only the dead combo target", async () => {
@@ -1984,7 +2001,7 @@ describe("server combo failover 030 activation matrix", () => {
     expect(modelHits.every(hit => hit.hasWebTool)).toBe(true);
   });
 
-  test("context 400 hops while exhausted retryable targets return the sanitized last status", async () => {
+  test("ambiguous context 400 stops while exhausted retryable targets return sanitized unavailability", async () => {
     let stopBackupHits = 0;
     const context = serve(() => Response.json({ error: { code: "context_length_exceeded", message: "too many tokens" } }, { status: 400 }));
     const unused = serve(() => {
@@ -1996,9 +2013,9 @@ describe("server combo failover 030 activation matrix", () => {
       b: provider("openai-chat", baseUrl(unused), "key-b"),
     });
     const stopped = await post(stopConfig);
-    expect(stopped.status).toBe(200);
-    expect(stopBackupHits).toBe(1);
-    expect(JSON.stringify(await stopped.json())).toContain("context backup");
+    expect(stopped.status).toBe(400);
+    expect(stopBackupHits).toBe(0);
+    expect(JSON.stringify(await stopped.json())).not.toContain("context backup");
     clearComboTargetCooldowns("free");
 
     const order: string[] = [];
