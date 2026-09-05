@@ -569,6 +569,7 @@ describe("server local API auth", () => {
     const protocols = ["fixture"];
     const urls = [
       "ws://127.0.0.1:1/v1/responses",
+      "ws://chatgpt.com/backend-api/codex/responses",
       "wss://chatgpt.com/backend-api/codex-other",
       "wss://other.example/backend-api/codex/responses",
     ];
