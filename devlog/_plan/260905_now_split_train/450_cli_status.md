@@ -293,3 +293,32 @@ Sizes384/168 and15declarations/11exports are preserved. Static parsing and
 whitespace checks passed; no runtime checks were run during another owner's
 CI. This is now a genuine source delta from B's547-line parent baseline.
 Fresh resulting-head C checks remain pending.
+
+## Latest integration-base review
+
+After #3626/#3636 landed, current dev is
+cfe95eea0f776a5a5d5bad5f41408cd98ba98ff7. Object-only merging that base with
+the local450 candidate produced tree3c0689fe040de4f941899935c8808b594016ac55,
+identical to the independently reviewed prospective onboarding integration.
+No refs or worktree source changed during this check.
+
+The three owned source/test blobs still match the approved implementation.
+A fresh Git-tree graph found366reachable facade modules and346leaf modules,
+46valid named imports plus the existing forwarding bindings,11public exports,
+and no return cycle through either status module. New reachable upstream
+owners are initial-model-selection, its runtime companion, and CLI selection
+guidance. Main read those implementations; the provider field is additive and
+the direct status consumers remain unchanged. This is static evidence only.
+
+This C→P amendment plans dependency integration during B, preserving the
+owned blobs. Use a normal merge of the final pinned, verified dev into the
+working branch; preserve all checkpoint refs and avoid rebase update-refs.
+Recheck the base immediately before A→B. If a late-review follow-up changes
+dev first, update the pin and re-audit the changed integration rather than
+claiming this prospective tree covers it. The onboarding review-closure flow
+currently owns the execution queue; do not publish or run runtime gates here.
+
+Before landing WP450, require the actual new head/tree's remote checks and CI,
+fresh review disposition, admin head-match merge, child safety and fetched
+dev ancestry under USER-ADMIN-LANDING-01. Previous4a/d2 results are not the
+new integrated head's verification. No release or live-service change.
