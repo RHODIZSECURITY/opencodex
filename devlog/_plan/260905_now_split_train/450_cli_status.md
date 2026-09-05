@@ -408,3 +408,18 @@ and verify the resulting real HEAD in C. No local suites or live-service work.
 Own450 and provider ROOT3582 retain their next-unit reservations. WS recovery
 needs a separately allocated slot after its diagnostic evidence, not an
 automatic retry concurrent with #3645 or a silent new prerequisite here.
+
+## C documentation consistency repair
+
+Three retained PR review findings exposed conflicting shared guidance in
+the carried000/003 documents. Align000 with the already binding declared-
+dependency topology and admin authority; restrict the method-to-factory
+exception to eligible object-literal methods, excluding class/method-only
+semantics; and make RESIDUAL-FN depend on the final over400 residual and its
+sole unsplittable-function cause, not a350-line shortcut. These are scoped
+documentation repairs, not additional status implementation or relaxed gates.
+
+The status source/test blobs and reviewed source boundaries remain unchanged.
+Re-review the repaired documents and verify the new resulting HEAD. The
+preceding8bc CI belongs to that prior HEAD, even if it passes; it cannot be
+presented as the new commit's exact-head proof.
