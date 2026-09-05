@@ -1738,7 +1738,11 @@ function explicitQuotaDestination(provider: string, config: OcxProviderConfig): 
   return provider === "xai" || provider === "cursor";
 }
 
-async function readExplicitAccountQuota(provider: string, accountId: string, configured?: OcxProviderConfig) {
+async function readExplicitAccountQuota(provider: string, accountId: string, configured?: OcxProviderConfig): Promise<{
+  result: ProviderQuotaProbeResult;
+  identity: string | undefined;
+  isCurrent: () => boolean;
+} | null> {
   const target = explicitQuotaConfig(provider, configured);
   if (!target || !explicitQuotaDestination(provider, target)) return null;
   const config = { ...target };
@@ -1767,7 +1771,8 @@ async function fetchExplicitAccountQuota(provider: string, accountId: string, fo
   const identity = explicitQuotaIdentity(provider, accountId, configured);
   const previous = accountQuotaCache.get(key);
   const cached = identity && previous?.identity === identity && previous.isCurrent?.() ? previous : undefined;
-  if (!force && cached && Date.now() - cached.ts < ACCOUNT_QUOTA_TTL_MS) return cached;
+  if (!force && cached && Date.now() - cached.ts < ACCOUNT_QUOTA_TTL_MS
+    && (!cached.quota || Date.now() - cached.quota.updatedAt < LAST_GOOD_MAX_AGE_MS)) return cached;
   const flightKey = `${key}\u0000${identity ?? "missing"}`;
   const running = accountQuotaInflight.get(flightKey);
   if (running) return running;
@@ -1784,7 +1789,8 @@ async function fetchExplicitAccountQuota(provider: string, accountId: string, fo
     const empty = result === AUTHORITATIVE_EMPTY_QUOTA;
     const entry: AccountQuotaCacheEntry = {
       ts: Date.now(),
-      quota: quota ?? (current && result !== TERMINAL_QUOTA_FAILURE && !empty ? lastGood : null),
+      quota: quota ?? (current && result !== TERMINAL_QUOTA_FAILURE && !empty
+        && lastGood && Date.now() - lastGood.updatedAt < LAST_GOOD_MAX_AGE_MS ? lastGood : null),
       ...(!current || (!quota && !empty) ? { unavailable: true as const } : {}),
       identity: read?.identity ?? identity,
       isCurrent: () => epoch === explicitAccountEpoch && isCurrent(),
@@ -2568,7 +2574,7 @@ async function maybeFetchProviderQuota(
     if (isBuiltInChatGptForwardProvider(name, provider)) {
       return fetchChatGptForwardQuota(config, name, provider, forceRefresh, prefetchedCodexSnapshot);
     }
-    if (provider.authMode === "oauth" && explicitAccountReader(name)) return fetchExplicitCurrentQuota(name, provider, config);
+    if (provider.authMode === "oauth" && explicitAccountReader(name)) return await fetchExplicitCurrentQuota(name, provider, config);
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "google-antigravity") return fetchAntigravityQuota(name, provider);
     if (provider.authMode === "oauth" && name === "kiro") return fetchKiroQuota(name);

@@ -154,6 +154,65 @@ function keyQuotaResponse(percent: number): Response {
 }
 
 describe("credential-scoped key quota", () => {
+  test("key probe failure drops last-good quota that expires during the upstream await", async () => {
+    const config = quotaKeyConfig(1);
+    const realDateNow = Date.now;
+    const observedAt = realDateNow();
+    let now = observedAt;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) return keyQuotaResponse(25);
+      expect(now).toBe(observedAt + 29 * 60_000 + 59_000);
+      now = observedAt + 30 * 60_000;
+      return new Response("{}", { status: 429 });
+    }) as typeof globalThis.fetch;
+    Date.now = () => now;
+    try {
+      expect((await fetchProviderApiKeyQuotas(config, "openrouter"))[0]?.quota?.updatedAt).toBe(observedAt);
+      now = observedAt + 29 * 60_000 + 59_000;
+      const [failed] = await fetchProviderApiKeyQuotas(config, "openrouter", true);
+      expect(calls).toBe(2);
+      expect(failed?.quota).toBeNull();
+      expect(failed?.unavailable).toBe(true);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test("a recent failed key probe cannot extend a last-good measurement past thirty minutes", async () => {
+    const config = quotaKeyConfig(1);
+    const realDateNow = Date.now;
+    const observedAt = realDateNow();
+    let now = observedAt;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return calls === 1 ? keyQuotaResponse(25) : new Response("{}", { status: 429 });
+    }) as typeof globalThis.fetch;
+    Date.now = () => now;
+    try {
+      const [initial] = await fetchProviderApiKeyQuotas(config, "openrouter");
+      expect(initial?.quota?.updatedAt).toBe(observedAt);
+      now = observedAt + 29 * 60_000 + 59_000;
+      const [failed] = await fetchProviderApiKeyQuotas(config, "openrouter", true);
+      expect(failed?.unavailable).toBe(true);
+      expect(failed?.quota?.updatedAt).toBe(observedAt);
+      expect(calls).toBe(2);
+      // The attempt is only one second old, but the measurement has reached its bound.
+      now += 1_000;
+      const [expired] = await fetchProviderApiKeyQuotas(config, "openrouter");
+      expect(expired?.quota).toBeNull();
+      expect(expired?.unavailable).toBe(true);
+      expect(calls).toBe(3);
+      now += 1;
+      expect((await fetchProviderApiKeyQuotas(config, "openrouter"))[0]?.quota).toBeNull();
+      expect(calls).toBe(3); // Negative caching still works once the old measurement is gone.
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   test("capability uses all existing key reader destinations without resolving secrets", () => {
     const targets = [
       ["coding-alias", "https://api.kimi.com/coding/v1"],

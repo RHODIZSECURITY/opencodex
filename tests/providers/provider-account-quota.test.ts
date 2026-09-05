@@ -425,6 +425,70 @@ describe("fetchProviderAccountQuotas", () => {
 });
 
 describe("explicit OAuth account quota readers", () => {
+  test("explicit OAuth probe failure drops last-good quota that expires during the upstream await", async () => {
+    const realDateNow = Date.now;
+    const observedAt = realDateNow();
+    await saveCredential("kimi", {
+      access: "quota-settlement-fixture", refresh: "refresh-settlement-fixture",
+      expires: observedAt + 60 * 60_000, accountId: "quota-settlement-user",
+    });
+    let now = observedAt;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) return Response.json({ usage: { limit: 100, used: 25 } });
+      expect(now).toBe(observedAt + 29 * 60_000 + 59_000);
+      now = observedAt + 30 * 60_000;
+      return new Response("{}", { status: 429 });
+    }) as typeof fetch;
+    Date.now = () => now;
+    try {
+      expect((await fetchProviderAccountQuotas("kimi"))[0]?.quota?.updatedAt).toBe(observedAt);
+      now = observedAt + 29 * 60_000 + 59_000;
+      const [failed] = await fetchProviderAccountQuotas("kimi", true);
+      expect(calls).toBe(2);
+      expect(failed?.quota).toBeNull();
+      expect(failed?.unavailable).toBe(true);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test("a recent failed explicit OAuth probe cannot extend a last-good measurement past thirty minutes", async () => {
+    const realDateNow = Date.now;
+    const observedAt = realDateNow();
+    await saveCredential("kimi", {
+      access: "quota-age-fixture", refresh: "refresh-age-fixture",
+      expires: observedAt + 60 * 60_000, accountId: "quota-age-user",
+    });
+    let now = observedAt;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return calls === 1 ? Response.json({ usage: { limit: 100, used: 25 } }) : new Response("{}", { status: 429 });
+    }) as typeof fetch;
+    Date.now = () => now;
+    try {
+      const [initial] = await fetchProviderAccountQuotas("kimi");
+      expect(initial?.quota?.updatedAt).toBe(observedAt);
+      now = observedAt + 29 * 60_000 + 59_000;
+      const [failed] = await fetchProviderAccountQuotas("kimi", true);
+      expect(failed?.unavailable).toBe(true);
+      expect(failed?.quota?.updatedAt).toBe(observedAt);
+      expect(calls).toBe(2);
+      now += 1_000;
+      const [expired] = await fetchProviderAccountQuotas("kimi");
+      expect(expired?.quota).toBeNull();
+      expect(expired?.unavailable).toBe(true);
+      expect(calls).toBe(3);
+      now += 1;
+      expect((await fetchProviderAccountQuotas("kimi"))[0]?.quota).toBeNull();
+      expect(calls).toBe(3);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   const cases = [
     { provider: "xai", adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", field: "weeklyPercent" },
     { provider: "cursor", adapter: "cursor", baseUrl: "https://api2.cursor.sh", field: "monthlyPercent" },

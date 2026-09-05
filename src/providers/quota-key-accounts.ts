@@ -68,7 +68,8 @@ async function readEntry(
   probe: () => Promise<KeyQuotaProbeOutcome>,
 ): Promise<Entry> {
   const previous = cache.get(key);
-  if (!force && previous && Date.now() - previous.ts < ACCOUNT_QUOTA_TTL_MS) {
+  if (!force && previous && Date.now() - previous.ts < ACCOUNT_QUOTA_TTL_MS
+    && (!previous.quota || Date.now() - previous.quota.updatedAt < LAST_GOOD_MS)) {
     cache.delete(key);
     cache.set(key, previous);
     return previous;
@@ -85,7 +86,11 @@ async function readEntry(
       ? { ts: Date.now(), quota: result.quota }
       : result.kind === "empty"
         ? { ts: Date.now(), quota: null }
-        : { ts: Date.now(), quota: result.kind === "terminal" ? null : lastGood, unavailable: true };
+        : {
+            ts: Date.now(),
+            quota: result.kind !== "terminal" && lastGood && Date.now() - lastGood.updatedAt < LAST_GOOD_MS ? lastGood : null,
+            unavailable: true,
+          };
     if (isCurrent()) remember(key, entry);
     return entry;
   })().finally(() => { if (flights.get(key) === flight) flights.delete(key); });
