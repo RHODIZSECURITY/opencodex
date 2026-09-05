@@ -350,7 +350,7 @@ Compare source/test/SOT content with the reviewed prospective tree (plan-record
 updates may differ); then commit and enter C. The resulting real commit—not
 the prospective tree—receives fresh remote gates, CI and admin landing proof.
 
-## Current planning hold
+## Previous planning hold (superseded by slot return below)
 
 The earlier #3645 input is superseded by a validated review correction, and
 the already-requested #3643 integration is using the otherwise idle CI slot.
@@ -380,3 +380,31 @@ It is not the integration pin or runtime proof. Queue order is WS3643,
 follow-up3645, this450 unit, then provider ROOT3582. Final-base admission and
 fresh A review remain mandatory; the candidate import-graph review can only
 reduce redundant static work once its content matches the landed input.
+
+## Current upstream admission after WS slot return
+
+WS #3643 did not land: its macOS second shard reached the20-minute limit,
+the job was cancelled and the final CI aggregate failed. Its owner returned
+the execution slot for read-only root-cause analysis. WS is not a code
+dependency of this status move; no unverified WS source enters this layer.
+
+The next existing prerequisite is the frozen #3645 correction
+bb0547342c9526484b0219d6aaf5bf8927d0a852, tree
+f4f770511db04b01f2b9376833a4f4f5012ae1a7, on published cfe95eea.
+It now owns the sole execution slot. Main verified that its14 changed paths
+and WS's21 paths do not intersect. Object-only merging it with own c4e67991a
+produced b5749715bbbd6936937defd20bfd522bc013850b without conflicts.
+This is proposed content, not verification or adoption of that content.
+
+Audit this input and the previously specified normal B-stage merge. Before
+A→B, require #3645 admin-merged with fresh exact-head CI, matching actual
+source tree and completed successful post-merge dev CI. Fetch dev and record
+its actual SHA/tree. It must contain bb054 and match its expected tree;
+if another content change lands, return to P and re-audit that delta first.
+Then merge the pinned dev during B, preserve the three owned blobs and
+checkpoint refs, parameterize the existing mutation runner as specified,
+and verify the resulting real HEAD in C. No local suites or live-service work.
+
+Own450 and provider ROOT3582 retain their next-unit reservations. WS recovery
+needs a separately allocated slot after its diagnostic evidence, not an
+automatic retry concurrent with #3645 or a silent new prerequisite here.
