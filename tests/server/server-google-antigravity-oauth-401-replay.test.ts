@@ -76,7 +76,11 @@ function antigravityPassthroughConfig(): OcxConfig {
     defaultProvider: "google-antigravity",
     providers: {
       "google-antigravity": {
-        adapter: "openai-responses",
+        // Canonical routing restores the Google adapter. The supported model-level
+        // override is applied afterwards and again when the OAuth replay is rebuilt.
+        // Synthetic native-branch coverage, not a claim about Google's supported API.
+        adapter: "google",
+        modelAdapters: { "gemini-3.8-flash": "openai-responses" },
         baseUrl: DAILY_API_BASE,
         authMode: "oauth",
         googleMode: "cloud-code-assist",
@@ -141,9 +145,10 @@ function installOAuthFetch(
     refreshedProjectId?: string | null;
     beforeFirstUnauthorized?: () => Promise<void>;
   } = {},
-): { chatAuth: string[]; chatProjects: string[]; counts: { refresh: number } } {
+): { chatAuth: string[]; chatProjects: string[]; requestPaths: string[]; counts: { refresh: number } } {
   const chatAuth: string[] = [];
   const chatProjects: string[] = [];
+  const requestPaths: string[] = [];
   const counts = { refresh: 0 };
   let unauthorizedObserved = false;
   globalThis.fetch = (async (input, init) => {
@@ -187,7 +192,8 @@ function installOAuthFetch(
     }
 
     // Responses passthrough endpoint
-    if (url === `${DAILY_API_BASE}/responses`) {
+    if (url === `${DAILY_API_BASE}/v1/responses`) {
+      requestPaths.push(parsedUrl.pathname);
       const auth = new Headers(init?.headers).get("authorization") ?? "";
       chatAuth.push(auth);
       const status = apiStatuses.shift() ?? 200;
@@ -223,6 +229,7 @@ function installOAuthFetch(
     // Google Antigravity Generate Content endpoint
     if (parsedUrl.origin === DAILY_API_BASE
       && ["/v1internal:streamGenerateContent", "/v1internal:generateContent"].includes(parsedUrl.pathname)) {
+      requestPaths.push(parsedUrl.pathname);
       const auth = new Headers(init?.headers).get("authorization") ?? "";
       chatAuth.push(auth);
       if (typeof init?.body === "string") {
@@ -263,7 +270,7 @@ function installOAuthFetch(
     if (parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost") return originalFetch(input, init);
     throw new Error("Unexpected external request in Antigravity replay fixture");
   }) as typeof fetch;
-  return { chatAuth, chatProjects, counts };
+  return { chatAuth, chatProjects, requestPaths, counts };
 }
 
 describe("Google Antigravity OAuth upstream 401 replay", () => {
@@ -274,6 +281,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     const server = startServer(0);
     try {
       const response = await postResponses(server);
+      expect(observed.requestPaths).toEqual(["/v1/responses", "/v1/responses"]);
       expect(response.status).toBe(secondStatus);
       const text = await response.text();
       if (secondStatus === 200) expect(text).toContain("ok after passthrough");
@@ -291,6 +299,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     const server = startServer(0);
     try {
       const response = await postResponses(server);
+      expect(observed.requestPaths).toEqual([native ? "/v1/responses" : "/v1internal:generateContent"]);
       expect(response.status).toBe(403);
       await response.text();
       expect(observed.counts.refresh).toBe(0);
@@ -314,6 +323,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     const server = startServer(0);
     try {
       const response = await postResponses(server, false, name);
+      expect(observed.requestPaths).toEqual([native ? "/v1/responses" : "/v1internal:generateContent"]);
       expect(response.status).toBe(401);
       await response.text();
       expect(observed.counts.refresh).toBe(0);
@@ -591,6 +601,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     const server = startServer(0);
     try {
       const response = await postResponses(server);
+      expect(observed.requestPaths).toEqual(["/v1/responses"]);
       const json = await response.json() as { error?: { code?: string; message?: string; type?: string } };
       expect(response.status).toBe(401);
       expect(json.error?.type).toBe("authentication_error");
@@ -609,6 +620,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     const server = startServer(0);
     try {
       const response = await postResponses(server);
+      expect(observed.requestPaths).toEqual(["/v1internal:generateContent"]);
       const json = await response.json() as { error?: { code?: string; message?: string; type?: string } };
       expect(response.status).toBe(401);
       expect(json.error?.type).toBe("authentication_error");
