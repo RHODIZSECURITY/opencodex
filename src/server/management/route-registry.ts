@@ -304,6 +304,7 @@ export const MANAGEMENT_ROUTES: readonly ManagementRoute[] = [
   // --- Routes an equality scan of their own file cannot see (18). ---
   // Each carries `mechanism`; the reconciliation test counts these separately.
   { method: "GET", path: "/api/storage", module: "server/management/storage-log-guard-routes", mutates: false, mechanism: "negated-guard" },
+  { method: "GET", path: "/api/quota-resets", module: "server/management/quota-reset-routes", mutates: false, mechanism: "negated-guard" },
   { method: "GET", path: "/api/routing-analytics", module: "server/management/routing-analytics-routes", mutates: false, mechanism: "negated-guard" },
   { method: "GET", path: "/api/system/codex-app-server", module: "server/management/system-routes", mutates: false, mechanism: "path-constant" },
   { method: "POST", path: "/api/system/codex-restart", module: "server/management/system-routes", mutates: true, mechanism: "path-constant" },

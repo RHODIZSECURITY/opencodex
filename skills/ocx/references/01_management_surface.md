@@ -58,6 +58,21 @@ JSON mode: `envelope`.
 
 - Start here when driving ocx programmatically: it is the declared surface index, not a complete verb list.
 
+### `ocx provider resets`
+
+Show recently detected quota resets.
+
+| Method | Route |
+|---|---|
+| GET | `/api/quota-resets` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--limit` | number | Maximum events to return. |
+| `--json` | boolean | Emit the API payload as JSON. |
+
+JSON mode: `payload`.
+
 ### `ocx provider list`
 
 Configured providers with connectivity and selected models.
@@ -587,6 +602,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 32
+- declared capabilities: 33
 - of those, state-changing: 13
 - head-resolved invocations: 2

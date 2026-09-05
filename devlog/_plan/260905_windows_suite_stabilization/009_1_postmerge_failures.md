@@ -19,6 +19,10 @@
 - Job `101240600060` (3/6) adds three reconciliation failures: missing
   GET /api/quota-resets declaration and an unresolved lazy dispatcher wrapper.
   The handler and CLI verb already exist; these are integration inventory gaps.
+- Job `101240599990` (5/6) fails quota-reset-notify.test.ts:515 because its
+  activation fixture configures HTTP despite the HTTPS-only schema. The local
+  focused check independently reproduces the same warning and assertion.
+  Full pinned Windows baseline: shards2/4 pass; 1/3/5/6 fail, eight assertions.
 
 ## Hypotheses and falsifiers
 

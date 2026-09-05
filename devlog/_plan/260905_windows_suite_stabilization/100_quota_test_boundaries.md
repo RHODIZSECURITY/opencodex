@@ -9,17 +9,18 @@ amended. Stop on contrary child stderr or changed store semantics and re-plan.
 
 ## MODIFY tests/usage/quota-reset-seen-store.test.ts
 
-At the real-second-process test, replace the URL pathname with a native path:
+At the real-second-process test, preserve the full file URL for dynamic import:
 
 ```diff
-+import { fileURLToPath } from "node:url";
 -const storeUrl = new URL("../../src/quota/reset-seen-store.ts", import.meta.url).pathname;
-+const storeUrl = fileURLToPath(new URL("../../src/quota/reset-seen-store.ts", import.meta.url));
++const storeUrl = new URL("../../src/quota/reset-seen-store.ts", import.meta.url).href;
 -const proc = Bun.spawn(["bun", script], {
 +const proc = Bun.spawn([process.execPath, script], {
 ```
 
-Keep JSON.stringify around the generated import path. Replace stdout-only wait
+The corpus's dynamic-import-needs-file-url case refines the initial proposal:
+an import specifier stays a URL; only a spawn argv script becomes fileURLToPath.
+Keep JSON.stringify around the generated import URL. Replace stdout-only wait
 with Promise.all of proc.exited, stdout.text and stderr.text; assert exitCode=0
 with stdout/stderr in the assertion message, then return trimmed stdout. Keep
 the sequential true/false assertions and OPENCODEX_HOME unchanged.
@@ -145,3 +146,28 @@ precedes dispatch; child/prefix fallthrough and the inert registry stay intact.
 Main baseline focused registry+capability check: 27 pass / 3 fail (registry
 reconciliation only), exit 1, matching Windows. This approves the design, not
 implementation. The two superseded scope descriptions were synchronized.
+
+## B-phase evidence amendment: activation fixture (one more quota test)
+
+Final Windows job101240599990 and the local seven-file check both fail
+quota-reset-notify.test.ts:515: activation expected true, actual false. The
+config warning names webhookUrl. H1 is confirmed by the fixture's http URL
+against config.ts's https-only schema. H2 (stale cache) is contradicted by the
+explicit cache reset; H3 (network receiver failure) cannot explain failure
+before activation/delivery. Do not change the schema or TLS validation.
+
+MODIFY only that test's fixture: configure a reserved HTTPS URL
+`https://hooks.example.test/activation`; wrap the existing fetch function in
+the test to map exactly that URL to its already-existing loopback HTTP server.
+Preserve method, body, headers, redirect and signal; other URLs delegate unchanged.
+Record the requested HTTPS URL and assert one call. Restore fetch in finally.
+The test still proves config -> activation -> quota writer -> actual HTTP body;
+it deliberately does not claim TLS integration. Lower-level policy tests remain.
+Replace the 40x25ms body polling with a completion promise resolved by the real
+receiver. Implementation review caught that an outer test timeout does not
+unwind an indefinitely awaited promise: race the receiver against the existing
+INTERNAL_DEADLINE_MS, clear its timer in finally, and use SERVER_BUDGET_MS for
+the real-server case. These are nested failure bounds, not polling sleeps.
+
+Verification: rerun the original failing activation case, then the seven focused
+files. The schema remains HTTPS-only; no fixture-only exception enters runtime.
