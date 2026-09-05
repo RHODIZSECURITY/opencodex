@@ -30,7 +30,8 @@ initialModelSelection?: {
 - `reconcileInitialModelSelections(config, models, authoritativeProviders)`:
   process only pending entries; leave non-authoritative results pending. Deduplicate
   usable canonical model switch selectors per provider, including intentional
-  static catalogs and displayed aliases. Use the Models inventory's row identity;
+  static catalogs and separately listed catalog IDs. Display-only alias labels do
+  not add a switch. Use the Models inventory's row identity;
   custom metadata overrides do not remove a discovered row from the count.
   At >=20 append canonical `routedSlug` selectors to config.disabledModels without
   duplicates, status all-off/count. At <20 status ready/count. Exempt effective
@@ -148,7 +149,7 @@ scripts/test-layout/layout.json and tests/fixtures/test-layout-expected.json):
 
 - 19/20 and duplicate IDs; static 20; degraded live 20 stays pending; zero-model
   authoritative result completes ready; unrelated provider flags preserved.
-- 19 rows plus one displayed alias = 20 switches; one metadata override of an
+- 19 rows plus one separate catalog ID = 20 switches; a display alias or metadata override of an
   existing row does not lower its count; exact duplicate selectors count once.
 - new key/local pending versus OAuth/forward exempt; mixed-auth key eligible.
 - initial all-OFF uses canonical selectors and keeps provider active.
@@ -183,5 +184,15 @@ merge now own the exclusion, with regressions. Accepted ordinary finalizer adopt
 copy both committed state and disabled selectors to the caller, never only metadata.
 Physical-count provenance finding is resolved by narrowing the unconfirmed counting
 assumption to the actual Models switch inventory, not by growing a second physical
-model catalog. This matches the user's screenshot and threshold UX. Aliases shown
-as switch rows count, and metadata customization is not a reason to discount a row.
+model catalog. This matches the user's screenshot and threshold UX. Separately
+listed catalog IDs count, display-only aliases do not, and metadata customization
+is not a reason to discount a row.
+
+### Re-registration cleanup
+
+When an explicit new registration replaces a deleted provider, remove orphaned
+provider-qualified disabled selectors before seeding its new state. Cover raw and
+encoded forms by exact provider namespace; preserve other providers and current
+combo public aliases. Cleanup happens on re-registration rather than retroactively
+changing every existing provider or broadening deletion operations. A new small
+catalog must not inherit the previous registration's all-OFF selectors.

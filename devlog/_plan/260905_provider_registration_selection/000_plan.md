@@ -55,7 +55,7 @@
 | src/oauth/login-cli.ts:135 | Existing key-row merge preserves costs only; add selection preservation. |
 | src/oauth/index.ts:1435 | OAuth upsert rebuilds provider; preserve selections without changing auth/key rules. |
 | gui/src/pages/Providers.tsx:472 | Registration completion currently closes Add and shows a toast. Own popup here. |
-| src/cli/models-runtime.ts:17 | Existing list/enable/disable/provider on/off commands; no new model command needed. |
+| src/cli/models-runtime.ts:17 | Existing `ocx models live`, `enable`, `disable`, and provider on/off commands; no new model command needed. |
 
 Doing nothing or changing only defaults cannot change first-registration behavior.
 Changing existing arrival bootstrap globally would alter existing users. Reuse
@@ -80,8 +80,9 @@ its exact-head CI again. Do not rewrite or move this managed worktree.
 - Count unique usable Models-tab switch rows from complete successful discovery
   or an intentional static catalog before visibility filtering. Use the same
   canonical selector dedupe as the management inventory; metadata overrides must
-  not remove a row from the count. Displayed selectable aliases count as rows,
-  exact duplicate selectors do not. 19 preserves defaults; 20 triggers all-OFF.
+  not remove a row from the count. A distinct catalog ID with its own switch counts;
+  display-only alias labels on the same row and duplicate selectors do not.
+  19 preserves defaults; 20 triggers all-OFF.
   The earlier physical-ID-only interpretation was an unconfirmed implementation
   assumption, not a user requirement; keeping count and switch targets aligned
   avoids a separate hidden counting policy.
