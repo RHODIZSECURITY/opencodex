@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../../src/config";
 import { forceRefreshOAuthAccessSnapshot, getValidAccessTokenSnapshot } from "../../src/oauth";
-import { saveCredential } from "../../src/oauth/store";
+import { getAccountSet, saveCredential } from "../../src/oauth/store";
 import { startServer } from "../../src/server";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const PROD_API_BASE = "https://cloudcode-pa.googleapis.com";
 const DAILY_API_BASE = "https://daily-cloudcode-pa.googleapis.com";
 const PUBLIC_OAUTH_AUTHENTICATION_ERROR = "OAuth authentication failed. Check the OpenCodex account status and retry.";
 const WINDOWS_PATH_CANARY = "C:\\Users\\Alice\\.opencodex\\auth.json.ocx-tmp";
@@ -109,12 +110,12 @@ function sseSuccessBody(text: string): string {
   return `data: ${JSON.stringify(jsonSuccessBody(text))}\n\n`;
 }
 
-async function postResponses(server: ReturnType<typeof startServer>, stream = false): Promise<Response> {
+async function postResponses(server: ReturnType<typeof startServer>, stream = false, providerName = "google-antigravity"): Promise<Response> {
   return originalFetch(new URL("/v1/responses", server.url), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: "google-antigravity/gemini-3.8-flash",
+      model: `${providerName}/gemini-3.8-flash`,
       input: "hello",
       stream,
     }),
@@ -138,13 +139,17 @@ function installOAuthFetch(
   options: {
     tokenErrorDescription?: string;
     refreshedProjectId?: string | null;
+    beforeFirstUnauthorized?: () => Promise<void>;
   } = {},
 ): { chatAuth: string[]; chatProjects: string[]; counts: { refresh: number } } {
   const chatAuth: string[] = [];
   const chatProjects: string[] = [];
   const counts = { refresh: 0 };
+  let unauthorizedObserved = false;
   globalThis.fetch = (async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+
+    const parsedUrl = new URL(url);
 
     // Google OAuth refresh token endpoint
     if (url === GOOGLE_TOKEN_ENDPOINT) {
@@ -166,7 +171,7 @@ function installOAuthFetch(
     }
 
     // Google Cloud Code Assist project discovery
-    if (url.includes(":loadCodeAssist")) {
+    if (url === `${PROD_API_BASE}/v1internal:loadCodeAssist`) {
       if (options.refreshedProjectId === null) {
         return new Response(JSON.stringify({}), { status: 404, headers: { "content-type": "application/json" } });
       }
@@ -175,26 +180,30 @@ function installOAuthFetch(
       }), { headers: { "content-type": "application/json" } });
     }
 
-    if (url.includes(":onboardUser")) {
+    if (url === `${DAILY_API_BASE}/v1internal:onboardUser`) {
       if (options.refreshedProjectId === null) {
         return new Response(JSON.stringify({}), { status: 404, headers: { "content-type": "application/json" } });
       }
     }
 
     // Responses passthrough endpoint
-    if (url.endsWith("/responses") && url.includes("daily-cloudcode-pa.googleapis.com")) {
+    if (url === `${DAILY_API_BASE}/responses`) {
       const auth = new Headers(init?.headers).get("authorization") ?? "";
       chatAuth.push(auth);
       const status = apiStatuses.shift() ?? 200;
-      if (status === 401) {
+      if (status === 401 && !unauthorizedObserved) {
+        unauthorizedObserved = true;
+        await options.beforeFirstUnauthorized?.();
+      }
+      if (status >= 400) {
         return new Response(JSON.stringify({
           error: {
-            code: 401,
+            code: status,
             message: "Request had invalid authentication credentials.",
-            status: "UNAUTHENTICATED",
+            status: status === 401 ? "UNAUTHENTICATED" : "PERMISSION_DENIED",
           },
         }), {
-          status: 401,
+          status,
           headers: { "content-type": "application/json" },
         });
       }
@@ -212,7 +221,8 @@ function installOAuthFetch(
     }
 
     // Google Antigravity Generate Content endpoint
-    if (url.includes("/v1internal:streamGenerateContent") || url.includes("/v1internal:generateContent")) {
+    if (parsedUrl.origin === DAILY_API_BASE
+      && ["/v1internal:streamGenerateContent", "/v1internal:generateContent"].includes(parsedUrl.pathname)) {
       const auth = new Headers(init?.headers).get("authorization") ?? "";
       chatAuth.push(auth);
       if (typeof init?.body === "string") {
@@ -222,15 +232,19 @@ function installOAuthFetch(
         } catch { /* ignore */ }
       }
       const status = apiStatuses.shift() ?? 200;
-      if (status === 401) {
+      if (status === 401 && !unauthorizedObserved) {
+        unauthorizedObserved = true;
+        await options.beforeFirstUnauthorized?.();
+      }
+      if (status >= 400) {
         return new Response(JSON.stringify({
           error: {
-            code: 401,
+            code: status,
             message: "Request had invalid authentication credentials.",
-            status: "UNAUTHENTICATED",
+            status: status === 401 ? "UNAUTHENTICATED" : "PERMISSION_DENIED",
           },
         }), {
-          status: 401,
+          status,
           headers: { "content-type": "application/json" },
         });
       }
@@ -246,12 +260,135 @@ function installOAuthFetch(
       });
     }
 
-    return originalFetch(input, init);
+    if (parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost") return originalFetch(input, init);
+    throw new Error("Unexpected external request in Antigravity replay fixture");
   }) as typeof fetch;
   return { chatAuth, chatProjects, counts };
 }
 
 describe("Google Antigravity OAuth upstream 401 replay", () => {
+  test.each([200, 401])("native passthrough replays once and returns the second HTTP %i", async secondStatus => {
+    await seedOAuth();
+    saveConfig(antigravityPassthroughConfig());
+    const observed = installOAuthFetch([401, secondStatus]);
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server);
+      expect(response.status).toBe(secondStatus);
+      const text = await response.text();
+      if (secondStatus === 200) expect(text).toContain("ok after passthrough");
+      expect(observed.counts.refresh).toBe(1);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access", "Bearer fresh-access"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.each([false, true])("HTTP 403 never triggers OAuth refresh (native=%s)", async native => {
+    await seedOAuth();
+    saveConfig(native ? antigravityPassthroughConfig() : antigravityConfig());
+    const observed = installOAuthFetch([403]);
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server);
+      expect(response.status).toBe(403);
+      await response.text();
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.each([false, true])("a custom key route does not consume Antigravity OAuth credentials (native=%s)", async native => {
+    await seedOAuth();
+    const config = native ? antigravityPassthroughConfig() : antigravityConfig();
+    // The canonical Antigravity name is normalized to OAuth by the router. A separately
+    // named key route is the supported non-OAuth boundary, not a fake canonical key mode.
+    const name = "antigravity-key-test";
+    const provider = config.providers["google-antigravity"]!;
+    config.providers = { [name]: { ...provider, authMode: "key", apiKey: "static-key-sentinel" } };
+    config.defaultProvider = name;
+    saveConfig(config);
+    const observed = installOAuthFetch([401]);
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server, false, name);
+      expect(response.status).toBe(401);
+      await response.text();
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual(["Bearer static-key-sentinel"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("retains the same account's stored project when refresh discovery has no project", async () => {
+    await seedOAuth();
+    saveConfig(antigravityConfig());
+    const observed = installOAuthFetch([401, 200], { refreshedProjectId: null });
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("ok after google refresh");
+      expect(observed.counts.refresh).toBe(1);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access", "Bearer fresh-access"]);
+      expect(observed.chatProjects).toEqual(["initial-project-id", "initial-project-id"]);
+      const snapshot = await getValidAccessTokenSnapshot("google-antigravity");
+      expect(snapshot.projectId).toBe("initial-project-id");
+      expect(snapshot.accessToken).toBe("fresh-access");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test.each([false, true])("401 stays pinned to rejected account A after active switches to B (newer A generation=%s)", async newerGeneration => {
+    await seedOAuth();
+    const accountA = getAccountSet("google-antigravity")!.activeAccountId;
+    const config = antigravityConfig();
+    config.oauthAccountFailover = { enabled: false };
+    config.providers["google-antigravity"]!.oauthAccountFailover = { enabled: false };
+    saveConfig(config);
+    const observed = installOAuthFetch([401, 200], {
+      refreshedProjectId: "refreshed-project-a",
+      beforeFirstUnauthorized: async () => {
+        // Deterministic race point: the original A request was built and observed, but
+        // its HTTP 401 has not reached the recovery loop. No timing sleeps are needed.
+        if (newerGeneration) {
+          await saveCredential("google-antigravity", {
+            access: "newer-access-a", refresh: "newer-refresh-a", expires: Date.now() + 3_600_000,
+            accountId: "antigravity-test-account", projectId: "newer-project-a", source: "oauth",
+          });
+        }
+        await saveCredential("google-antigravity", {
+          access: "access-b", refresh: "refresh-b", expires: Date.now() + 3_600_000,
+          accountId: "account-b", projectId: "project-b", source: "oauth",
+        });
+      },
+    });
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("ok after google refresh");
+      expect(observed.counts.refresh).toBe(newerGeneration ? 0 : 1);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access", newerGeneration ? "Bearer newer-access-a" : "Bearer fresh-access"]);
+      expect(observed.chatProjects).toEqual(["initial-project-id", newerGeneration ? "newer-project-a" : "refreshed-project-a"]);
+      const accounts = getAccountSet("google-antigravity")!;
+      expect(accounts.activeAccountId).not.toBe(accountA);
+      expect(accounts.accounts.find(account => account.id === accounts.activeAccountId)?.credential).toMatchObject({
+        access: "access-b", projectId: "project-b",
+      });
+      expect(accounts.accounts.find(account => account.id === accountA)?.credential).toMatchObject({
+        access: newerGeneration ? "newer-access-a" : "fresh-access",
+        projectId: newerGeneration ? "newer-project-a" : "refreshed-project-a",
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("forceRefreshOAuthAccessSnapshot supports google-antigravity", async () => {
     await seedOAuth();
     installOAuthFetch([], { refreshedProjectId: "rediscovered-project-xyz" });
@@ -381,6 +518,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
 
     globalThis.fetch = (async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
+      const parsedUrl = new URL(url);
       if (url === GOOGLE_TOKEN_ENDPOINT) {
         refreshCalls += 1;
         signalRefreshStarted();
@@ -391,12 +529,13 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
           expires_in: 3600,
         }), { headers: { "content-type": "application/json" } });
       }
-      if (url.includes(":loadCodeAssist")) {
+      if (url === `${PROD_API_BASE}/v1internal:loadCodeAssist`) {
         return new Response(JSON.stringify({
           cloudaicompanionProject: "concurrent-project-id",
         }), { headers: { "content-type": "application/json" } });
       }
-      if (url.includes("/v1internal:streamGenerateContent") || url.includes("/v1internal:generateContent")) {
+      if (parsedUrl.origin === DAILY_API_BASE
+        && ["/v1internal:streamGenerateContent", "/v1internal:generateContent"].includes(parsedUrl.pathname)) {
         const bearer = new Headers(init?.headers).get("authorization") ?? "";
         attemptsByBearer.set(bearer, (attemptsByBearer.get(bearer) ?? 0) + 1);
         if (bearer === "Bearer rejected-access") {
@@ -424,7 +563,9 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
           headers: { "content-type": "application/json" },
         });
       }
-      return originalFetch(input, init);
+      const hostname = parsedUrl.hostname;
+      if (hostname === "127.0.0.1" || hostname === "localhost") return originalFetch(input, init);
+      throw new Error("Unexpected external request in concurrent Antigravity replay fixture");
     }) as typeof fetch;
 
     const server = startServer(0);
