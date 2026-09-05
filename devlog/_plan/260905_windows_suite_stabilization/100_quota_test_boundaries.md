@@ -171,3 +171,18 @@ the real-server case. These are nested failure bounds, not polling sleeps.
 
 Verification: rerun the original failing activation case, then the seven focused
 files. The schema remains HTTPS-only; no fixture-only exception enters runtime.
+
+## wp8 closeout
+
+Implemented at `0db639aea`. Seven focused files: 110 pass, 0 fail, 476 assertions
+(4.20 s). Typecheck exit0; privacy scan passed. Hard-cap prune mutant: expected
+1024, actual1025 (exit1); restored source exactly, then 1pass/15assertions.
+Missing-webhook fault: a transport stub withheld delivery with a 10ms watchdog;
+the test rejected with `quota webhook was not received` and exited1 in126ms,
+not an outer-timeout hang. Restored real transport and normal named deadline:
+1pass/9assertions. Neither fault mutation was committed.
+
+Independent implementation review: PASS after adding the bounded receiver wait
+and moving the fetch override into try/finally. Original route guards and store
+implementation remain unchanged. Windows integration remains open under wp9/c-6;
+these local focused checks are not claimed as Windows proof.
