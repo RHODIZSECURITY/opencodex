@@ -244,7 +244,7 @@ for (const embedded of [false, true]) {
     });
     await flush();
     await flush();
-    await act(async () => { buttonWithText(host, "Add account").click(); });
+    await act(async () => { buttonWithText(host, "Add").click(); });
     await flush();
     const login = testWindow.document.querySelector('dialog[aria-label="Add Codex Account"] button.list-row') as HTMLButtonElement;
     expect(login).toBeTruthy();
