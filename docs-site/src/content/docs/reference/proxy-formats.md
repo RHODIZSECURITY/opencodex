@@ -248,6 +248,11 @@ images (`source.type: "file"`) require native Anthropic passthrough; translated 
 fixed HTTP 400 error asking for base64 or URL input. OpenCodex does not resolve another provider's
 file storage or upload the referenced image on the caller's behalf.
 
+When replay history contains an image-bearing tool result without its adjacent call, the
+Anthropic and Command Code adapters retain the image in a provenance-labeled user carrier rather
+than embedding its bytes in prompt text. They do not invent a successful tool call. Results for
+valid pending calls still precede these carriers, preserving the upstream pairing contract.
+
 Native Anthropic passthrough is eligible only when all of these are true:
 
 - native passthrough has not been disabled in Claude Code configuration;
