@@ -124,3 +124,13 @@ Two failed partial-window repairs exposed the wrong abstraction: reconstructing 
 ## Structural and review notes
 
 The existing WS source is 462 lines. Extract pure mapping responsibilities before adding them; lifecycle extraction in the next cycle must keep new modules under 400 lines. Do not refactor unrelated adapter/catalog behavior. Existing `ws-bridge` safe-header export remains compatible even if its pure owner is extracted. No novel enforcement claim: checks enforce wire/resource invariants inside this process; they do not establish provider billing behavior.
+
+## Final integration verification amendment
+
+The original protocol checkpoint is `a04d1295be91776341ca2ffbebb37d6b640fffc8`; its successful CI run `33955395317` covers the earlier integration base `6b85485f32f783bafc61c79185d0cb937848859d`. Preserve that commit and its evidence as historical proof, not as validation of a later integration tree.
+
+Integrate the published `dev` checkpoint `cfe95eea0f776a5a5d5bad5f41408cd98ba98ff7` once using a normal merge in the existing branch. The read-only merge preview has no conflicts or changed-file intersection with the protocol patch; this is only integration preparation, not a CI result. No runtime protocol changes, lifecycle work, frontend transport changes, installation changes or dependency refresh are planned in this amendment.
+
+The build step adds only this plan amendment and the upstream integration. Compare every original protocol runtime/test file with `a04d1295`, record the integrated head and tree, and obtain an independent static integration review. Any substantive conflict or changed protocol behavior returns to planning rather than accepting a mechanical conflict resolution. Run the focused protocol checks, typecheck, privacy check and isolated HTTP-to-WS QA at the new committed head; retain the original receipts separately. Push the new head once with `--no-verify` and run fresh coordinated CI.
+
+Landing requires green current-head CI, no valid unresolved review findings, and an unchanged verified integration tree. Use the authorized admin merge-commit method with an exact-head guard, compare the actual merge tree, fetch `dev` and prove the merge commit is its ancestor. Complete the serialized post-merge `dev` CI before returning the verification slot. Connection lifecycle/reuse remains the separate, unstarted next work-phase.
