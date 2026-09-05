@@ -1336,6 +1336,8 @@ describe("Responses previous_response_id state", () => {
     });
     setResponseStateByteCapForTests(1_024);
     let flushed = false;
+    let drained = false;
+    let draining: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let flushing: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
     let restoreClock: (() => void) | undefined;
     try {
@@ -1349,6 +1351,10 @@ describe("Responses previous_response_id state", () => {
       await firstStarted;
 
       // Handle rejection immediately, including when a gate/assertion fails before this await.
+      draining = flushPendingResponseSpillsForTests().then(
+        () => { drained = true; return { ok: true } as const; },
+        (error: unknown) => { drained = true; return { ok: false, error } as const; },
+      );
       flushing = flushResponseState().then(
         () => { flushed = true; return { ok: true } as const; },
         (error: unknown) => { flushed = true; return { ok: false, error } as const; },
@@ -1359,12 +1365,16 @@ describe("Responses previous_response_id state", () => {
       await new Promise<void>(resolve => nativeSetImmediate(resolve));
       jest.advanceTimersByTime(25);
       await new Promise<void>(resolve => nativeSetImmediate(resolve));
+      // Snapshot I/O after draining must not mask a premature drain return.
+      expect(drained).toBe(false);
       expect(flushed).toBe(false);
       expect(gatedTemps.size).toBe(2);
       expect(stubSwaps).toBe(1);
       expect(syncSpillCalls).toBe(0);
 
       releaseSecond();
+      const drainOutcome = await draining;
+      if (!drainOutcome.ok) throw drainOutcome.error;
       const outcome = await flushing;
       if (!outcome.ok) throw outcome.error;
       expect(responseStateMetrics()).toMatchObject({ residentCount: 0, spillStubCount: 2 });
@@ -1381,6 +1391,7 @@ describe("Responses previous_response_id state", () => {
       releaseFirst();
       releaseSecond();
       try {
+        await draining;
         await flushing;
         await awaitResponseSpillPublicationTailForTests();
         await flushPendingResponseSpillsForTests();
