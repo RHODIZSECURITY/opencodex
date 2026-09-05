@@ -106,6 +106,9 @@ Use the exact ID printed by `live` (native or namespaced), represented in exampl
 by an explicitly labeled, quoted placeholder. Include `ocx start` prerequisite when the proxy is absent,
 and `ocx sync` retry guidance when discovery remains pending. No credentials in
 commands or messages. No shell execution from the builder.
+Rows marked native also receive explicit enable/disable --native command variants
+in both human and JSON output, so account-qualified native IDs containing a slash
+are not misparsed as routed provider/model selectors.
 
 ### MODIFY CLI completion owners
 
