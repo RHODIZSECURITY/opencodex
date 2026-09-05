@@ -27,10 +27,11 @@ onClose, onOpenModels. Render real state, not successful OFF before discovery:
 Use existing modal classes and focus behavior from AddProviderModal. All visible
 copy goes through t(); provider/model strings and CLI code remain technical text.
 No interval in the component: consume the existing Providers config refresh result.
-Add an explicit discovery-settled callback (or notice Retry action) that refreshes
+Require an explicit discovery-settled callback that refreshes
 config AFTER the model fetch/finalization completes, not only before it. Pending
 to all-off must update the same mounted notice; a successful finalization must not
 leave stale pending copy. Reuse the workspace model fetch completion signal.
+Retry is supplemental manual recovery, never a substitute for the completion callback.
 
 ### MODIFY gui/src/pages/Providers.tsx and providers-page-modals.tsx
 
