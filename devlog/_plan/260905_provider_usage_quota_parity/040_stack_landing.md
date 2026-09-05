@@ -64,4 +64,14 @@ fetch shim intact; keep only this unit's additional HTTPS-schema rejection and p
 privacy assertions there. Preserve upstream eager-relay cancellation changes verbatim.
 Do not replace the new cross-platform fixture with the superseded polling fixture.
 
+CI repair scope: the output-byte case in `tests/lab/lab-live-pinned-timeouts.test.ts`
+inherits 30ms first-byte/inactivity deadlines from neighboring timeout tests. The macOS
+failure reached `first_byte_timeout` before the byte guard. Give only this size case 1000ms
+first-byte/inactivity budgets, keeping the 128-byte response, 16-byte ceiling and exact
+`output_byte_limit` assertion. Inject the same 150ms response delay used by the neighboring
+timeout case so restoring the old 30ms budget deterministically preempts the intended guard.
+Keep both dedicated timeout tests and all production limits unchanged. Add an exact-16-byte
+success boundary under the size-case budgets. Record hypotheses and remote red/green evidence
+in 013; no local validation, skip, retry policy or CI workflow change is permitted.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.
