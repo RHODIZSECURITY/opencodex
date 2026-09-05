@@ -2,11 +2,22 @@
 
 Depends on: protocol cycle and its verified request/metadata owner. P must re-read this document and current source after that PR lands.
 
+## Landed-source refresh and loop specification
+
+Protocol PR3643 is landed; this phase starts from published `bf58ef1824e7b827b2a6bc1a5effb5d36ce80180`. Class C4, spec-satisfaction loop. Goal: eligible full HTTP requests reuse a canonical upstream socket without mixing exchanges. No-code/configuration cannot provide reuse because the existing transport unconditionally closes every terminal; unrelated provider pools speak different protocols. Reuse the existing exchange implementation, not a second relay. Keep frontend transport, native identity, full histories, admission/pacing, and installation unchanged.
+
+Resource scope: main implementation/audits under the user's no-other-task-communication instruction; no model override, new dependency, provider call or local full suite. Use disposable remote focused tests, typecheck and real loopback HTTP/WS QA plus full current-head CI. Initial wall-clock audit horizon is six hours from the explicit follow-up request. Evidence lives in this unit and the bound goalplan. A main audit is labelled as such; automatic PR review is a separate source. Prior immediate-admin permission closed PR3643 without waiting; it is not a green CI result for this new change.
+
+Source refresh adds a load-bearing requirement: `beforeDispatch` now guards credentials both before dialing and immediately before each frame. Reuse must call the fresh request's guard, including on a warm socket, and a refusal cannot enter HTTP fallback. Existing exports and Response markers remain compatible. The verified protocol command selects WS, account-attribution, metadata-integrity, reframing, cancellation and core/Lab tests; new lifecycle coverage gets an explicitly registered test file. Positive/negative activation evidence below, not a count alone, closes this phase.
+
 ## File-change map
 
 | Operation | Path | Exact change |
 | --- | --- | --- |
 | NEW | `src/server/responses/codex-ws-session.ts` | Own one WS connection, exclusive in-flight exchange, per-exchange listeners, bounded queue, and terminal/cancel cleanup. Extract the existing one-shot state machine rather than duplicating it. |
+| NEW | `src/server/responses/codex-ws-exchange.ts` | Extract the existing single-request relay/metadata/fallback state machine; both retained and one-shot sessions call this exact owner. |
+| NEW | `src/server/responses/codex-ws-wire.ts` | Own unchanged frame limits, event normalization and Response markers; facade re-exports preserve existing callers without a circular import. |
+| NEW | `src/server/responses/codex-ws-correlation.ts` | Per-exchange response/item correlation for retained sessions; a first incompatible exchange remains one-shot, reused incompatible traffic fails closed. |
 | NEW | `src/server/responses/codex-ws-pool.ts` | Own bounded idle sessions, canonical eligibility/keying, idle/max-age expiry, admission fallback and shutdown registration. No configuration/auth-store imports. |
 | MODIFY | `src/server/responses/codex-ws-request.ts` | Project genuine turn-state/turn-metadata headers into absent per-frame metadata slots before final serialization and byte-cap checks; identity consumes that exact prepared frame. |
 | MODIFY | `src/server/responses/ws-upstream.ts` | Keep the existing public entrypoint as compatibility facade; acquire an eligible idle canonical session or use the existing one-shot behavior, then send the prepared full frame. |
@@ -58,10 +69,12 @@ The initial implementation sends each complete HTTP request as a complete `respo
 
 - Hard cap: 32 retained canonical sessions; at most one active exchange per retained session. On a busy key, use a separately owned one-shot connection, not an unbounded waiter queue or concurrent send on that socket. Global turn admission remains authoritative.
 - Idle TTL: 30 seconds. Maximum connection age: 5 minutes. Named constants live in the pool owner; fake-clock tests cross exact boundaries.
+- Maximum successful exchanges per retained socket:32, bounding remembered response ids. Expired or superseded active exchanges may finish but are retired at release; age expiry does not kill an in-flight generation merely to free capacity. Correlation ids are bounded to4096 bytes and item tracking to10000 items; no prompt/output history is retained.
 - No timer before first activation. Expiry uses bounded owned timers with `unref` where available; every timer/listener is cleared on disposal. Register one shutdown hook on activation and detach when the pool is fully disposed.
 - Evict oldest idle entries before retaining a new one. Never evict/steal a live exchange merely to make room; use the existing one-shot bounded path.
 - Successful terminal closes the exchange stream and releases a reusable socket only after its bounded terminal frame is enqueued. Failed/incomplete/error outcomes are conservatively disposed, not reused.
 - Request abort removes that exchange's listener, errors its body exactly once, closes its socket, and releases its ownership. A completed request's later abort must not close a session leased to a successor request.
+- Per-exchange listeners and quota callbacks detach before release. Session-level listeners handle idle unsolicited data and physical closure only. Explicit pool shutdown settles active requests without HTTP fallback; unexpected pre-send upgrade failure retains the original fallback. Optional socket ref/unref hints do not replace deterministic cleanup.
 - Closing/error sockets are removed immediately. Reconnect/retry is allowed only before a frame was accepted for send; once inference may have started, do not fall back to HTTP and double-generate. Keep existing send-throw/upgrade failure semantics only when the no-send condition is proven.
 - Per-frame and per-exchange queue limits remain the existing limits. Connection reuse does not retain completed queues or prior output.
 - Shutdown closes idle and active pool-owned sockets, settles all requests, and unregisters timers. It cannot import Lab, block synchronous startup, or make unrelated providers start a timer.
