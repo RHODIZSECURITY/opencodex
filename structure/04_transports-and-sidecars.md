@@ -397,6 +397,23 @@ the downstream relay emits its terminal `response.failed` event plus `[DONE]`.
 Pre-open HTTP fallback remains unmarked and follows the ordinary configured
 stream path.
 
+At the canonical ChatGPT destination, HTTP Responses Lite intent is copied into
+the native per-frame WS metadata key, and the routing hint is derived from the
+final outgoing model/tier. No caller identity is synthesized. Noncanonical
+opt-in gateways keep their own metadata policy. Oversized/unsupported-runtime
+HTTP fallback preserves the original HTTP body and Lite header.
+
+Canonical WS quota and response metadata preceding the first Responses event
+are projected into bounded, allowlisted HTTP headers before the response is
+committed. Later quota observations update only the captured serving account;
+they cannot retroactively change HTTP headers already sent to the client.
+Control frames remain bounded, and provider credential/cookie headers are not
+forwarded. Once a WS create may have been sent, a missing prelude, overflow or
+disconnect settles as an errored SSE body rather than a retryable fetch failure,
+so HTTP fallback cannot duplicate that inference. A standalone no-response
+exchange has a 30-second prelude deadline in addition to the upgrade deadline.
+These are transport-fidelity guarantees, not a provider-billing guarantee.
+
 Translated response request-log tracking and the heartbeat relay also reuse
 `createSseInspector`. This keeps every client-facing SSE observation path on
 the same byte-bounded, discard-and-resynchronize frame policy and ensures the
