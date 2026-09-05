@@ -188,6 +188,10 @@ class FakeWebSocket {
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 
+  removeEventListener(type: string, listener: Listener) {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter(value => value !== listener));
+  }
+
   send(data: string) {
     this.sent.push(data);
   }

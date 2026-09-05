@@ -47,6 +47,30 @@ Keep the actual declaration shaped to existing Bun/Web types; no dependency or f
 
 ## Identity and eligibility contract
 
+### Source comparison amendment (2026-09-05)
+
+Reference checkout: `openai/codex` at `d2d5b70241fb448044c1c088a977cc720d70443a`.
+`core/src/client.rs:1358` checks unchanged request properties and an exact input
+prefix before deriving an incremental payload; `:1893` pairs that payload with
+the actual previous response id. `codex-api/src/endpoint/responses_websocket.rs:299`
+holds an exclusive stream lock and `:826` finishes the serial read on completion.
+This patch implements socket reuse, not that input-delta algorithm.
+
+The [official WebSocket guide](https://developers.openai.com/api/docs/guides/websocket-mode)
+describes connection-local continuation caches, optional named lanes, and full-input
+recovery after cache loss. It documents the public API, not a guarantee for the
+ChatGPT backend's private beta protocol. Our conservative subset is serial,
+default-lane, complete-input creates. Non-null `previous_response_id`, explicit
+`stream_id`, `generate`, or active background mode do not enter this pool. Their
+existing one-shot behavior is unchanged; this is not new continuation support.
+No steering or cross-lane fork is emitted. A named-lane frame cannot qualify a
+connection for reuse. Earlier five-minute/32-exchange retirement is a local resource
+policy, not an OpenAI limit, and never discards a continuation id invented by us.
+
+Remaining validation before readiness: real backend compatibility is not proven
+by public docs or mocks; rotating immutable handshake headers may prevent reuse.
+No billing/quota causation claim follows from this work.
+
 Reuse is canonical-URL-only and requires usable selected outbound auth/account identity plus explicit thread and turn identities. Missing either identity stays one-shot, so unrelated native turns cannot share a session. A mere model slug or account log label is not a reuse key.
 
 Compute an in-memory nonlogged digest of the selected credential/account, conversation/turn scope, actual model/tier, and immutable handshake policy. No raw credential, account id or prompt is emitted in logs, receipt data, exported diagnostics, or persisted cache. Different credentials, account, model/tier, originator/beta/attestation policy, or incompatible handshake headers must never reuse a socket.
@@ -110,4 +134,11 @@ Security analysis and negative-case reasoning are maintained in ignored scratch.
 
 ## Delivery
 
-Run the focused transport and integration suite, typecheck, privacy/secret checks, docs build, independent adversarial review, and the coordinator-approved full check. The PR remains pending until exact-head required checks and required review are satisfied. Land after protocol, prove ancestry, then close the unit and final goal. No production service restart or link occurs.
+Run the focused transport and integration suite, typecheck, privacy/secret checks,
+and exact-head CI. Main audits obey the user's no-other-task-communication boundary;
+do not represent them as independent security review. Publish with `--no-verify`
+as a draft PR targeting dev while verification or review remains outstanding.
+The latest user instruction explicitly prohibits merging this follow-up: leave the
+PR open and do not enable auto-merge, even after green checks. No production service
+restart or link occurs. The original goal's merge wording is superseded for this
+phase only; protocol's already-published outcome remains unchanged.
