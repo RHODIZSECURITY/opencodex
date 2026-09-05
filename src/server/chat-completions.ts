@@ -147,6 +147,7 @@ async function handleChatCompletionsWithBudget(
     if (!effortRow && isNativeChatRouteEligible(route, chatBody)) chatNativeRoute = route;
   } catch (err) {
     if (err instanceof UnknownRoutingPolicyError) {
+      logCtx.requestedModel = requestedModel;
       if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
       return chatCompletionsErrorResponse(404, err.message, "invalid_request_error");
     }
