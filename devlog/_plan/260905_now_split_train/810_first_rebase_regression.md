@@ -76,6 +76,12 @@ do not claim an unexecuted recipe passed.
 
 ## First-cycle acceptance
 
+Repair amendment813 adds one bounded existing-test fixture correction after
+the first C watchdog failure was reproduced on pinned dev. The unsuccessful
+cycle was reset toP for audit; it was not counted as completed. All source
+rebases and prior valid evidence remain preserved. No extra debt layer is
+implemented and no test budget or assertion is relaxed.
+
 - All14 original identities are preserved and staged heads are accounted for,
   with correct Cursor dependency ancestry and no unexplained source loss.
 - First main→dev/candidate regression report distinguishes intended changes,
