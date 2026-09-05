@@ -505,8 +505,8 @@ describe("rate-limit reset credits", () => {
       expect(quota).toEqual({
         shortPercent: 97,
         shortResetAt: 1787401330,
-        shortWindowSeconds: 18000,
         shortObservedAt: expect.any(Number),
+        shortWindowSeconds: 18000,
         weeklyPercent: 12,
         weeklyResetAt: 1788000000,
         updatedAt: expect.any(Number),
