@@ -1,4 +1,5 @@
 import { effectiveProviderAlias } from "../../providers/default-aliases";
+import { pendingModelSelectionProviders } from "../../providers/initial-model-selection";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -775,6 +776,7 @@ export interface ObservedCatalogMergeInput {
   readonly disabledModels: ReadonlySet<string>;
   readonly selectedModelsByProvider: ReadonlyMap<string, ReadonlySet<string>>;
   readonly gatheredProviderNames: ReadonlySet<string>;
+  readonly pendingProviderNames?: ReadonlySet<string>;
   readonly degradedProviderNames: ReadonlySet<string>;
   readonly legacyCustomModelSlugs: ReadonlySet<string>;
   readonly multiAgentMode: MultiAgentMode;
@@ -806,6 +808,7 @@ export function mergeCatalogEntriesFromObservedState({
   disabledModels,
   selectedModelsByProvider,
   gatheredProviderNames,
+  pendingProviderNames = new Set(),
   degradedProviderNames,
   legacyCustomModelSlugs,
   multiAgentMode,
@@ -855,6 +858,7 @@ export function mergeCatalogEntriesFromObservedState({
     if (disabledModelKeys.has(key)) return false;
     const slash = slug.indexOf("/");
     const provider = slug.slice(0, slash);
+    if (pendingProviderNames.has(provider)) return false;
     const selected = selectedModelKeysByProvider.get(provider);
     if (selected !== undefined && !selected.has(key)) return false;
     return !gatheredProviderNames.has(provider) || degradedProviderNames.has(provider);
@@ -1050,6 +1054,7 @@ export function mergeCatalogEntriesFromObservedState({
     if (freshExactComboEntries.has(entry)) return true;
     const slash = slug.indexOf("/");
     const provider = slug.slice(0, slash);
+    if (pendingProviderNames.has(provider)) return false;
     const selected = selectedModelKeysByProvider.get(provider);
     return selected === undefined || selected.has(slugEquivalenceKey(slug));
   });
@@ -1718,6 +1723,7 @@ function writeRetainedCatalogSync({
     disabledModels: new Set(config.disabledModels ?? []),
     selectedModelsByProvider,
     gatheredProviderNames,
+    pendingProviderNames: pendingModelSelectionProviders(config),
     degradedProviderNames,
     legacyCustomModelSlugs: legacyCustomModelCatalogSlugs(config),
     multiAgentMode,
@@ -1820,6 +1826,10 @@ export async function syncCatalogModels(
   config: OcxConfig,
   options?: CodexCatalogSyncOptions,
 ): Promise<RetainedCatalogSyncResult> {
+  if (pendingModelSelectionProviders(config).size) {
+    const { resolvePendingInitialModelSelection } = await import("../../providers/initial-model-selection-runtime");
+    await resolvePendingInitialModelSelection(config);
+  }
   const owningCodexHome = getCodexHome();
   const preflightRead = readRetainedCatalogSync(config);
   if (preflightRead === null) {
