@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { chatCompletionsToResponsesBody } from "../../src/chat/inbound";
 import { anthropicToResponsesTranslation } from "../../src/claude/inbound";
 import { evidenceFromBody } from "../../src/routing/request-evidence";
 import type { ProviderAdapter } from "../../src/adapters/base";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../../src/types";
-import type { RequestLogContext } from "../../src/server/request-log";
+import { clearRequestLogsForTests, type RequestLogContext } from "../../src/server/request-log";
+import { readUsageEntries } from "../../src/usage/log";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const MODEL = "policy/daily";
 const EXPECTED_RICH_EVIDENCE = {
@@ -162,6 +167,33 @@ function minimalSuccessAdapter(provider: OcxProviderConfig): ProviderAdapter {
 }
 
 describe("routing policy request evidence parity (via dev handlers)", () => {
+  test("finalized Chat and Messages policy errors retain the rejected selector", async () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "ocx-policy-log-"));
+    process.env.OPENCODEX_HOME = home;
+    clearRequestLogsForTests();
+    try {
+      for (const [wire, handler, body] of [
+        ["chat", handleChatCompletions, { model: "policy/missing", messages: [{ role: "user", content: "hello" }] }],
+        ["messages", handleClaudeMessages, { model: "policy/missing", max_tokens: 64, messages: [{ role: "user", content: "hello" }] }],
+      ] as const) {
+        const requestId = `policy-log-${wire}`;
+        const path = wire === "chat" ? "/v1/chat/completions" : "/v1/messages";
+        const response = await handler(new Request(`http://localhost${path}`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        }), testConfig(), { model: "", provider: "" }, { requestId, start: Date.now() });
+        expect(response.status).toBe(404);
+        const entry = readUsageEntries().find(row => row.requestId === requestId);
+        expect(entry?.requestedModel).toBe("policy/missing");
+        expect(entry?.status).toBe(404);
+      }
+    } finally {
+      clearRequestLogsForTests();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
   test("missing and empty policies return compatible 404s on every wire before adapter resolution", async () => {
     let adapterCalls = 0;
     adapterFactory = provider => {

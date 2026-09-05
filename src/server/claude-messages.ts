@@ -764,6 +764,7 @@ async function handleClaudeMessagesWithBudget(
     }
   } catch (err) {
     if (err instanceof UnknownRoutingPolicyError) {
+      logCtx.requestedModel = requestedModel;
       if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
       return anthropicErrorResponse(404, err.message, "invalid_request_error");
     }
