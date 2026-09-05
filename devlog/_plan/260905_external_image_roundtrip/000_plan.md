@@ -14,7 +14,8 @@
 - Outcomes: DONE only with proof; external dependencies may be BLOCKED/NEEDS_HUMAN;
   unsafe expansion is UNSAFE. No implementation-success claim from docs-only work.
 - Scope: this managed checkout, read-only Aside official docs, GitHub stack/CI/admin
-  merge. Maximum four concurrent agents; reassess after 90 minutes; no token cap set.
+  merge. The user's follow-up permits unlimited useful parallel agents (subject to
+  actual tool capacity); reassess after 90 minutes; no token cap set.
 - Escalation: reclaim a lane after two distinct failed agents; any delegated writes
   must be planned with disjoint paths before B. No production credentials in artifacts.
 
@@ -54,6 +55,12 @@ The user explicitly requested stacking; the upper layer consumes the corrected
 converter and protects the integrated contract independently of unit-level assertions.
 
 ## Continuity
+
+wp1 outcome: commit `1f1daa368` implements 010 with ten converter regression cases;
+draft PR #3586 targets dev. Independent patch reviewer inspected both changed files
+and returned PASS. Standalone request JSON changed from image/detail missing (exit 1)
+to both retained (exit 0); node TypeScript and privacy scan passed. Suites are CI-only,
+not claimed green yet. wp2 inherits this verified converter and adds wire/HTTP evidence.
 
 Roadmap audit: independent gpt-6-astra high reviewer returned GO-WITH-FIXES,
 two medium findings. Both folded: exact no-suite typecheck/push commands and actual
