@@ -1444,6 +1444,12 @@ surface is listed here so a maintainer can find the owner without grepping:
 - 다른 대안 대신 이 방식을 선택한 이유: This preserves the merged product decision without letting disabled proactive settings influence a retry, and it restores the published narrow-over-broad precedence in both directions.
 - 장점, 단점 및 영향: 429 recovery stays automatic for operators with multiple eligible accounts; operators who require no automatic account switch must keep one eligible account, which the GUI and public docs state explicitly.
 
+Cursor external-model continuations attach data-URL screenshots from the contiguous active
+tool-result batch through the existing image preparation and selected-context owners. The batch
+shares the 12-image active cap. Bounded source labels are emitted in active user-action text so
+root pruning cannot erase attachment provenance; the same text participates in token estimation.
+Native Composer/MCP behavior and text-only historical replay remain unchanged.
+
 ## Sidecars
 
 Web search and vision sidecars run only when the main request needs that capability and a usable
