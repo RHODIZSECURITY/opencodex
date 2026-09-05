@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { INTERNAL_DEADLINE_MS, SERVER_BUDGET_MS } from "../helpers/test-budget";
 import { handleConfigCommand } from "../../src/cli/config-command";
 import { validateConfigCandidate } from "../../src/config";
 import { handleManagementAPI } from "../../src/server/management-api";
@@ -481,16 +482,25 @@ describe("activation is the single switch", () => {
     // The end-to-end proof: config -> activation -> the production quota writer -> HTTP body.
     // Every earlier test exercises one link; this is the only one that shows the chain holds.
     const bodies: string[] = [];
-    const webhookUrl = "https://quota-webhook.example.test/hook";
-    const originalFetch = globalThis.fetch;
+    const received = Promise.withResolvers<void>();
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       async fetch(req) {
         bodies.push(await req.text());
+        received.resolve();
         return new Response("ok");
       },
     });
+
+    // Config requires HTTPS. Map only this reserved fixture URL at the transport
+    // seam; keep the real HTTP receiver without disabling certificate checks.
+    // This proves activation/delivery, not TLS integration.
+    const webhookUrl = "https://hooks.example.test/activation";
+    const receiverUrl = `http://127.0.0.1:${server.port}/hook`;
+    const realFetch = globalThis.fetch;
+    const dispatched: string[] = [];
+    let receiveTimeout: ReturnType<typeof setTimeout> | undefined;
 
     const home = mkdtempSync(join(tmpdir(), "ocx-live-"));
     writeFileSync(join(home, "config.json"), JSON.stringify({
@@ -511,13 +521,13 @@ describe("activation is the single switch", () => {
     const previousHome = process.env["OPENCODEX_HOME"];
     process.env["OPENCODEX_HOME"] = home;
     try {
-      // Config must satisfy the production HTTPS rule. Only the transport for this exact
-      // synthetic URL is redirected to the local receiver; activation and payload delivery
-      // remain real, without adding TLS fixtures or weakening production validation.
-      globalThis.fetch = ((input, init) => originalFetch(
-        String(input) === webhookUrl ? `http://127.0.0.1:${server.port}/hook` : input,
-        init,
-      )) as typeof fetch;
+      globalThis.fetch = Object.assign((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        if (input === webhookUrl) {
+          dispatched.push(input);
+          return realFetch(receiverUrl, init);
+        }
+        return realFetch(input, init);
+      }, realFetch);
       resetQuotaResetNotifyCacheForTests();
       resetQuotaResetStoreForTests();
       resetQuotaResetActivationForTests();
@@ -534,11 +544,15 @@ describe("activation is the single switch", () => {
         weeklyResetAt: Date.now() + 7 * 86_400_000,
       });
       await flushQuotaObservationsForTests();
-      // The sink dispatch is fire-and-forget by contract, so the HTTP round trip needs a moment.
-      for (let attempt = 0; attempt < 40 && bodies.length === 0; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
+      // Delivery is fire-and-forget; wait for the receiver, not a polling budget.
+      await Promise.race([
+        received.promise,
+        new Promise<never>((_, reject) => {
+          receiveTimeout = setTimeout(() => reject(new Error("quota webhook was not received")), INTERNAL_DEADLINE_MS);
+        }),
+      ]);
 
+      expect(dispatched).toEqual([webhookUrl]);
       expect(bodies).toHaveLength(1);
       const payload = JSON.parse(bodies[0] ?? "{}") as Record<string, unknown>;
       expect(payload["type"]).toBe("quota_reset");
@@ -548,7 +562,8 @@ describe("activation is the single switch", () => {
       expect(payload["percentAfter"]).toBe(2);
       expect(bodies[0]).not.toContain("operator@example.com");
     } finally {
-      globalThis.fetch = originalFetch;
+      if (receiveTimeout !== undefined) clearTimeout(receiveTimeout);
+      globalThis.fetch = realFetch;
       setQuotaResetSink(null);
       resetQuotaResetActivationForTests();
       resetQuotaResetNotifyCacheForTests();
@@ -557,5 +572,5 @@ describe("activation is the single switch", () => {
       if (previousHome === undefined) delete process.env["OPENCODEX_HOME"];
       else process.env["OPENCODEX_HOME"] = previousHome;
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 });
