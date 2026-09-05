@@ -74,4 +74,10 @@ Keep both dedicated timeout tests and all production limits unchanged. Add an ex
 success boundary under the size-case budgets. Record hypotheses and remote red/green evidence
 in 013; no local validation, skip, retry policy or CI workflow change is permitted.
 
+Upstream #3552 advanced `dev` to 9fe986d84 and conflicted in the same quota-observation
+test. Preserve its main-account hard-lock and private quota-provenance implementation
+verbatim, including monthly-primary semantics and exact quota-reset dispatch. Resolve only
+the local snapshot variable name while retaining strict shape/equality and observation-time
+bounds. No new hard-lock behavior is designed in this unit; fresh integrated CI is required.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.
