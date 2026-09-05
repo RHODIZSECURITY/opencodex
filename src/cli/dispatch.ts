@@ -698,6 +698,10 @@ const commandRunners: Record<string, CommandRunner> = {
       return await handleRoutePolicyCommand(deps.args.slice(2));
     }
   },
+  effort: async deps => {
+    const { handleEffortCommand } = await import("./effort");
+    return await handleEffortCommand(deps.args.slice(1), { findLiveProxy: deps.findLiveProxy });
+  },
   agent: async deps => {
     const { handleAgentCommand } = await import("./agent");
     return await handleAgentCommand(deps.args.slice(1));

@@ -230,6 +230,7 @@ keys are not returned to dashboard clients.
 | `DELETE /api/providers?name=...` | Delete a provider, reassigning the default when possible | 404 unknown provider; 409 `last_provider`; 409 `provider_has_dependent_combos` |
 | `POST /api/providers/test?name=...` | Perform a bounded live provider connectivity/model-discovery probe | 404 unknown provider; failures are normally returned as `ok: false` evidence |
 | `GET /api/provider-quotas` | Read provider quota reports; `refresh=1` forces refresh | — |
+| `GET /api/quota-resets` | List recently detected quota-window resets and whether detection is enabled; `limit=<n>` caps the count | 400 invalid `limit` |
 | `GET, PUT /api/provider-context-caps` | Read or update global, all-provider, or one-provider context caps | 400 invalid request; 404 unknown provider |
 | `GET /api/provider-presets` | Return GUI provider presets derived from the runtime registry | — |
 
@@ -280,6 +281,7 @@ manager. Its routes are:
 | `PUT /api/codex-auth/accounts/alias` | Set or clear an account alias | 400 invalid account/alias |
 | `PUT /api/codex-auth/accounts/pause` | Pause or resume one account | 400 invalid account/state; 404 missing account |
 | `PUT /api/codex-auth/accounts/pause-exhausted` | Pause accounts whose quota is exhausted | Mutation-lock failures become 503 |
+| `PUT /api/settings` with `codexQuotaAutoRefresh: { id, window, enabled }` | Enable or disable 5-hour or weekly automatic window activation for one account | 400 invalid id/window/state; 404 missing account; 409 unavailable window |
 | `POST /api/codex-auth/accounts/clear-cooldown` | Clear runtime cooldown for one account or all accounts | 400 invalid id |
 | `GET, PUT /api/codex-auth/active` | Read or select the active account | 400 invalid or missing account; 409 paused/legacy-row conflict |
 | `PUT /api/codex-auth/auto-switch` | Set the quota threshold for automatic account switching | 400 invalid threshold |

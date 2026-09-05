@@ -67,6 +67,7 @@ import { evidenceFromBody } from "../../routing/request-evidence";
 import { resolvePassiveRouteSubjectId } from "../passive-route-linker";
 import {
   advanceComboAfterFailure,
+  comboCooldownRetryAfterSeconds,
   comboDefaultEffort,
   comboFailureCooldownScope,
   comboFailureDecision,
@@ -75,11 +76,11 @@ import {
   concreteComboRequestBody,
   getCombo,
   isComboTargetInCooldown,
-  comboCooldownRetryAfterSeconds,
   NoAvailableComboTargetsError,
   noteComboSuccess,
   parseRetryAfterMs,
   pickComboTarget,
+  pickComboTargetWithWait,
   targetKey,
 } from "../../combos";
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
@@ -238,6 +239,7 @@ import {
   rateLimitRetryDelayMs,
   rateLimitRetryPolicyFor,
   rotateProviderTransportOn429,
+  rotateProviderTransportOn401,
   transientRetryPolicyFor,
 } from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
@@ -1476,6 +1478,8 @@ export interface ConsumedComboFailure {
   upstreamCode?: string;
   /** Valid numeric/date value used only for cooldown calculation. */
   retryAfter?: string;
+  /** Upstream Codex quota-window reset timestamps used for combo cooldowns. */
+  resetAt?: string[];
   /** Reserved for 040 usage attribution without adding another body read. */
   usage?: OcxUsage;
 }
@@ -1592,9 +1596,26 @@ export async function consumeComboFailure(
   let upstreamCode: string | undefined;
   let upstreamMessage: string | undefined;
   let upstreamType: string | undefined;
+  // Whether the body itself confirms a quota/rate-limit refusal, computed on the SAME read as
+  // the classification below. `shouldRetryCodexPoolAccountQuota` cannot be called here without
+  // a second body read, so this mirrors its normalization: raw 402/429, or a 5xx whose intact,
+  // display-safe body carries a recognized quota message.
+  let quotaConfirmedByBody = false;
   try {
-    const body = await readBoundedResponseBody(response, { signal });
+    const body = await readBoundedResponseBody(response, {
+      signal,
+      // Match shouldRetryCodexPoolAccountQuota before treating a 5xx body as quota evidence.
+      fatalUtf8: response.status >= 500 && response.status < 600,
+    });
     usage = usageFromComboFailureText(body.text);
+    if (
+      response.status >= 500 && response.status < 600
+      && body.displaySafe && !body.truncated
+    ) {
+      const quotaMessage = codexQuotaFailureMessage(body.text);
+      quotaConfirmedByBody = quotaMessage !== undefined
+        && isRateLimitOrQuotaFailureMessage(quotaMessage);
+    }
     if (body.displaySafe) {
       const normalized = normalizeUpstreamErrorText(body.text, fallback);
       classificationText = normalized.safeText;
@@ -1615,18 +1636,24 @@ export async function consumeComboFailure(
       ? fallback
       : `${fallback}: ${classificationText}`;
   const upstreamRetryAfter = response.headers.get("retry-after");
+  // Past HTTP dates are an immediate retry directive, just like the numeric value zero.
+  // Normalize before the client helper discards them and substitutes a default delay.
+  const effectiveRetryAfter = parseRetryAfterMs(upstreamRetryAfter, now) === undefined
+    && parseRetryAfterMs(upstreamRetryAfter, now, { preserveImmediate: true }) !== undefined
+    ? "0"
+    : upstreamRetryAfter;
   // Client response may get the synthetic "2" fallback; cooldown metadata must not —
   // otherwise coolComboTarget treats it as a 2s cooldown instead of the 60s default.
   const clientRetryAfter = resolveClientRetryAfter({
     status: response.status,
     message,
-    upstreamRetryAfter,
+    upstreamRetryAfter: effectiveRetryAfter,
     now,
   });
   const cooldownRetryAfter = resolveClientRetryAfter({
     status: response.status,
     message,
-    upstreamRetryAfter,
+    upstreamRetryAfter: effectiveRetryAfter,
     now,
     includeDefault: false,
   });
@@ -1643,6 +1670,14 @@ export async function consumeComboFailure(
     classificationText,
     ...(normalizedUpstreamCode !== undefined ? { upstreamCode: normalizedUpstreamCode } : {}),
     ...(!cyberFailure && cooldownRetryAfter !== undefined ? { retryAfter: cooldownRetryAfter } : {}),
+    // The EFFECTIVE classification decides, not the raw status. An upstream that wraps a quota
+    // refusal in a 5xx still carries `x-codex-*-reset-at`, and gating on 402/429 alone threw
+    // those away, so the combo target came back up immediately instead of waiting for the
+    // window it was told about. `cyberFailure` stays excluded: a policy block is not a quota.
+    ...(!cyberFailure
+      && (response.status === 429 || response.status === 402 || quotaConfirmedByBody)
+      ? { resetAt: codexQuotaOutcomeMeta(response).resetAt }
+      : {}),
     ...(usage ? { usage } : {}),
   };
 }
@@ -1756,6 +1791,31 @@ function unreadableEncryptedAgentTaskResponse(): Response {
     }),
     { status: 400, headers: { "Content-Type": "application/json" } },
   );
+}
+
+/**
+ * Keep this trust boundary deliberately narrow: only a key-auth Responses route may consume
+ * opaque child-task ciphertext, and the model's final wire override must still be Responses.
+ * Callers keep combo attempts on their existing native-only recovery/fail-closed behavior.
+ */
+function canPassThroughEncryptedV2AgentTask(
+  route: RouteResult,
+  inboundWire: InboundWire,
+): boolean {
+  if (route.combo !== undefined) return false;
+  const provider = route.provider;
+  if (
+    inboundWire !== "responses"
+    || provider.allowEncryptedV2AgentTasks !== true
+    || (provider.authMode ?? "key") !== "key"
+  ) return false;
+
+  return resolveWireProtocolOverride(
+    route.providerName,
+    route.modelId,
+    provider,
+    inboundWire,
+  ).adapter === "openai-responses";
 }
 
 type ResponsesAuthResolution =
@@ -2295,6 +2355,15 @@ export async function handleComboResponses(
     comboPayloadReadable || !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
   const initialNow = Date.now();
   let pick: ReturnType<typeof pickComboTarget> = null;
+  const pickWithWait = (pickOptions: {
+    exclude?: Iterable<string>;
+    eligible?: (target: NonNullable<typeof combo>["targets"][number]) => boolean;
+    now?: number;
+  }) => pickComboTargetWithWait(config, comboId, {
+    ...pickOptions,
+    waitForCooldownMs: combo.waitForCooldownMs,
+    abortSignal: options.abortSignal,
+  });
 
   if (unreadableEncryptedAgentTask && !combo.targets.some(canDecryptUnreadableAgentTask)) {
     const recovery = agentTaskRecoveryConfig(config);
@@ -2312,9 +2381,7 @@ export async function handleComboResponses(
       );
       return unreadableEncryptedAgentTaskResponse();
     }
-    pick = pickComboTarget(config, comboId, {
-      eligible: target => !isComboTargetInCooldown(comboId, target, initialNow),
-    });
+    pick = await pickWithWait({ now: initialNow });
     if (!pick) {
       discardEncryptedAgentTaskRecovery(
         req,
@@ -2322,7 +2389,9 @@ export async function handleComboResponses(
         config,
         { parentThreadId: inboundClientThreadId },
       );
-      return comboUnavailable(comboId);
+      return options.abortSignal?.aborted
+        ? clientCancelledResponse()
+        : comboUnavailable(comboId);
     }
     let recovered = false;
     try {
@@ -2352,14 +2421,16 @@ export async function handleComboResponses(
     comboPayloadReadable = true;
     comboReplaySnapshot.recoveredPlaintext = true;
   } else {
-    pick = pickComboTarget(config, comboId, {
-      eligible: target => payloadEligible(target)
-        && !isComboTargetInCooldown(comboId, target, initialNow),
+    pick = await pickWithWait({
+      eligible: payloadEligible,
+      now: initialNow,
     });
   }
 
   if (!pick) {
-    return comboUnavailable(comboId);
+    return options.abortSignal?.aborted
+      ? clientCancelledResponse()
+      : comboUnavailable(comboId);
   }
   // One immutable combo selection trace, before any child dispatch; child
   // adoption below must never replace it with a concrete child route trace.
@@ -2563,9 +2634,12 @@ export async function handleComboResponses(
     console.warn(
       `[combo] ${comboId}: ${targetKey(pick.target)} failed with ${failure.response.status} after ${Date.now() - started}ms`,
     );
+    const failureNow = Date.now();
     const nextPick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
-      now: Date.now(),
+      resetAt: failure.resetAt,
+      cooldownMs: combo.cooldownMs,
+      now: failureNow,
       cooldownScope: comboFailureCooldownScope(failure.response.status, failure.classificationText, {
         code: failure.upstreamCode,
       }),
@@ -2574,8 +2648,19 @@ export async function handleComboResponses(
       code: failure.upstreamCode,
       message: failure.classificationText,
     });
-    if (!nextPick) adoptFailedChildLog(childLog);
-    pick = nextPick;
+    if (nextPick) {
+      pick = nextPick;
+    } else {
+      pick = await pickWithWait({
+        exclude: pick.attempted,
+        eligible: payloadEligible,
+        now: failureNow,
+      });
+    }
+    if (!pick) {
+      if (options.abortSignal?.aborted) return clientCancelledResponse();
+      adoptFailedChildLog(childLog);
+    }
   }
   if (
     lastFailure?.status === 413
@@ -3057,6 +3142,7 @@ async function handleResponsesInner(
       subagentFallbackAccountPreview,
       subagentFallbackModelEligibleAccountIdsForModel,
       fallbackChain,
+      candidateRoute => canPassThroughEncryptedV2AgentTask(candidateRoute, inboundWire),
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -3086,7 +3172,8 @@ async function handleResponsesInner(
     previewSelectionAdmission?.release();
   }
 
-  // Native fallback can consume ciphertext, so recover only after final route selection.
+  // Native fallback and explicitly trusted direct Responses routes can consume ciphertext,
+  // so recover only after final route selection.
   if (
     inboundWire === "responses"
     &&
@@ -3095,6 +3182,7 @@ async function handleResponsesInner(
     && agentTaskRecovery
     && !isCanonicalOpenAiForwardProvider(route.provider)
     && !options.comboAttempt
+    && !canPassThroughEncryptedV2AgentTask(route, inboundWire)
   ) {
     let recovered = false;
     try {
@@ -3218,9 +3306,16 @@ async function handleResponsesInner(
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
 
-  // Encrypted child tasks may only reach the canonical native backend. This check
-  // runs against the FINAL route so native-only fallback can rescue a routed primary.
-  if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
+  // Encrypted child tasks may reach the canonical native backend or an explicitly trusted
+  // direct Responses route. This runs against the FINAL route so native-only fallback can
+  // rescue an incompatible primary without weakening combo behavior.
+  const finalRouteCanPassThroughEncryptedTask = !options.comboAttempt
+    && canPassThroughEncryptedV2AgentTask(route, inboundWire);
+  if (
+    (route.combo !== undefined || !isCanonicalOpenAiForwardProvider(route.provider))
+    && !finalRouteCanPassThroughEncryptedTask
+    && unreadableEncryptedAgentTask
+  ) {
     return unreadableEncryptedAgentTaskResponse();
   }
 
@@ -6152,6 +6247,37 @@ async function handleResponsesInner(
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
+      }
+
+      // Static API-key pools can recover a credential-scoped 401 without abandoning the
+      // provider: one revoked or mistyped key says nothing about its siblings. OAuth providers
+      // refresh above and never enter here — `hasKeyPoolFailover` rejects oauth/forward modes.
+      // Runs after the OAuth replay so a refreshable token is never treated as a dead key.
+      while (upstreamResponse.status === 401 && hasKeyPoolFailover(route.provider)) {
+        const rotated = rotateProviderTransportOn401(config, route.providerName, route.provider, {
+          now: Date.now(),
+          attemptedKey: route.provider.apiKey,
+          promptCacheKey: parsed.options.promptCacheKey,
+        });
+        if (!rotated) break;
+        // Release the failed response's socket before retrying; unread bodies otherwise linger
+        // until runtime cleanup (one per rotated key).
+        try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+        route.provider = rotated;
+        invalidateSameTargetRequest();
+        activeAdapter = resolveAdapter(
+          resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
+          config.cacheRetention,
+        );
+        bindRouteReasoningReplayScope({
+          parsed,
+          providerName: route.providerName,
+          provider: route.provider,
+          adapterName: activeAdapter.name,
+        });
+        const result = await rebuildAndRefetch("key-401");
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
       }
 
       // Same-target 429 wait-and-retry (opt-in `retryOn429`, issue #487). Codex never retries
