@@ -1,0 +1,22 @@
+# Verified bottom-up stack landing
+
+Depends on all implementation layers. Execute as `landing`; no production patch planned.
+Inherit resource/scope limits from 000. User explicitly authorizes no-verify pushes and admin merges only after CI succeeds.
+
+## Actions
+
+1. Inspect `git status --short`, `git worktree list`, each branch tip and `gh pr view --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,mergeStateStatus`.
+2. Inspect exact-head CI via `gh run list --commit <sha>` and failed job logs when necessary. An empty required-check list is not proof. Resolve correct review findings without suppressing tests.
+3. Ensure every PR includes Summary, Verification and Checklist, a linked stack map, explicit no-local-suite note, and UI screenshot for UI changes. Record admin bypass authorization in the PR description.
+4. Merge the bottom PR only when its exact head has successful full CI; prefer `gh pr merge --admin --merge --match-head-commit <sha>` to preserve stack ancestry. Do not delete lower branches.
+5. Retarget the next child to `dev`; refresh checks at its exact head/base. If ancestry reconstruction is necessary, use only session-owned branches with clean working state, record parent and child commits, cascade all upper layers and use `--force-with-lease --no-verify`; no destructive worktree operations.
+6. After each merge, `git fetch origin dev` then `git merge-base --is-ancestor <merge-sha> FETCH_HEAD`. Record PR, CI head, merge SHA and ancestry outcome in `041_delivery.md`.
+7. Archive the completed unit from `_plan` to `_fin` only as an explicit final documented source change with its own remote checks if it alters a pending PR. Otherwise retain a terminal closure record without inventing extra unverified commits.
+
+## Completion evidence
+
+All exact-head CI jobs passed, original symptom and quota state matrix observed, no user history modified, no live service restarted, no local suite executed, every authorized stack layer on fetched dev. Final report distinguishes repository delivery from runtime deployment.
+
+## Verifier and terminal conditions
+
+CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.
