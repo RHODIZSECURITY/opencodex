@@ -16,6 +16,11 @@
 ## Pinned input and cutoff
 
 Initial dev: `ba9a45570986aa7828508285e9a469549344dd70`.
+Execution rebase pin: `bf58ef1824e7b827b2a6bc1a5effb5d36ce80180`. The
+intervening Reserve and release-version changes remain part of the baseline.
+In particular, preserve the new `planVisionSidecar` admission/policy options
+and conditional Reserve compatibility in its moved planning leaf. The new
+release-version behavior is not changed by this train.
 Initial main: `48f8186647d9ffb108d226dcfa91a64225aae2a7`.
 Preserve the WP480 docs-only head `ddb7013ac0c58e513c651d54a96e07f52ac0efbe` and central records head `9c0952e482b1586c0dc62d5c536698fe5578cf28`.
 The original 68-file plan has17done/1in-progress/61pending work-phases; these counts are not file-resolution counts and are not rewritten as completed.
@@ -25,7 +30,8 @@ An existing native host goal cannot be replaced by the exposed create/update too
 
 The user explicitly confirmed preserving original PRs/branches, rebasing new local staging refs, and delivering the reviewed contents through one standalone aggregate PR. After verified landing, close the originals as superseded, not individually merged. Do not ask for that choice again.
 The user additionally requires at least two complete main-to-dev regression PABCD cycles. Cycle1 follows810: local rebases, consolidation and first baseline/candidate regression proof, with no publication. Cycle2 follows820: an independent pinned-main export-contract guard, second regression pass and final-head-only publication/admin delivery. Two CHECK invocations or a docs-only cycle do not meet this requirement.
-No source rebase/implementation or external publication has occurred yet. Original unfinished debt remains deferred, not completed.
+Local staging rebases are in progress; no external publication has occurred.
+Original unfinished debt remains deferred, not completed.
 
 ## Exact inventory
 
