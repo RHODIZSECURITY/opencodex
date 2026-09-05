@@ -1,6 +1,28 @@
 # Verified bottom-up stack landing
 
-Depends on all implementation layers. Execute as `landing`; no production patch planned.
+## Authorized continuation
+
+The user explicitly extended this goal to the CI-blocking launcher, shim and process
+failures and authorized completion without further routine scope pauses. Existing no-local-
+suite/typecheck/build/lint/scan restrictions remain. Verification is remote CI only; commits
+and pushes use no-verify. The live proxy, user accounts and usage history remain untouched.
+
+Replan the unfinished landing cycle; no prior failed check is marked successful. First improve
+bounded diagnostic classification in `src/codex/shim.ts` and its existing integration test,
+and in `tests/update/update-stop-first.test.ts`. Keep unknown outcomes fail-closed. Do not
+raise production deadlines, accept live descendants, suppress assertions, expose raw child
+output or add retry-to-green behavior. Detailed diagnostic hypotheses and the write map live
+in ignored scratch space. Then repair only causes established by remote evidence, with an
+independent security/implementation review before publishing each dependent cascade.
+
+Main owns shim outcome diagnostics and its test; the delegated update worker owns only the
+update-recovery fixture and its bounded tests. No worker may modify Git, CI state, the goal,
+another worker's files or run local validation. New production fixes beyond diagnostics are
+amended here and independently audited before writing. Allow up to 90 minutes of active
+work for this authorized repair pass; exclude external CI queue time from active work.
+
+Depends on all implementation layers. Execute as `landing`; production changes are limited
+to the authorized, reviewed CI-blocking diagnostics and evidence-backed corrections.
 Inherit resource/scope limits from 000. User explicitly authorizes no-verify pushes and admin merges only after CI succeeds.
 
 ## Actions
