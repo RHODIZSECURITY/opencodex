@@ -261,7 +261,7 @@ const dispatchSource = readFileSync(join(repoRoot, "src", "cli", "dispatch.ts"),
 
 describe("bounded recovery diagnostics", () => {
   test("structured codes preserve resource causes without messages, paths or getter execution", () => {
-    const cause = { code: "EMFILE", path: "/Users/private/credential" };
+    const cause = { code: "EMFILE", path: "/synthetic-private/credential" };
     const error = Object.assign(new TypeError("https://secret.invalid/bearer?token=private"), { code: "EAGAIN", cause });
     expect(recoveryErrorFields(error)).toEqual({ errorName: "TypeError", code: "EAGAIN", causeCode: "EMFILE" });
     expect(recoveryErrorFields({ name: "secret", code: "ERR_SECRET_TOKEN", cause: { code: "private" } }))
@@ -279,7 +279,7 @@ describe("bounded recovery diagnostics", () => {
   });
 
   test("status projects only event-specific fields and rejects forged schemas", () => {
-    expect(recoveryStatusRecord({ v: 1, event: "runtime-resolved", source: "bundled", path: "/Users/private", token: "secret", pid: 12 }))
+    expect(recoveryStatusRecord({ v: 1, event: "runtime-resolved", source: "bundled", path: "/synthetic-private", token: "secret", pid: 12 }))
       .toEqual({ v: 1, event: "runtime-resolved", source: "bundled" });
     expect(recoveryStatusRecord({ v: 1, event: "runtime-exit", exitCode: 7, signal: null, stack: "secret" }))
       .toEqual({ v: 1, event: "runtime-exit", exitCode: 7, signal: null });
@@ -300,13 +300,13 @@ describe("bounded recovery diagnostics", () => {
     const directory = mkdtempSync(join(tmpdir(), "ocx-recovery-redaction-"));
     try {
       const path = join(directory, "stderr");
-      writeFileSync(path, "hidden-prefix".repeat(1000) + "\nENOMEM dyld[123]: Library not loaded: /Users/private/token\npanic: bearer-secret@example.test\n");
+      writeFileSync(path, "hidden-prefix".repeat(1000) + "\nENOMEM dyld[123]: Library not loaded: /synthetic-private/token\npanic: bearer-secret@example.test\n");
       const summary = recoveryDiagnosticFile(path);
       expect(summary).toContain("ENOMEM");
       expect(summary).toContain("native-loader-failure");
       expect(summary).toContain("native-runtime-failure");
       expect(summary).not.toContain("hidden-prefix");
-      expect(summary).not.toContain("/Users/");
+      expect(summary).not.toContain("/synthetic-private/");
       expect(summary).not.toContain("bearer-secret");
       expect(summary).not.toContain("@");
       expect(summary.length).toBeLessThanOrEqual(1200);
