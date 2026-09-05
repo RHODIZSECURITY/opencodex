@@ -125,7 +125,7 @@ Two failed partial-window repairs exposed the wrong abstraction: reconstructing 
 
 The existing WS source is 462 lines. Extract pure mapping responsibilities before adding them; lifecycle extraction in the next cycle must keep new modules under 400 lines. Do not refactor unrelated adapter/catalog behavior. Existing `ws-bridge` safe-header export remains compatible even if its pure owner is extracted. No novel enforcement claim: checks enforce wire/resource invariants inside this process; they do not establish provider billing behavior.
 
-## Final integration verification amendment
+## Prior integration verification amendment
 
 The original protocol checkpoint is `a04d1295be91776341ca2ffbebb37d6b640fffc8`; its successful CI run `33955395317` covers the earlier integration base `6b85485f32f783bafc61c79185d0cb937848859d`. Preserve that commit and its evidence as historical proof, not as validation of a later integration tree.
 
@@ -134,3 +134,11 @@ Integrate the published `dev` checkpoint `cfe95eea0f776a5a5d5bad5f41408cd98ba98f
 The build step adds only this plan amendment and the upstream integration. Compare every original protocol runtime/test file with `a04d1295`, record the integrated head and tree, and obtain an independent static integration review. Any substantive conflict or changed protocol behavior returns to planning rather than accepting a mechanical conflict resolution. Run the focused protocol checks, typecheck, privacy check and isolated HTTP-to-WS QA at the new committed head; retain the original receipts separately. Push the new head once with `--no-verify` and run fresh coordinated CI.
 
 Landing requires green current-head CI, no valid unresolved review findings, and an unchanged verified integration tree. Use the authorized admin merge-commit method with an exact-head guard, compare the actual merge tree, fetch `dev` and prove the merge commit is its ancestor. Complete the serialized post-merge `dev` CI before returning the verification slot. Connection lifecycle/reuse remains the separate, unstarted next work-phase.
+
+## Current integration and delivery
+
+The prior integration head `8166ae508b9c64d1df811460144c96f16df32976` retained the original protocol runtime/test bytes and passed focused checks, but CI run `33960595165` was cancelled when one macOS job exceeded its bound. Preserve that result; neither a standalone non-reproduction nor an invalid diagnostic establishes its cause or closes it. No production fix, test skip, assertion weakening or timeout increase is justified by that incident.
+
+Published `dev` has advanced to `45f3bed84be10a7e045a20aae1db46ab822bf7d0`. Revalidate its integration using the latest published checkpoint before the next push; if that checkpoint changes, compare the new delta and refresh source-bound verification rather than reusing an older tree's result. Keep all original protocol runtime/test files unchanged unless a separately demonstrated protocol defect requires a new repair plan. This is required integration work, not a claim to repair the earlier CI stall.
+
+Delivery is now self-directed without peer-task messaging. Observe active CI runs directly, perform an explicit main integration/security audit, retain the earlier independent protocol reviews, and check current automatic PR findings. Remote focused verification uses disposable source and correctly located private dependencies with a dependency-resolution preflight; setup errors stop the run immediately. Do not modify the existing remote checkout, installation or service. The exact-head full-CI, guarded admin merge, actual-tree comparison, fetched ancestry and post-merge verification gates above remain mandatory. Lifecycle work still follows protocol landing.
