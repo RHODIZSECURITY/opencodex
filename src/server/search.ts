@@ -19,6 +19,8 @@ import {
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
 import { codexAccountNamespaceForModel } from "../codex/account-namespace-match";
+import { NATIVE_RESERVE_MODEL } from "../codex/catalog/native-models";
+import { isEffectiveCodexDesktopAuthless } from "../codex/loopback-target";
 import { formatCodexProviderForLog } from "../codex/routing";
 import { signalWithTimeout } from "../lib/abort";
 import { readBoundedResponseBytes } from "../lib/bounded-body";
@@ -93,6 +95,10 @@ export async function handleSearch(
     }
   }
 
+  if (isEffectiveCodexDesktopAuthless(config) && (exactAccount?.modelId ?? model) === NATIVE_RESERVE_MODEL) {
+    return formatErrorResponse(400, "invalid_request_error",
+      "Luna Reserve compatibility is only available as a conversation model, not the standalone search relay. Choose another search model.");
+  }
   const candidates = listOpenAiForwardSidecarCandidates(config);
   if (candidates.length === 0) {
     return formatErrorResponse(

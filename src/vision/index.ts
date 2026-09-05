@@ -7,6 +7,7 @@ import { describeImageRouted } from "./routed-describe";
 import { isModelVisionSidecarConsumer as isModelTextOnly, modelAcceptsImageInput } from "./eligibility";
 import { normalizeVisionReasoningForModel } from "./reasoning";
 import type { CodexAuthContext } from "../codex/auth-context";
+import { isEffectiveCodexDesktopAuthless } from "../codex/loopback-target";
 import { resolveSidecarAuth } from "../sidecar/auth";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
@@ -361,6 +362,7 @@ export function planVisionSidecar(
     backend,
     forwardSidecar: openAiSidecar,
     settings: {
+      ...(isEffectiveCodexDesktopAuthless(config) ? { reserveCompatibility: true } : {}),
       model,
       reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
         timeoutMs: resolveVisionTimeoutMs(cfg.timeoutMs),

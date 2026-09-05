@@ -2,6 +2,7 @@ import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { modelInList, toolChoiceToolPredicate } from "../types";
 import { isModelTextOnly } from "../vision";
 import type { SidecarSettings } from "./executor";
+import { isEffectiveCodexDesktopAuthless } from "../codex/loopback-target";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import { resolveSidecarAuth } from "../sidecar/auth";
 import { getAccountSet } from "../oauth/store";
@@ -322,7 +323,10 @@ export function planWebSearch(
     backend: "openai",
     forwardSidecar: openAiSidecar,
     hostedTool: parsed._webSearch,
-    settings: { model: cfg.model ?? DEFAULT_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+    settings: {
+      model: cfg.model ?? DEFAULT_SIDECAR_MODEL, reasoning, timeoutMs, describeImages,
+      ...(isEffectiveCodexDesktopAuthless(config) ? { reserveCompatibility: true } : {}),
+    },
     maxSearches,
     routedModelStallTimeoutMs,
     stallTimeoutSec,
