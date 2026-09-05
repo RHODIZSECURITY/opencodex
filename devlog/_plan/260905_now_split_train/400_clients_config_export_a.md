@@ -1,5 +1,8 @@
 # 400 — S13 L1/5: extract low-fanout client formats and dependency foundations
 
+> Historical record imported from `9c0952e482b1586c0dc62d5c536698fe5578cf28`. Existing split implementation history; aggregate delivery pending. Original PR is not individually merged. Current/latest below means at that historical checkpoint; older blocked/pending snapshots do not override bbf8d3cd or authorize resumption.
+> Operational instructions and verification recipes below are superseded by800_closeout.md,801_closeout_regression_matrix.md,810_first_rebase_regression.md and820_second_regression_delivery.md. Peer coordination is closed. Historical checks certify only their recorded heads; this document authorizes no new debt implementation or execution.
+
 ## Loop spec
 
 - Archetype: `pure-move`, C3 implementation with explicit security regression review for the relocated admission/credential helpers. Main owns orchestration and goal state.
@@ -498,3 +501,44 @@ The worker's AST inventory reports 153 unique owners (63 moved, 90 retained), 96
 Verification runner: `.codexclaw/evidence/01a06e97-b9d8-7250-8204-bb788338c288/wp400-check.sh` invokes the reviewed `wp400-remote-check.sh` only over SSH. Wegener closed the pre-C hold after four clean-tree substitutions were changed to standalone Git-status assignments and the no-queue override was removed. Both scripts pass `bash -n`; runtime success is not implied.
 
 Baseline evidence: isolated remote `/tmp/ocx-wp400.4dKWtB/repo`, exact base `850afb2e9f84979c87e914b248de482f44b34cd6`; typecheck, 440 focused tests across 21 files and privacy scan passed. Full suite exited 1. The initial runner mistakenly exported OCX_TEST_NO_QUEUE=1, inducing four lock-test failures in addition to the known upstream route-registry/rollover failures. That run is contaminated and cannot certify all gates. The variable is now explicitly unset; corrected verification is required. Full baseline output is retained as `wp400-base-check.log` in the same evidence directory. No local suite was run.
+
+## Latest verification checkpoint
+
+Current layer head is `bbf8d3cd25ccf70eb595bc7982f63528d060c1bd`, base dev at be81013fab6d83ff630ca5f38e7881678a303871, PR #3611 ready for review. All nine source/test blobs remain unchanged from the reviewed split. Three CodeRabbit document findings were fixed; all three threads are resolved. The S04 correction distinguishes six members from actual depth three, rather than retaining an obsolete depth-six exception. The isolated verifier and in-receipt identity guards received independent review.
+
+The complete documented Bash recipe ran at this head and produced a fresh clean receipt: typecheck,442focusedtests,privacy and full18402pass/16skip/0fail, SUITE_EXIT=0. Evidence is in the bound a2c0 session directory, including wp400-remote-check-bbf8d3cd25ccf70eb595bc7982f63528d060c1bd.log and test-receipt.json. Prior receipts are archived by head. Final CI snapshot contains36reportedchecks with no pending/failed logical checks; configured skips remain explicit and obsolete cancellations have same-head successful replacements. All review threads are resolved. cxc completed exact-head-full-gates and closed WP400 through D, then entered P for WP450. Evidence includes ci-bbf8d3cd25ccf70eb595bc7982f63528d060c1bd.json and the head-named receipt archive. No merge occurred. Scoped CI reruns/repairs are authorized and no local suite or merge occurred.
+
+## Central evidence journal — historical snapshots, not execution instructions
+
+### Earlier resume checkpoint
+
+Historical state at that checkpoint: the user explicitly granted full scoped authority after the CI-restart question. Host goal is ACTIVE; do not repeat that permission stop. #3610 externally landed and the PR auto-retargeteddev. Main performed C→P→A→B→C, audited the new candidate with Hooke, and rebased only own commits onto pinnedbe81013fab6d83ff630ca5f38e7881678a303871 using --no-update-refs and exact-old-head force-with-lease. Current clean a2c0 head is412dcba4d617bd2c6c5961a1ada9484b859d700f. Heisenberg confirmed identical9source/test blobs and exact12-path scope; security/contract review remains valid.
+
+Fresh412remote typecheck,442focusedtests,privacy and full18402pass/16skip/0fail all passed. Receipt is clean and bound to412 with epochc-20260905044615-f4039d. Per-head output iswp400-remote-check-412dcba4d617bd2c6c5961a1ada9484b859d700f.log; previous7d4receipt was archived verbatim before producer reuse. Current hostedCIrun33945457034 is the target, with no failure/cancellation at this checkpoint. Its remaining checks are awaited; no D claim yet. The old-base retry was cancelled by Main as superseded by this restack, not treated as a new permission blocker.
+
+The resumed goal was subsequently marked BLOCKED on a new condition: three consecutive goal turns confirmed hosted CI cancelled by the account with no replacement run or rerun confirmation. The former four baseline failures are resolved; successful7d4remote proof remains valid. No D close, CI waiver, merge or local suite was fabricated to end the loop. Resume on explicit rerun direction or fresh external replacement evidence.
+
+The user resumed until completion. Actual FSM path was C→P→A→B→C, without a false D. Main chose an explicit prerequisite stack on #3610/afdd38ff and accepted the older basis in writing. Hooke candidate-graph and Wegener operational audits passed. Only our branch was rebased, with --no-update-refs and an exact-old-head lease; original244/audit67 refs remain.
+
+Final clean a2c0 head: `7d4a37544b0df016cb7ba45d193d2fb9f0ad00a1`; #3611 targets the open prerequisite branch. Heisenberg independently verified identical nine source/test blobs, exact parent-relative scope and actual graph at7953e6d4. The subsequent7d4change is documentation only.
+
+Both prerequisiteafdd and our7d4head passed isolated remote typecheck, focused tests, privacy and the full suite. At7d4:442focusedpass; full-suite lanes total18200pass/16skip/0fail; SUITE_EXIT=0; final remote HEAD/clean-tree checks passed. The actual `cxc receipt test` command exited0 and created `test-receipt.json` bound to7d4, dirtyfalse and check epochc-20260905042631-92d875. Full log: `wp400-remote-check-7d4a37544b0df016cb7ba45d193d2fb9f0ad00a1.log`. No local suite or merge occurred.
+
+Hosted CI is still incomplete, not a source-test pass: current-head run33944657511 was cancelled. Job101248560357 has no runner/steps and its check annotation says “The run was canceled by @lidge-jun.” The run list shows no newer replacement at7d4. Missing checks include test2/4,test3/4,macos1/2,macos2/2,npm-globalmacos and a cancelled enforce-target. Do not silently override this account-initiated cancellation or count it as green. Exact-head-full-gates and c-5 remain open; no D close.
+
+### Historical original-head C checkpoint (not a D close)
+
+Host goal subsequently marked BLOCKED after three consecutive goal turns hit the same full-gate failure. Last fetched dev55395a9dc leaves route-registry.ts, management-api.ts and quota-reset-notify.test.ts unchanged from850; #3610 remains open/draft/unmerged. Additional update-test diagnostic scope has been requested, not granted. Source/PR244663568 remains clean and draft. No D transition, success receipt, merge or local suite was used to bypass this condition. Resume after the prerequisite is incorporated into a stable base, or after an authorized diagnostic/stabilization plan is agreed. The read-only #3610 watch has ended; no background follow-up is promised while blocked.
+
+Code is committed and pushed at `24466356836dd567120d3d3f4e8d09574f2182d3`, PR #3611 open/draft against dev. Source and FSM remain in a2c0; this worktree is only the central documentation record, not the receipt checkout. The detailed per-file B record is in the code head's copy of this document.
+
+- Seven leaves: contracts150, constants69, model-metadata113, omp104, zcode92, dsh132, mcode83. Facade1990→1298; WP410 remains required. Existing test file gained52lines without removing original assertions.
+- Franklin implemented with explicit gpt-6-astra high. Fresh reviewer Heisenberg independently verified153uniqueowners (63moved/90retained), all96exports (47types/49values),118localbindings and4982edges/349reachablefiles with no new return cycle. Credential references, admission predicate and DSH filtering remain unchanged. Verdict PASS.
+- Remote `/tmp/ocx-wp400.dg2OKt/repo` at that head: typecheck0,442focusedpass/0fail, privacy0. Full suite exited1 with exactly4baseline failures: management-route-registry×3 and quota-reset-notify enabled rollover×1. No passing receipt was written; C remains open.
+- The older OCX_TEST_NO_QUEUE=1 instruction is withdrawn. It induced4lock-test failures in the initial baseline. The corrected runner unsets it and uses standalone Git-status assignments. Unchanged baseline lock tests then gave41pass/2skip/0fail; the corrected current full run has no lock-test failures.
+- Two remote mutation proofs: audio-only→text triggered the named omission failure, then restored8pass/0fail; MCode retaining none triggered the named none-only failure, then restored19pass/0fail. Both red exits1; final remote HEAD unchanged and gitstatusclean. No mutant was committed or pushed.
+- No local suite, merge, auto-merge or direct integration-branch push occurred.
+
+Evidence in a2c0 `.codexclaw/evidence/01a06e97-b9d8-7250-8204-bb788338c288/`: `wp400-remote-check.log`, `wp400-red-green.log`, `wp400-baseline-lock-correction.log`, `wp400-current-checkpoint.md`. Goalplan ledger records source-extraction and focused-and-redgreen tasks done; exact-head-full-gates stays pending.
+
+Fix PR #3610 remains open/draft. Last audited head `afdd38ff43c64696153372fc2e27a38aff208c73` causally addresses the4failures, but combined runtime/CI proof is pending. Its older foundation lacks4commits in WP400's850base; replaying onto it would change8sourcefiles in the verification tree. Main retains the current branch and watches the upstream fix, then will re-audit/restack onto a verified base containing both sets. No old receipt can certify a future head.

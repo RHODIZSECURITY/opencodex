@@ -71,7 +71,8 @@ of H plus14 staging refs above pinned dev, transfers it to a fresh lidge
 directory, and binds remote FETCH_HEAD to H. Every staging SHA gets focused
 tests through the repository's isolated test runner. Shared dependencies
 require byte-identical manifests and lockfiles. It then returns to H for
-pinned-main export probe, typecheck, dashboard lint, privacy and full tests.
+pinned-main export probe, typecheck, dashboard lint and isolated component
+tests, privacy and full tests.
 Bash syntax checks passed. Actual candidate execution remains pending.
 
 No local test, typecheck, install or build ran. No intermediate publication
