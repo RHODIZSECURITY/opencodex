@@ -53,8 +53,10 @@ Streaming tool calls retain their identity when a provider first sends an ID,
 then associates that ID with an index, and later sends index-only argument
 fragments. Those fragments assemble into one call with the original name and
 complete arguments; parallel calls retain separate identities.
-Numeric streamed tool-call indexes must be non-negative safe integers; malformed numeric
-indexes terminate the stream with an upstream error before identity matching.
+When present, streamed tool-call indexes must be non-negative safe integers. Non-numeric
+values and negative, fractional, or unsafe numbers terminate the stream with an upstream
+error before identity matching. Missing and null indexes remain absent-index placeholders;
+numeric strings are not coerced.
 
 ## `ollama-native`
 
