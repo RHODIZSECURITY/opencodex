@@ -3721,6 +3721,17 @@ async function handleResponsesInner(
   }
   const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
 
+  const rawInput = (parsed._rawBody as { input?: unknown }).input;
+  if (!isPassthrough && Array.isArray(rawInput) && rawInput.some(
+    item => item !== null && typeof item === "object" && item.type === "computer_call_output",
+  )) {
+    return formatErrorResponse(
+      400,
+      "invalid_request_error",
+      "computer_call_output requires a Responses passthrough route; send screenshots as user input_image content on translated routes.",
+    );
+  }
+
   if (adapter.name === "kiro" && parsed.previousResponseId && !parsed._previousResponseInputExpanded) {
     return formatErrorResponse(
       400,
