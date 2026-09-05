@@ -117,7 +117,7 @@ mock.module("../../src/server/adapter-resolve", () => ({
   },
 }));
 
-const { handleResponses } = await import("../../src/server/responses");
+const { handleResponses, handleResponsesCompact } = await import("../../src/server/responses");
 const { handleChatCompletions } = await import("../../src/server/chat-completions");
 const { handleClaudeMessages } = await import("../../src/server/claude-messages");
 
@@ -162,6 +162,35 @@ function minimalSuccessAdapter(provider: OcxProviderConfig): ProviderAdapter {
 }
 
 describe("routing policy request evidence parity (via dev handlers)", () => {
+  test("missing and empty policies return compatible 404s on every wire before adapter resolution", async () => {
+    let adapterCalls = 0;
+    adapterFactory = provider => {
+      adapterCalls += 1;
+      return minimalSuccessAdapter(provider);
+    };
+    for (const model of ["policy/missing", "policy/"]) {
+      for (const stream of [false, true]) {
+        const bodies = [
+          { path: "/v1/responses", handler: handleResponses, body: { model, stream, input: "hello" } },
+          { path: "/v1/chat/completions", handler: handleChatCompletions, body: { model, stream, messages: [{ role: "user", content: "hello" }] } },
+          { path: "/v1/messages", handler: handleClaudeMessages, body: { model, stream, max_tokens: 64, messages: [{ role: "user", content: "hello" }] } },
+          { path: "/v1/responses/compact", handler: handleResponsesCompact, body: { model, stream, input: "hello" } },
+        ];
+        for (const { path, handler, body } of bodies) {
+          const log: RequestLogContext = { model: "", provider: "" };
+          const response = await handler(new Request(`http://localhost${path}`, {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+          }), testConfig(), log);
+          expect(response.status).toBe(404);
+          const payload = await response.json() as { error: { type: string; message: string } };
+          expect(payload.error.type).toBe("invalid_request_error");
+          expect(payload.error.message).toStartWith("Unknown routing policy:");
+          expect(log.routeDecision).toBeUndefined();
+          expect(adapterCalls).toBe(0);
+        }
+      }
+    }
+  });
   test("rich evidence (tools + image) produces identical route decision across all three surfaces", async () => {
     adapterFactory = minimalSuccessAdapter;
     const config = testConfig();

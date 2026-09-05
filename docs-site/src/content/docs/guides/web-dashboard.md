@@ -101,6 +101,14 @@ Cost values in **Logs** and **Usage** are API list-price equivalents calculated 
 They are not billing receipts or evidence of an actual charge; subscription usage or provider credits
 may apply instead.
 
+Provider model rows may include **unresolved requested model usage**: the saved route sent the
+requested name unchanged to the default provider. These tokens belong to that serving provider,
+not necessarily the vendor named in the request. The dashboard preserves the original name and
+usage rather than guessing which model ran. For slash-containing unresolved names, a different
+vendor's model price alone is not enough to estimate cost; an exact provider or configured price
+still applies. Model shares are calculated within the selected provider. Requests for an unknown
+reserved `policy/` name now fail before reaching an upstream provider; historical usage is retained.
+
 ## Model visibility
 
 The **Models** switches show final Codex visibility: a routed model is on only when its provider allowlist includes it (or no allowlist is set) and it is not disabled. Turning a model on reconciles both filters atomically; **All on** clears the provider allowlist so newly discovered models are also on.

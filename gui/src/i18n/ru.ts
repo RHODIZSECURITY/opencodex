@@ -1149,6 +1149,7 @@ export const ru: Record<TKey, string> = {
   "pws.usageLast30d": "Использование (последние 30 дней)",
   "pws.estimatedCost": "Ориентировочная стоимость",
   "pws.costDisclaimer": "Оценка на основе публичных цен API, не фактический счёт.",
+  "pws.unresolvedRequestedModel": "Включает запросы с неразрешённым именем модели",
   "pws.modelBreakdown": "Разбивка по моделям",
   "pws.col.model": "Модель",
   "pws.col.cost": "Ориент. стоимость",

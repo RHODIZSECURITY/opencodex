@@ -23,7 +23,7 @@ import {
 import { providerKind } from "../../provider-workspace/kind";
 import { readJsonIfOk, readJsonOrThrow } from "../../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../../session-list-cache";
-import { countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
+import { buildProviderModelUsage, countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
 import {
   freshQuotaReportRecord,
   freshQuotaReportsFromResponse,
@@ -140,7 +140,7 @@ export default function ProviderWorkspaceShell({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
   const quotasCacheKey = `ocx.providers.quotas.v1:${apiBase}`;
-  const usageCacheKey = `ocx.providers.usage.v1:${apiBase}`;
+  const usageCacheKey = `ocx.providers.usage.v2:${apiBase}`;
   const [usageTotals, setUsageTotals] = useState<Record<string, ProviderUsageTotals>>(() => (
     readSessionListCache<{ totals: Record<string, ProviderUsageTotals> }>(usageCacheKey)?.totals ?? {}
   ));
@@ -202,7 +202,7 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      const data = usageResource.data as { providers?: Array<{ provider: string; requests: number; totalTokens?: number }>; models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; shareRatio: number; estimatedCostUsd?: number }> } | undefined;
+      const data = usageResource.data as { providers?: Array<{ provider: string; requests: number; totalTokens?: number }>; models?: Array<ProviderModelUsageRow & { provider: string }> } | undefined;
       if (cancelled) return;
       if (!data) {
         if (usageResource.loading) setUsageLoading(!readSessionListCache(usageCacheKey));
@@ -211,12 +211,7 @@ export default function ProviderWorkspaceShell({
       const byProvider: Record<string, ProviderUsageTotals> = {};
       for (const row of data.providers ?? []) byProvider[row.provider] = { requests: row.requests, totalTokens: row.totalTokens };
       setUsageTotals(byProvider);
-      const byProviderModels: Record<string, ProviderModelUsageRow[]> = {};
-      for (const m of data.models ?? []) {
-        const key = m.provider;
-        if (!byProviderModels[key]) byProviderModels[key] = [];
-        byProviderModels[key].push({ model: m.model, ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}), requests: m.requests, totalTokens: m.totalTokens, inputTokens: m.inputTokens, outputTokens: m.outputTokens, shareRatio: m.shareRatio, ...(m.estimatedCostUsd !== undefined ? { estimatedCostUsd: m.estimatedCostUsd } : {}) });
-      }
+      const byProviderModels = buildProviderModelUsage(data.models ?? [], byProvider);
       setUsageModels(byProviderModels);
       writeSessionListCache(usageCacheKey, { totals: byProvider, models: byProviderModels });
       setUsageLoading(false);

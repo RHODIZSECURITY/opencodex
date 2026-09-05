@@ -1903,6 +1903,7 @@ export const ko: Record<TKey, string> = {
   "pws.usageLast30d": "사용량 (최근 30일)",
   "pws.estimatedCost": "추정 비용",
   "pws.costDisclaimer": "API 공시가 기준 추정치이며, 실제 청구 금액이 아닙니다.",
+  "pws.unresolvedRequestedModel": "기본 경로 요청 포함 · 실제 모델 미확인",
   "pws.modelBreakdown": "모델별 사용량",
   "pws.col.model": "모델",
   "pws.col.cost": "추정 비용",

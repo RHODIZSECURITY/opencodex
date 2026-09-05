@@ -122,6 +122,9 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
                           >
                             {row.model}
                           </button>
+                          {row.hasUnresolvedRequestedModel && (
+                            <div className="muted pws-model-attribution">{t("pws.unresolvedRequestedModel")}</div>
+                          )}
                         </td>
                         <td className="num mono">{formatCostUsd(row.estimatedCostUsd, locale)}</td>
                         <td className="num mono">{formatTokenCount(row.totalTokens, locale)}</td>

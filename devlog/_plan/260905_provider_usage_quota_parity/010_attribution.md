@@ -98,7 +98,10 @@ All locale modules receive the corresponding key. Keep grouping by m.provider;
 recompute `shareRatio` from selected-provider token total, not the global summary,
 so the screenshot's nearly empty bars become meaningful within each provider.
 Test propagation and selected-provider shares with existing provider workspace
-tests. Increment the provider usage session-cache version to prevent stale derived
+tests. Extract only that existing grouping into `buildProviderModelUsage` in the
+existing pure `gui/src/provider-workspace/usage.ts` owner; no parallel client or
+state. NEW `gui/tests/provider-usage-attribution.test.tsx` directly exercises the
+production helper plus rendered ProviderUsage. Increment the provider usage session-cache version to prevent stale derived
 rows after update. Backend marker alone is not UI completion.
 
 ## Diff 3 — Restrict only unsupported cross-provider price inference

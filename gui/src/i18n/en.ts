@@ -1165,6 +1165,7 @@ export const en = {
   "pws.usageLast30d": "Usage (last 30 days)",
   "pws.estimatedCost": "Estimated cost",
   "pws.costDisclaimer": "API list-price estimate, not an actual charge.",
+  "pws.unresolvedRequestedModel": "Includes unresolved requested model usage",
   "pws.modelBreakdown": "Model breakdown",
   "pws.col.model": "Model",
   "pws.col.cost": "Est. cost",
