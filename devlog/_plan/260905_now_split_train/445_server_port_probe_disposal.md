@@ -68,7 +68,10 @@ the downstream recovery assertion. Recovery fixture cleanup is separate debt.
 
 - MODIFY `src/server/ports.ts`: add a small private temporary-server factory
   (under15lines) whose connection listener is installed before listen. It
-  registers a narrow socket-error disposal handler and immediately destroys
+  explicitly creates the server, registers a public `server.on("connection")`
+  handler, and returns that server. Do not use a constructor callback: the
+  pinned Bun implementation defers that callback's registration until native
+  accept. The handler registers narrow socket-error disposal and immediately destroys
   each accepted socket. Use it at the two existing `createServer()` sites.
   Keep success inside the real server-close callback and preserve all existing
   signatures, bind-error handlers, and caller behavior.
@@ -79,8 +82,9 @@ the downstream recovery assertion. Recovery fixture cleanup is separate debt.
   delivers two accepted peers and only completes close after both are destroyed. Check
   socket error disposal, close-completion-before-result, and the independently
   specified selected port. Override listen/close/address only in the isolated
-  child, retaining the real createServer constructor and connection-listener
-  registration. Never replace network methods in the parent test process.
+  child, retaining the real createServer constructor and public EventEmitter
+  registration. Never replace network methods in the parent test process or
+  reach into Bun's private callback-storage symbols.
   Resolve source through `tests/helpers/repo-root.ts`; no new test file.
 - MODIFY `structure/01_runtime.md`: add one ownership row describing temporary
   port-probe socket disposal; no authentication or server-composition changes.
@@ -191,3 +195,31 @@ file now235lines (+100/−0 versus base), with all11original tests preserved and
 a15line regression callback. Main added the single Runtime ownership row.
 No local runtime tests ran. C must still establish restored GREEN, real-socket
 controls, full gates, current-head CI and independent review before completion.
+
+## P re-plan after the first GREEN attempt
+
+The first GREEN attempt applied the correct source/test blobs but reported
+11original passes and2new failures at peer disposal. The wrapper stopped
+before any real-peer control. This is not a successful check and does not
+establish a production regression. Main returned C→P before further repair.
+
+Pinned primary-source proof: [Bun net implementation at34cbb9a40](https://github.com/oven-sh/bun/blob/34cbb9a40/src/js/node/net.ts).
+The constructor stores its callback in server options (lines3364–3365); native
+accept prepends it immediately before emitting the connection event
+(lines4021–4025, also1181–1189). A direct synthetic emit therefore bypassed
+that deferred registration. Static assumptions about Node-style constructor
+registration were wrong for this Bun version.
+
+Rejected alternatives: weakening the disposal assertions, reaching into a
+private Bun symbol, or changing to a Node-only test would conceal the timing
+contract. Explicit public `server.on("connection", handler)` registration
+before listen makes the intended lifecycle real and observable without
+runtime-private knowledge. Both production call sites and every test assertion
+remain unchanged. Expected helper8lines/source173lines; this is a two-line
+refinement of the private factory, not a wider behavior change.
+
+Re-audit this explicit-listener plan before B. Then repeat the two-case RED
+control against baseline, verify GREEN plus all three real-peer experiments,
+and toggle disposal off/on again. The focused wrapper must emit its captured
+failure tail before exiting, so an early test error cannot hide the evidence.
+Do not rerun during another owner's CI slot; #3636 currently owns it.
