@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { openUrl } from "../lib/open-url";
 import { loadConfig, saveConfig } from "../config";
 import { findLiveProxy } from "../server/proxy-liveness";
@@ -156,6 +157,7 @@ export async function commitKeyLoginProvider(
   onLiveReload?: (result: LocalProviderReloadResult | null) => void,
 ): Promise<OcxProviderConfig> {
   const mergedProvider = mergeKeyLoginProviderRow(provider, config.providers[name]);
+  initializeProviderModelSelection(name, mergedProvider, config.providers[name]);
   config.providers[name] = mergedProvider;
   saveConfig(config);
   // Evaluate the reload BEFORE the optional call: `onLiveReload?.(await ...)` short-circuits

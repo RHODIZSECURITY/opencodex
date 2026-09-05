@@ -655,6 +655,7 @@
   "native-profile-startup.test.ts": "codex-integration",
   "native-profile-store.test.ts": "codex-integration",
   "new-model-policy.test.ts": "providers",
+  "initial-model-selection.test.ts": "providers",
   "nous-oauth-live.test.ts": "providers",
   "nous-oauth.test.ts": "providers",
   "novita-provider.test.ts": "providers",

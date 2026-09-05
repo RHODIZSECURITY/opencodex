@@ -1,4 +1,5 @@
 import type { KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
+import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { parseCallbackInput } from "./callback-server";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { ConfigMutationLockError, loadConfig, mutatePersistedConfig, saveConfig } from "../config";
@@ -1481,6 +1482,7 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
       if (previousModeAllowsKey) next.authMode = "key";
     }
   }
+  initializeProviderModelSelection(provider, next, existing);
   config.providers[provider] = next;
 }
 

@@ -14,6 +14,7 @@ Persisted provider field:
 ```ts
 initialModelSelection?: {
   version: 1;
+  registrationId: string; // new UUID on first creation only; preserved on overwrite
   status: "pending" | "ready" | "all-off";
   modelCount?: number;
 };
@@ -83,6 +84,10 @@ No change to explicit model-ID routing.
 ### NEW src/providers/initial-model-selection-runtime.ts
 
 Own the ordinary-discovery completion write, independent of Codex integration.
+Match registration UUID as well as normalized inventory-producing configuration
+(including custom rows, combos and provider dependencies). Equal field values
+after delete/re-add are not the same registration. Schema-default normalization
+and order-independent comparison avoid spurious mismatches after load/save.
 Capture pending provider config and disabledModels before gather; use existing
 authoritative outcome metadata and the pure transition after discovery. Re-read
 under mutatePersistedConfig, compare the captured provider/selection identity,
@@ -102,16 +107,16 @@ no pending provider keep the existing fast path, with no writes/new discovery.
 catalog evidence; never insert config writes inside an already sealed gather.
 The evidence-only gather entry point remains mutation-free.
 
-### MODIFY src/codex/convergence.ts
+### MODIFY src/codex/management-convergence.ts and src/codex/convergence.ts
 
-Before prepareCatalog, clone snapshot config as now, run initial-selection
-reconciliation using authoritative providerModelOutcomes (static included), then
-run existing successful-discovery reconciliation; execute BOTH, do not short-circuit
-one in an `a || b` call expression. Carry projected config if either changed.
-After successful admitted commit, adopt state with disabledModels/modelDiscovery
-and use existing coordinated save. A failed/stale/busy commit must not publish
-state or OFF decisions. Snapshot identity already hashes complete config, so the
-new provider field is covered without a second fingerprint implementation.
+Implementation refinement: the management wrapper resolves pending initialization
+BEFORE capturing catalog admission, just as retained sync does before its evidence
+read. This avoids coupling durable initial selection to a later catalog-file write
+or exposing an in-memory completed marker after a failed config save. The evidence
+gather stays read-only; convergence only carries pending-provider names into final
+visibility filtering. Existing later-arrival projection is untouched. Registration
+choices commit independently of optional Codex catalog success. Snapshot identity
+already hashes complete config, so no second fingerprint implementation is needed.
 
 ### MODIFY src/server/management/model-rows.ts and model-routes.ts
 
