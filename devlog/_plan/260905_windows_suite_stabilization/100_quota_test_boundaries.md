@@ -186,3 +186,8 @@ Independent implementation review: PASS after adding the bounded receiver wait
 and moving the fetch override into try/finally. Original route guards and store
 implementation remain unchanged. Windows integration remains open under wp9/c-6;
 these local focused checks are not claimed as Windows proof.
+
+Receipt-binding correction: the closeout documentation commit changed HEAD after
+the privacy receipt, so D correctly refused it. Re-audited the docs-only delta
+(PASS, implementation unchanged); recapture a check receipt after this final
+documentation commit before closing wp8. No failed gate is recorded as success.
