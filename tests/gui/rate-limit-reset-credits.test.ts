@@ -499,15 +499,21 @@ describe("rate-limit reset credits", () => {
         "x-codex-secondary-window-minutes": "10080",
         "x-codex-secondary-reset-at": "1788000000",
       });
+      const observedAfter = Date.now();
       applyAccountQuotaFromUpstreamHeaders("burst-A", headers);
-      expect(getAccountQuota("burst-A")).toEqual({
+      const quota = getAccountQuota("burst-A");
+      expect(quota).toEqual({
         shortPercent: 97,
         shortResetAt: 1787401330,
         shortWindowSeconds: 18000,
+        shortObservedAt: expect.any(Number),
         weeklyPercent: 12,
         weeklyResetAt: 1788000000,
         updatedAt: expect.any(Number),
       });
+      expect(quota!.shortObservedAt).toBe(quota!.updatedAt);
+      expect(quota!.shortObservedAt).toBeGreaterThanOrEqual(observedAfter);
+      expect(quota!.shortObservedAt).toBeLessThanOrEqual(Date.now());
     });
 
     it("an exhausted burst window does not poison the weekly reading", () => {
