@@ -52,7 +52,8 @@ export function setProviderContextCap(config: OcxConfig, provider: string, enabl
   const next = providerContextCaps(config);
   const selected = selectedProviderContextCaps(config);
   if (enabled) {
-    next[provider] = isValidContextCap(value) ? Math.floor(value) : (selected[provider] ?? globalContextCapValue(config));
+    const remembered = Object.hasOwn(selected, provider) ? selected[provider] : undefined;
+    next[provider] = isValidContextCap(value) ? Math.floor(value) : (isValidContextCap(remembered) ? remembered : globalContextCapValue(config));
     selected[provider] = next[provider];
   } else {
     delete next[provider];

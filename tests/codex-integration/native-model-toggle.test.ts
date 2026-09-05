@@ -313,6 +313,16 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(other.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(272_000);
   });
 
+  test("remembered disabled caps do not narrow native windows or input budgets", () => {
+    const config = makeConfig({ providerContextCapValues: { openai: 128_000 } });
+    expect(nativeContextLimits(config)).toEqual({});
+    expect(nativeModelRows(config)).toEqual(nativeModelRows(makeConfig()));
+    expect(nativeModelRows(config).find(row => row.slug === "gpt-5.6-sol")).toMatchObject({
+      contextWindow: 272_000,
+      maxInputTokens: 272_000,
+    });
+  });
+
   test("native aliases suppress their native dashboard row and activate Desktop allowlist pruning", () => {
     const config = makeConfig({
       disabledModels: ["gpt-5.6-sol", "gpt-5.5"],

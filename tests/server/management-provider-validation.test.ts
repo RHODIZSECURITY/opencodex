@@ -29,7 +29,7 @@ import {
   startServer,
 } from "../../src/server";
 import { handleManagementAPI } from "../../src/server/management-api";
-import { providerManagementConfigError } from "../../src/server/auth-cors";
+import { providerEditorConfigDTO, providerManagementConfigError } from "../../src/server/auth-cors";
 import { providerEmptyToolOutputConfigError } from "../../src/config/provider-validation";
 import { providerServiceTierConfigError, withProviderServiceTierDTO } from "../../src/server/management/provider-capability-config";
 import { clearModelCache, markProviderDiscoveryFailed, markProviderDiscoveryOk } from "../../src/codex/model-cache";
@@ -4128,6 +4128,13 @@ describe("provider management validation", () => {
       });
       expect(disabled.status).toBe(200);
       expect(await disabled.json()).toMatchObject({ ok: true, caps: {} });
+      expect(loadConfig().providerContextCapValues?.["test-openai"]).toBe(350_000);
+      const uncapped = await fetch(new URL("/api/models", server.url));
+      expect(uncapped.status).toBe(200);
+      const uncappedRows = await uncapped.json() as Array<{ id: string; contextWindow?: number; contextCap?: number }>;
+      const wide = uncappedRows.find(row => row.id === "wide-model");
+      expect(wide).toMatchObject({ contextWindow: 500_000 });
+      expect(wide?.contextCap).toBeUndefined();
     } finally {
       await server.stop(true);
     }
@@ -4709,4 +4716,143 @@ test("OpenAI provider cap remembers an explicit window across off, reload, and o
   expect(loadConfig().providerContextCapValues?.openai).toBe(128_000);
   await put({setAll:true});
   expect(loadConfig().providerContextCaps?.openai).toBe(350_000);
+});
+
+describe("remembered provider context selections", () => {
+  function selectionConfig(remembered = true): OcxConfig {
+    const live: OcxConfig = {
+      port: 0,
+      defaultProvider: "alpha",
+      contextCapValue: 350_000,
+      providers: {
+        alpha: { adapter: "openai-chat", baseUrl: "https://alpha.example.test/v1", liveModels: false },
+        beta: { adapter: "openai-chat", baseUrl: "https://beta.example.test/v1", liveModels: false },
+      },
+      providerContextCaps: { alpha: 128_000 },
+      ...(remembered ? { providerContextCapValues: { alpha: 128_000, beta: 256_000 } } : {}),
+    };
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(live);
+    return loadConfig();
+  }
+
+  async function request(live: OcxConfig, path: string, method: string, body?: unknown): Promise<Response> {
+    const url = new URL(path, "http://localhost");
+    const response = await handleManagementAPI(new Request(url, {
+      method,
+      ...(body === undefined ? {} : {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    }), url, live, { createManagementConvergeCodex: catalogConvergenceFactory() });
+    if (!response) throw new Error(`unhandled management route: ${path}`);
+    return response;
+  }
+
+  test.each(["toString", "valueOf"])("first enable ignores inherited remembered values for %s", async (provider) => {
+    let live = selectionConfig();
+    live.providers[provider] = { adapter: "openai-chat", baseUrl: "https://context.example.test/v1", liveModels: false };
+    saveConfig(live);
+    live = loadConfig();
+
+    const first = await request(live, "/api/provider-context-caps", "PUT", { provider, enabled: true });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ caps: { [provider]: 350_000 }, values: { [provider]: 350_000 } });
+    expect(loadConfig().providerContextCaps?.[provider]).toBe(350_000);
+    expect(Object.hasOwn(loadConfig().providerContextCapValues ?? {}, provider)).toBe(true);
+
+    expect((await request(live, "/api/provider-context-caps", "PUT", { provider, enabled: true, value: 128_000 })).status).toBe(200);
+    expect((await request(live, "/api/provider-context-caps", "PUT", { provider, enabled: false })).status).toBe(200);
+    live = loadConfig();
+    expect(Object.hasOwn(live.providerContextCaps ?? {}, provider)).toBe(false);
+    expect((await request(live, "/api/provider-context-caps", "PUT", { provider, enabled: true })).status).toBe(200);
+    expect(loadConfig().providerContextCaps?.[provider]).toBe(128_000);
+  });
+
+  test.each([
+    { body: { value: 600_000, setAll: true }, caps: { alpha: 600_000 }, values: { alpha: 600_000, beta: 256_000 }, restored: 256_000 },
+    { body: { setAll: true }, caps: { alpha: 350_000, beta: 350_000 }, values: { alpha: 350_000, beta: 350_000 }, restored: 350_000 },
+  ])("setAll payload $body preserves or replaces a disabled selection as documented", async ({ body, caps, values, restored }) => {
+    let live = selectionConfig();
+    const response = await request(live, "/api/provider-context-caps", "PUT", body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ caps, values });
+    live = loadConfig();
+    expect(live.providerContextCaps).toEqual(caps);
+    expect(live.providerContextCapValues).toEqual(values);
+    const enabled = await request(live, "/api/provider-context-caps", "PUT", { provider: "beta", enabled: true });
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toMatchObject({ caps: { ...caps, beta: restored } });
+    expect(loadConfig().providerContextCaps?.beta).toBe(restored);
+  });
+
+  test("an active-only legacy selection survives off, reload and implicit enable", async () => {
+    let live = selectionConfig(false);
+    expect(live.providerContextCapValues).toBeUndefined();
+    const initial = await request(live, "/api/provider-context-caps", "GET");
+    expect(initial.status).toBe(200);
+    expect(await initial.json()).toMatchObject({ caps: { alpha: 128_000 }, values: { alpha: 128_000 } });
+    const off = await request(live, "/api/provider-context-caps", "PUT", { provider: "alpha", enabled: false });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({ caps: {}, values: { alpha: 128_000 } });
+    live = loadConfig();
+    expect(live.providerContextCaps).toBeUndefined();
+    expect(live.providerContextCapValues).toEqual({ alpha: 128_000 });
+    const on = await request(live, "/api/provider-context-caps", "PUT", { provider: "alpha", enabled: true });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toMatchObject({ caps: { alpha: 128_000 }, values: { alpha: 128_000 } });
+    expect(loadConfig().providerContextCaps).toEqual({ alpha: 128_000 });
+  });
+
+  test("rejected cap requests leave active and disabled selections untouched in memory and on disk", async () => {
+    const live = selectionConfig();
+    const before = structuredClone(live);
+    const beforeBytes = readFileSync(join(TEST_DIR, "config.json"), "utf8");
+    for (const [body, status] of [
+      [{ provider: "beta", enabled: true, value: 0.5 }, 400],
+      [{ provider: "beta", enabled: "yes", value: 700_000 }, 400],
+      [{ provider: "beta", enabled: true, setAll: true }, 400],
+      [{ value: 700_000, setAll: "yes" }, 400],
+      [{ value: 0.5 }, 400],
+      [{ provider: "missing", enabled: true }, 404],
+      [[1, 2, 3], 400],
+      [null, 400],
+    ] as const) {
+      const response = await request(live, "/api/provider-context-caps", "PUT", body);
+      expect(response.status).toBe(status);
+      expect(live).toEqual(before);
+      expect(readFileSync(join(TEST_DIR, "config.json"), "utf8")).toBe(beforeBytes);
+    }
+  });
+
+  test.each(["DELETE", "editor"] as const)("%s removal forgets active and disabled selections in persisted and live state", async mode => {
+    const live = selectionConfig();
+    live.providers.retained = { adapter: "openai-chat", baseUrl: "https://retained.example.test/v1", liveModels: false };
+    live.defaultProvider = "retained";
+    saveConfig(live);
+    const resolved = spyOn(destinationPolicy, "providerDestinationResolvedError").mockResolvedValue(null);
+    try {
+      for (const name of ["alpha", "beta"]) {
+        const baseline = providerEditorConfigDTO(loadConfig());
+        const next = structuredClone(baseline);
+        delete next.providers[name];
+        const response = mode === "DELETE"
+          ? await request(live, `/api/providers?name=${name}`, "DELETE")
+          : await request(live, "/api/providers", "PUT", { baseline, next });
+        expect(response.status).toBe(200);
+        for (const snapshot of [live, loadConfig()]) {
+          expect(snapshot.providers[name]).toBeUndefined();
+          expect(snapshot.providers.retained).toBeDefined();
+          expect(snapshot.providerContextCaps).toBeUndefined();
+          expect(snapshot.providerContextCapValues).toEqual(name === "alpha" ? { beta: 256_000 } : undefined);
+        }
+        const caps = await request(live, "/api/provider-context-caps", "GET");
+        expect(caps.status).toBe(200);
+        expect(await caps.json()).toMatchObject({ caps: {}, values: name === "alpha" ? { beta: 256_000 } : {} });
+      }
+    } finally {
+      resolved.mockRestore();
+    }
+  });
 });

@@ -216,3 +216,17 @@ test("removal leaves the custom-model ownership marker untouched", () => {
   expect(config.providerContextCapValues).toEqual({ [TO]: 128_000 });
   expect(providerContextCap(config, TO)).toBeUndefined();
 });
+
+test("a remembered cap rename collision preserves both disabled selections", () => {
+  const config = {
+    providerContextCapValues: { [FROM]: 128_000, [TO]: 256_000 },
+  } as unknown as OcxConfig;
+  const before = structuredClone(config);
+  expect(rewriteProviderReferences(config, FROM, TO)).toEqual({
+    changed: 0,
+    collisions: [`providerContextCapValues.${TO}`],
+  });
+  expect(config).toEqual(before);
+  expect(providerContextCap(config, FROM)).toBeUndefined();
+  expect(providerContextCap(config, TO)).toBeUndefined();
+});

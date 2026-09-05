@@ -176,11 +176,12 @@ test("success toast expires after 6s and a repeated action re-arms it", async ()
   expect(container.querySelector(".action-toast")).toBeNull();
 });
 
-test("OpenAI context switch restores the selected cap instead of forcing 922k", async () => {
+test("OpenAI context switch restores the selected cap after a disabled-page reload instead of forcing 922k", async () => {
   testWindow.sessionStorage.clear();
   let caps: Record<string, number> = {openai:128_000};
   const values = {openai:128_000};
   const bodies: unknown[] = [];
+  let capReads = 0;
   const fallback = globalThis.fetch;
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
@@ -192,7 +193,7 @@ test("OpenAI context switch restores the selected cap instead of forcing 922k", 
       if (init?.method === "PUT") {
         const body=JSON.parse(String(init.body)); bodies.push(body);
         caps=body.enabled ? {openai:values.openai} : {};
-      }
+      } else capReads += 1;
       return Response.json({caps,values,value:350_000});
     }
     return fallback(input,init);
@@ -207,8 +208,50 @@ test("OpenAI context switch restores the selected cap instead of forcing 922k", 
   await act(async()=>{toggle().click();await settle();});
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
   expect(cluster().textContent).toContain("128k");
+  const readsBeforeReload = capReads;
+  await act(async () => { root!.unmount(); root = null; });
+  clearClientResourceStoresForTests();
+  testWindow.sessionStorage.clear();
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LanguageProvider><Models apiBase="http://localhost" /></LanguageProvider>);
+  });
+  await act(settle);
+  expect(capReads).toBeGreaterThan(readsBeforeReload);
+  expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  expect(cluster().textContent).toContain("128k");
+  expect(bodies).toEqual([{ provider: "openai", enabled: false }]);
   await act(async()=>{toggle().click();await settle();});
   expect(toggle().getAttribute("aria-pressed")).toBe("true");
   expect(cluster().textContent).toContain("128k");
   expect(bodies).toEqual([{provider:"openai",enabled:false},{provider:"openai",enabled:true}]);
+});
+
+test.each([
+  { response: { caps: { anthropic: 128_000 }, value: 350_000 }, label: "128k", enabled: true },
+  { response: { caps: {}, value: 600_000 }, label: "600k", enabled: false },
+  { response: { caps: {}, cap: 350_000 }, label: "350k", enabled: false },
+])("legacy cap response $response falls back without remembered values", async ({ response, label, enabled }) => {
+  // The existing seed is also the old cache shape, without contextCapValues.
+  const fallback = globalThis.fetch;
+  let capReads = 0;
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith("/api/provider-context-caps")) {
+      capReads += 1;
+      return Response.json(response);
+    }
+    return fallback(input, init);
+  }) as typeof fetch;
+  const { createRoot } = await import("react-dom/client");
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LanguageProvider><Models apiBase="http://localhost" /></LanguageProvider>);
+  });
+  await act(async () => {
+    await new Promise(resolve => testWindow.setTimeout(resolve, 0));
+  });
+  expect(capReads).toBeGreaterThan(0);
+  const cluster = container.querySelector<HTMLElement>(".models-cap-cluster")!;
+  expect(cluster.textContent).toContain(label);
+  expect(cluster.querySelector("button.switch")?.getAttribute("aria-pressed")).toBe(String(enabled));
 });
