@@ -322,3 +322,30 @@ Before landing WP450, require the actual new head/tree's remote checks and CI,
 fresh review disposition, admin head-match merge, child safety and fetched
 dev ancestry under USER-ADMIN-LANDING-01. Previous4a/d2 results are not the
 new integrated head's verification. No release or live-service change.
+
+## Fixed integration input and start condition
+
+The queued upstream review-closure candidate is PR #3645, commit
+3c4ff939735e02fe10910d05fad6c3a18571f663, tree
+ec6cdffbd7473c4ae283fd0dd3645d4c3dfd31a1, based on cfe95eea.
+Object-merging it with the current450 candidate gives
+f2d652955f67d5f9f6863f16e771711c127d9e69. This names immutable proposed
+content, not a claim that the candidate has landed or passed runtime checks.
+
+Incremental independent review found no changed source within the366/346
+status closures. The only production-source difference from the previously
+reviewed upstream candidate is outside those closures and preserves its
+import/export declarations. Owned facade/leaf/test blobs remain unchanged;
+the prior11-export/46-named-import/no-return-cycle proof remains applicable.
+
+Immediately before A→B, require #3645 to be merged, its post-merge CI to pass,
+and fetched dev to contain the named candidate with the exact expected source
+tree. Record the actual landed SHA in the ledger/attestation. If the content
+or base changes, return A→P and amend before executing B; do not substitute an
+unreviewed newer branch. Until these conditions hold, source integration waits.
+
+During B, perform the actual normal merge of that pinned landed dev into the
+working450 branch. Preserve all existing refs and owned source/test blobs.
+Compare source/test/SOT content with the reviewed prospective tree (plan-record
+updates may differ); then commit and enter C. The resulting real commit—not
+the prospective tree—receives fresh remote gates, CI and admin landing proof.
