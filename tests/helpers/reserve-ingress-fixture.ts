@@ -2,7 +2,8 @@ import { expect, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveConfig } from "../../src/config";
+import { loadConfig, saveConfig } from "../../src/config";
+import { MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET } from "../../src/codex/account-namespace-match";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
 import * as mainAccount from "../../src/codex/main-account";
 import * as authCollision from "../../src/codex/auth-collision";
@@ -168,7 +169,7 @@ export async function reserveIngressFixture() {
     expect(publicPort).not.toBe(localPort);
     const config: OcxConfig = { port: publicPort, hostname: "0.0.0.0", defaultProvider: "openai",
       openaiProviderTierVersion: 2, codexDesktopAuthless: true, codexMainAccountHardLock: false,
-      websockets: true, subagentModels: [], codexAccounts: [], codexAccountNamespaces: { main: mainAccount.MAIN_CODEX_ACCOUNT_ID },
+      websockets: true, subagentModels: [], codexAccounts: [], codexAccountNamespaces: { main: MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET },
       unauthenticatedLoopbackListener: { enabled: true, port: localPort },
       providers: {
         openai: { adapter: "openai-responses", authMode: "forward", codexAccountMode: "direct", upstreamWebsocket: false,
@@ -176,6 +177,8 @@ export async function reserveIngressFixture() {
         keyed: { adapter: "openai-responses", authMode: "key", apiKey: "sk-ingress-fixture", baseUrl: "https://reserve-keyed.example.test/v1" },
       } };
     saveConfig(config);
+    expect(loadConfig()).toMatchObject({ hostname: "0.0.0.0", codexDesktopAuthless: true,
+      codexAccountNamespaces: { main: MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET } });
     server = startServer(publicPort, { inspectNativeCodexOwnership: ownedServiceHomeInspection("Reserve dual-listener fixture") });
     await waitForNativeMainStartupGate();
     expect(isNativeMainTrafficBlocked()).toBe(false);
