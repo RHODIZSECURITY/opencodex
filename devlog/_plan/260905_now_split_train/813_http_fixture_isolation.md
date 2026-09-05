@@ -39,9 +39,11 @@ not claim to explain or fix the separate CPU-bound discovery stall.
 MODIFY only tests/server/server-auth.test.ts:
 
 1. Capture originalGlobalWebSocket beside originalGlobalFetch.
-2. In redirectCanonicalCodexTo, reuse the existing canonical path prefix.
+2. In redirectCanonicalCodexTo, move the existing canonical path prefix from
+   inside the fetch callback to function scope before installing either wrapper.
    Install a Proxy around the current constructor. For wss, exact chatgpt.com
-   host and that path prefix, throw a fixed HTTP-only-fixture refusal before
+   host and that exact path or a slash-delimited child path, throw a fixed
+   HTTP-only-fixture refusal before
    any real native dial. For every other URL, Reflect.construct the original
    target with unchanged arguments and newTarget. Existing fetch redirection
    stays unchanged. Downstream loopback WebSocket remains real.
@@ -49,7 +51,8 @@ MODIFY only tests/server/server-auth.test.ts:
 4. Add one local constructor-boundary regression test in the existing
    server-local-auth describe block. A capturing constructor avoids all real
    network calls; assert canonical upstream refusal, unchanged loopback URL/
-   protocol arguments, and preserved static OPEN. Hooks restore on failure.
+   protocol arguments, delegated near-prefix paths and other hostnames, and
+   preserved static OPEN. Hooks restore on failure.
    Keep every existing auth/header/log assertion unchanged.
 
 No new test file or layout mapping. No generic helper module. The existing
@@ -57,12 +60,13 @@ large test file is not opportunistically restructured in this closeout.
 
 ## Audited patch shape
 
+    const prefix = "/backend-api/codex";
     const currentWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = new Proxy(currentWebSocket, {
       construct(target, args, newTarget) {
         const url = new URL(String(args[0]));
         if (url.protocol === "wss:" && url.hostname === "chatgpt.com"
-          && url.pathname.startsWith(prefix)) {
+          && (url.pathname === prefix || url.pathname.startsWith(\x60\x24{prefix}/\x60))) {
           throw new Error("HTTP-only Codex fixture rejects native upstream WebSocket");
         }
         return Reflect.construct(target, args, newTarget);
@@ -72,6 +76,16 @@ large test file is not opportunistically restructured in this closeout.
 The refusal is test-only. The production transport's existing constructor-
 failure fallback runs; no new runtime bypass or altered credential policy is
 introduced.
+
+## A synthesis
+
+Both reviewer findings are accepted. The shared prefix must be explicitly
+hoisted, and the new WebSocket predicate must not swallow near-prefix paths.
+The existing HTTP matcher is intentionally unchanged. Noncanonical delegation
+cases are added to the new constructor test; no blocker was rebutted. Main
+judges the amended plan near-pass with both concrete fixes folded in, subject
+to independent code and runtime verification. The review did not certify a
+fix for the separate discovery stall.
 
 ## Verification and acceptance
 
