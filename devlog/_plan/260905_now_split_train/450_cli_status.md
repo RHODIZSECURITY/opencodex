@@ -5,9 +5,9 @@
 - Archetype: pure-move, C3 CLI/module refactor; main owns the goal and persisted PABCD.
 - Goal: extract the existing health/stale-process probes while preserving status/doctor behavior and all original exports. Implementation basis is `d2b4a81c61294c3c9ae7a2d58a01397167b120d0` from verified prerequisite PR #3640, now merged into `dev` as `ebb0e5e174e0cc035d4e7ffa668c25652bd1caca`. PR #3633 therefore keeps `dev` as its target. The547-line basis source still matches the original1362b1a38 inventory byte-for-byte.
 - Scope: MODIFY `src/cli/status.ts`, NEW `src/cli/status-probes.ts`, MODIFY existing `tests/cli/cli-status-json.test.ts` for forwarding assertions, and add the planned ownership row in `structure/01_runtime.md`. Unit documents and isolated verification evidence are included.
-- Non-goals: changed timing, liveness/refusal semantics, snapshots, rendering/schema, service/auth/runtime resolution, generic diagnostics, other S14 implementations, merges or releases.
+- Non-goals: changed timing, liveness/refusal semantics, snapshots, rendering/schema, service/auth/runtime resolution, generic diagnostics, other S14 implementations, releases or live-service changes. This layer's admin merge is authorized after the final-head gates below.
 - Verifier: this document's remote-only Verification recipe, structural/export identity review, named mutation controls, and exact-head CI. No local suites.
-- Stop: all layer criteria actually verified, PR ready and evidence recorded; close D and immediately continue the remaining goal. Do not stop merely on a wait timeout.
+- Stop: all layer criteria actually verified, this layer admin-merged with expected-head/tree and fetched-dev ancestry proof, and evidence recorded; close D and immediately continue the remaining goal. Do not stop merely on a wait timeout.
 - Resource scope: local source/docs/Git and configured origin PR/CI maintenance; isolated SSH `lidge` checks. Existing configured credentials only, never printed. User authorized unbounded time/tokens and gpt-6-astra high delegation; no live-proxy/service changes.
 - Delegation: one worker owns only the two source paths and existing test; main owns SoT/docs/Git/remote checks. Independent audit and check review are read-only. Main reclaims a packet after two distinct failed workers; new write scope requires a P amendment.
 - Bounds: planned source churn is below500 and non-move wiring/tests below150 under003. Stale symbols, new cycles, oversized leaves or semantic changes require re-planning, not silent waivers.
@@ -165,7 +165,7 @@ Local checks are read-only: `git diff --check`, `wc -l src/cli/status-probes.ts 
 3. The original 11 exports remain importable with identical signatures; `checkProxyHealth` and `HealthCheck` are not added to the original export surface.
 4. Original consumer paths and the two test imports are unchanged; method G finds no cycle involving either changed module.
 5. Probe timers remain per-call, cleanup stays in `finally`, recorded-port choice and both snapshots stay in the same gatherer; negative controls go red and restored focused checks/typecheck/privacy pass.
-6. Remote full suite and exact-head CI are green for this layer independently. Only the two source files, named existing test, planned SoT row and unit documents enter its PR; no upper-layer implementation or merge.
+6. Remote full suite and exact-head CI are green for this layer independently. Only the two source files, named existing test, planned SoT row and unit documents enter its parent-relative PR delta; no upper-layer implementation. Land this layer with admin after fresh review disposition, expected-head matching and child preservation; verify actual merged tree and fetched-dev ancestry.
 
 ## PR
 
@@ -207,7 +207,7 @@ The initially preserved terminal separator produced a new-file whitespace-check 
 
 Changes by file: `src/cli/status-probes.ts` owns the existing probes; `src/cli/status.ts` retains assembly and forwards the old API; `tests/cli/cli-status-json.test.ts` adds the identity regression; `structure/01_runtime.md` names the two owners. Resulting-head runtime checks, mutation controls and independent C review remain to be completed.
 
-## Resumed P after prerequisite completion
+## Resumed P after prerequisite completion (historical)
 
 WP445 closed through D at d2b4a81c61294c3c9ae7a2d58a01397167b120d0, with
 ready PR #3640, current-head hosted CI and a clean remote full-suite receipt.
@@ -242,7 +242,7 @@ before an explicit force-with-lease; do not overwrite another owner's push.
 Record fresh remote/CI proof for the restacked head, not the old successful
 remote result or failed hosted result. No local suites, merge or release.
 
-## Resumed A outcome
+## Resumed A outcome (historical)
 
 Hooke verified51import/re-export bindings, all11public exports, and a fresh
 363-module/44-inline-edge graph with no return cycle through either changed
@@ -255,7 +255,7 @@ receipt-internal SHA/clean checks, Bun1.4.0 setup and serialized publication
 plan. WP445's genuine D close and WP450's active cursor were confirmed.
 Verdict: PASS. Neither review is runtime verification of the restacked head.
 
-## Resumed B integration
+## Resumed B integration (historical)
 
 The already-built layer is retained exactly rather than reimplemented. Main
 verified the rebased source/test blobs against4a71894f and the approved
@@ -362,3 +362,21 @@ commit/tree, compare the incremental source/caller changes, and re-audit the
 normal B-stage merge. Retain the exact owned-blob and fresh-head verification
 requirements above. This is a dependency/scheduling wait, not completion or
 permission to weaken the gates. No intermediate source merge or new CI ran.
+
+### Verifier continuity for the next B/C
+
+The archived mutation runner embeds the original4a71894f remote checkout and
+must not run unchanged against the new layer. During B, parameterize that
+existing runner with the fresh remote checkout and expected40-character SHA.
+Require an owned `/tmp/ocx-wp450.*` checkout, clean matching HEAD, repository
+Bun1.4.0 on PATH, and patches beside the runner. Preserve its two named
+failure checks, reverse-on-exit restoration and final clean identity check.
+Run these controls serially after the full verifier finishes, never against a
+checkout whose suite is active. Archived old-head results remain historical.
+
+The frozen #3645 correction is bb0547342c9526484b0219d6aaf5bf8927d0a852,
+tree f4f770511db04b01f2b9376833a4f4f5012ae1a7, before final WS integration.
+It is not the integration pin or runtime proof. Queue order is WS3643,
+follow-up3645, this450 unit, then provider ROOT3582. Final-base admission and
+fresh A review remain mandatory; the candidate import-graph review can only
+reduce redundant static work once its content matches the landed input.
