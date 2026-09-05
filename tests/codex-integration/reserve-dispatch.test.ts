@@ -3,14 +3,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CodexAccountCooldownError, CodexReserveUnavailableError, createCodexReserveDispatchGuard,
+  CodexAccountCooldownError, CodexReserveUnavailableError, CodexReserveHelperUnsupportedError,
+  cooldownErrorResponse, createCodexReserveDispatchGuard,
   resolveCodexAuthContext, unwrapUpstreamRetryEvidenceError,
 } from "../../src/codex/auth-context";
 import { captureMainQuotaWriter, clearMainAccountInfoCache, observeMainQuotaCredential, observeMainQuotaIdentity } from "../../src/codex/main-account-cache";
 import { clearAccountQuota } from "../../src/codex/quota";
 import { clearAccountNeedsReauth } from "../../src/codex/account-runtime-state";
 import { clearCodexUpstreamHealth, getCodexUpstreamHealth, recordCodexUpstreamOutcome } from "../../src/codex/routing";
-import { observeMainReserveRevocation } from "../../src/codex/reserve-availability";
+import { isMainReserveAuthorizationLive, observeMainReserveRevocation } from "../../src/codex/reserve-availability";
 import { clearUpstreamHostHealth, getUpstreamHostHealth, upstreamHostHealthKey } from "../../src/codex/upstream-host-health";
 import { providerFetch, fetchWithHeaderTimeout } from "../../src/server/responses/fetch-helpers";
 import { handleResponses } from "../../src/server/responses/core";
@@ -124,6 +125,41 @@ afterEach(async () => {
 });
 
 describe("Reserve dispatch-time permission", () => {
+  test("a positive conversation grant cannot authorize a terminal helper enabled during pacing", async () => {
+    const { ctx, cfg } = await authorize();
+    const token = { accessToken, chatgptAccountId: accountId };
+    expect(isMainReserveAuthorizationLive(ctx.reserveAuthorization, token)).toBe(true);
+    cfg.codexDesktopAuthless = false;
+    const guard = createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve", loopbackAdmission, true);
+    expect(guard).toBeDefined();
+    const executor = providerFetch(cfg.providers.custom!, "1.3.14", { beforeDispatch: guard });
+    let release!: () => void;
+    const paced = new Promise<void>(resolve => { release = resolve; });
+    executor.waitForPacing = () => paced;
+    const pending = fetchWithHeaderTimeout(URL, { method: "POST", headers: headers(), body: "{}" },
+      new AbortController().signal, 1000, false, executor);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    cfg.codexDesktopAuthless = true;
+    release();
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected terminal helper refusal");
+    expect(outcome.error).toBeInstanceOf(CodexReserveHelperUnsupportedError);
+    if (!(outcome.error instanceof CodexReserveHelperUnsupportedError)) throw outcome.error;
+    const response = cooldownErrorResponse(outcome.error);
+    expect(response.status).toBe(429);
+    expect(response.headers.has("retry-after")).toBe(false);
+    expect(await response.text()).toContain("only available as a conversation model");
+    expect(isMainReserveAuthorizationLive(ctx.reserveAuthorization, token)).toBe(true);
+    expect(inferenceSends).toBe(0);
+    expect(usageReads).toBe(1);
+    expect(getCodexUpstreamHealth("__main__")).toBeNull();
+    expect(getUpstreamHostHealth(upstreamHostHealthKey("custom", "https://chatgpt.com"))).toBeNull();
+  });
+
   test("off-to-on during pacing activates the installed guard without obtaining a new grant", async () => {
     const cfg = config();
     cfg.codexDesktopAuthless = false;

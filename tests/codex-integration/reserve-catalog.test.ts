@@ -241,9 +241,9 @@ describe("Reserve catalog metadata is not permission", () => {
       supported_reasoning_levels: [{ effort: "xhigh", description: "Only xhigh" }],
       default_reasoning_level: "xhigh",
     })]));
-    const identity = rows;
+    const before = [...rows];
     const diagnostic = clampCatalogModelsToObservedCodexSupport(rows, new Set(["medium"]));
-    expect(rows).toBe(identity);
+    expect(rows).not.toEqual(before);
     expect(rows.map(row => row.slug)).toEqual(["external/model"]);
     expect(diagnostic.affectedModels).toContain("personal/gpt-reserve");
     expect(diagnostic.removedEfforts).toContain("xhigh");

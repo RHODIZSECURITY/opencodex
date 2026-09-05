@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { isCodexReserveRequestEligible } from "../../src/codex/loopback-target";
 import type { DataPlaneAdmission } from "../../src/server/auth-cors";
+import { captureMainQuotaWriter } from "../../src/codex/main-account-cache";
+import { getMainReserveAuthorization, isMainReserveAuthorizationLive } from "../../src/codex/reserve-availability";
 import { ACCESS, ACCOUNT, EXTERNAL, PROXY_KEY, reserveIngressFixture, type Counters } from "../helpers/reserve-ingress-fixture";
 import { SERVER_BUDGET_MS } from "../helpers/test-budget";
 
@@ -188,4 +190,117 @@ describe("Reserve eligibility trusts receiving-listener admission", () => {
       fixture.assertConfigUnchanged();
     } finally { await fixture.close(); }
   }, SERVER_BUDGET_MS);
+});
+
+describe("terminal routed vision helpers cannot spend Reserve", () => {
+  const terminal = { "x-opencodex-vision-describe": "1" };
+
+  test.each([
+    ["chat", "openai/gpt-reserve"], ["chat", "main/gpt-reserve"],
+    ["responses", "openai/gpt-reserve"], ["responses", "main/gpt-reserve"],
+  ] as const)("%s %s refuses before credential enrichment", async (transport, model) => {
+    // Chat is intentionally not served by the secondary listener; use an actual primary
+    // loopback bind so this tests the handler, not the secondary listener's 404 allowlist.
+    const fixture = await reserveIngressFixture({ primaryLoopback: true });
+    try {
+      fixture.allow(); // A permission denial must not accidentally make this test green.
+      const before = snapshot(fixture.counters);
+      const result = await fixture.request("public", transport, model, terminal);
+      expect(result.status).toBe(400);
+      expect(result.text).toContain("only available as a conversation model");
+      expect(JSON.parse(result.text).error.type).toBe("invalid_request_error");
+      expect(delta(fixture.counters, before)).toEqual({ wham: 0, credential: 0, tokenRead: 0, inference: 0 });
+      fixture.assertConfigUnchanged();
+    } finally { await fixture.close(); }
+  }, SERVER_BUDGET_MS);
+
+  test.each(["chat", "responses"] as const)("%s marker survives combo child reconstruction", async transport => {
+    const fixture = await reserveIngressFixture({ primaryLoopback: true, configure: config => {
+      config.combos = { helper: { strategy: "failover", targets: [{ provider: "openai", model: "gpt-reserve" }] } };
+    } });
+    try {
+      fixture.allow();
+      const before = snapshot(fixture.counters);
+      const result = await fixture.request("public", transport, "combo/helper", {
+        ...headers("dedicated"), ...terminal,
+      });
+      expect(result.status).toBe(400);
+      expect(result.text).toContain("only available as a conversation model");
+      expect(JSON.parse(result.text).error.type).toBe("invalid_request_error");
+      expect(delta(fixture.counters, before)).toMatchObject({ wham: 0, inference: 0 });
+      // Chat may enrich the unresolved combo with main auth before the concrete child is
+      // selected. Only the child's Reserve permission/inference work must remain zero.
+      fixture.assertConfigUnchanged();
+    } finally { await fixture.close(); }
+  }, SERVER_BUDGET_MS);
+
+  test.each(["chat", "responses"] as const)("%s keyed combo child is not refused because a later candidate is Reserve", async transport => {
+    const fixture = await reserveIngressFixture({ primaryLoopback: true, configure: config => {
+      config.combos = { helper: { strategy: "failover", targets: [
+        { provider: "keyed", model: "gpt-reserve" }, { provider: "openai", model: "gpt-reserve" },
+      ] } };
+    } });
+    try {
+      fixture.allow();
+      const result = await fixture.request("public", transport, "combo/helper", { ...headers("dedicated"), ...terminal });
+      expect(result.status).toBe(200);
+      expect(fixture.counters.wham).toBe(0);
+      expect(fixture.counters.inference).toHaveLength(1);
+      expect(fixture.counters.inference[0]).toMatchObject({ model: "gpt-reserve", authorization: "Bearer sk-ingress-fixture" });
+      fixture.assertConfigUnchanged();
+    } finally { await fixture.close(); }
+  }, SERVER_BUDGET_MS);
+
+  test("off-to-on during owned auth refuses a helper even after positive Reserve authorization", async () => {
+    const fixture = await reserveIngressFixture({ primaryLoopback: true, configure: config => {
+      config.codexDesktopAuthless = false;
+    } });
+    fixture.allow();
+    const gate = fixture.holdCredential();
+    const pending = fixture.request("public", "responses", "main/gpt-reserve", terminal);
+    const observed = pending.then(
+      result => ({ status: "fulfilled" as const, result }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    try {
+      await Promise.race([gate.started, observed.then(() => { throw new Error("Request skipped awaited owned auth"); })]);
+      expect(fixture.counters.credential).toBe(1);
+      expect(fixture.counters.wham).toBe(0);
+      fixture.setAuthless(true);
+      gate.release();
+      const outcome = await observed;
+      if (outcome.status !== "fulfilled") throw outcome.error;
+      expect(outcome.result.status).toBe(429); // Late dispatch policy refusal, not a transport failure.
+      expect(outcome.result.text).toContain("only available as a conversation model");
+      expect(JSON.parse(outcome.result.text).error.type).toBe("rate_limit_error");
+      expect(fixture.counters.wham).toBe(1);
+      expect(fixture.counters.inference).toEqual([]);
+      const token = { accessToken: ACCESS, chatgptAccountId: ACCOUNT };
+      const proof = await getMainReserveAuthorization({ token, writer: captureMainQuotaWriter(ACCOUNT),
+        observeOrdinaryQuota() { throw new Error("Expected already cached positive proof, not another WHAM read"); },
+      });
+      expect(isMainReserveAuthorizationLive(proof, token)).toBe(true);
+      expect(fixture.counters.wham).toBe(1);
+      expect(fixture.counters.inference).toEqual([]);
+    } finally { gate.release(); await observed; await fixture.close(); }
+  }, SERVER_BUDGET_MS);
+
+  for (const transport of ["chat", "responses"] as const) {
+    test.each(["still-off", "conversation", "keyed"] as const)(`${transport} %s control retains inference`, async control => {
+      const fixture = await reserveIngressFixture({ primaryLoopback: true, configure: config => {
+        if (control === "still-off") config.codexDesktopAuthless = false;
+      } });
+      try {
+        fixture.allow();
+        const model = control === "keyed" ? "keyed/gpt-reserve" : "main/gpt-reserve";
+        const result = await fixture.request("public", transport, model, control === "conversation" ? {} : terminal);
+        expect(result.status).toBe(200);
+        expect(fixture.counters.wham).toBe(control === "conversation" ? 1 : 0);
+        expect(fixture.counters.inference).toHaveLength(1);
+        expect(fixture.counters.inference[0]).toMatchObject({ model: "gpt-reserve",
+          authorization: `Bearer ${control === "keyed" ? "sk-ingress-fixture" : ACCESS}` });
+        fixture.assertConfigUnchanged();
+      } finally { await fixture.close(); }
+    }, SERVER_BUDGET_MS);
+  }
 });

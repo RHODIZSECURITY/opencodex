@@ -209,6 +209,7 @@ import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE, isCodexReserveHelperUnsupported } from "../../codex/loopback-target";
 import { providerContextCap } from "../../providers/context-cap";
 import {
   fastPolicyForModel,
@@ -989,6 +990,7 @@ interface CodexPoolAccountRetryArgs {
   options: {
     admission?: DataPlaneAdmission;
     codexAuthPolicy?: CodexAuthPolicyConfig;
+    visionDescribeTerminal?: boolean;
     abortSignal?: AbortSignal;
     onCodexAuthContextResolved?: (ctx: CodexAuthContext) => void;
     deferCodexResetDerivedCooldown?: boolean;
@@ -1329,7 +1331,7 @@ async function retryCodexPoolOnAlternateAccount(
             modelId: route.modelId,
             onCodexWsQuota: codexWsQuotaObserver(retryAuthCtx, route.provider),
             beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-              ? createCodexReserveDispatchGuard(retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+              ? createCodexReserveDispatchGuard(retryAuthCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
           }),
           // Credential-bearing forward send: never follow a redirect into a
           // dead-host rejection after the credential was seen (#914).
@@ -2826,7 +2828,13 @@ export async function handleResponses(
   const ownsBudget = options.translatorBudget === undefined;
   const translatorBudget = options.translatorBudget ?? createTranslatorBudget();
   try {
-    const response = await handleResponsesInner(req, config, logCtx, { ...options, translatorBudget });
+    const response = await handleResponsesInner(req, config, logCtx, {
+      ...options,
+      // Capture before combo replay rebuilds the Request headers; children carry options.
+      visionDescribeTerminal: options.visionDescribeTerminal === true
+        || req.headers.get("x-opencodex-vision-describe") === "1",
+      translatorBudget,
+    });
     return ownsBudget ? finalizeOwnedTranslatorBudget(response, translatorBudget) : response;
   } catch (error) {
     if (ownsBudget) translatorBudget.dispose();
@@ -3402,6 +3410,12 @@ async function handleResponsesInner(
   }
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
+  // Resolve aliases/combo children before refusing helpers; do not spend main auth or host budget.
+  if (isCanonicalOpenAiForwardProvider(route.provider)
+    && isCodexReserveHelperUnsupported(options.codexAuthPolicy ?? config, route.modelId,
+      options.admission, options.visionDescribeTerminal === true)) {
+    return formatErrorResponse(400, "invalid_request_error", CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE);
+  }
   // Refuse an input that cannot plausibly fit the model context window before spending auth,
   // circuit budget, or upstream bandwidth on a turn the provider will reject anyway (#1412).
   //
@@ -3813,8 +3827,7 @@ async function handleResponsesInner(
   // call must never plan another describe. The flag arrives from the Chat
   // surface (whose bridge rebuilds headers) or as the raw header for native
   // Responses callers. Marked + text-only routed model → strip, depth cap 1.
-  const visionDescribeTerminal = options.visionDescribeTerminal === true
-    || req.headers.get("x-opencodex-vision-describe") === "1";
+  const visionDescribeTerminal = options.visionDescribeTerminal === true;
   const visionPlan = visionDescribeTerminal
     ? undefined
     : planVisionSidecar(config, route.provider, route.modelId, parsed, openAiSidecar, {
@@ -4325,7 +4338,7 @@ async function handleResponsesInner(
               modelId: route.modelId,
               onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
               beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
             }),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
@@ -4401,7 +4414,7 @@ async function handleResponsesInner(
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
                 beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(response => {
@@ -4505,7 +4518,7 @@ async function handleResponsesInner(
               modelId: route.modelId,
               onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
               beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+                ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
             }),
             codex401ReplayKind === "stored" ? options.onStoredPool401ReplayDispatched : undefined,
           ),
@@ -4614,7 +4627,7 @@ async function handleResponsesInner(
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
                 beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(res => {
@@ -4679,7 +4692,7 @@ async function handleResponsesInner(
                 modelId: route.modelId,
                 onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
                 beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission) : undefined,
+                  ? createCodexReserveDispatchGuard(authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
               }),
               route.provider.authMode === "forward")
               .then(res => {

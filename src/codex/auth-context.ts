@@ -60,7 +60,7 @@ import {
   observeMainQuotaCredential,
   type MainQuotaWriter,
 } from "./main-account-cache";
-import { isCodexReserveRequestEligible } from "./loopback-target";
+import { CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE, isCodexReserveHelperUnsupported, isCodexReserveRequestEligible } from "./loopback-target";
 import type { DataPlaneAdmission } from "../server/auth-cors";
 import { getMainReserveAuthorization, isMainReserveAuthorizationLive, type MainReserveAuthorization } from "./reserve-availability";
 import { UpstreamRetryEvidenceError } from "../lib/upstream-retry";
@@ -321,6 +321,15 @@ export class CodexReserveUnavailableError extends CodexAccountCooldownError {
   }
 }
 
+/** A local unsupported-helper refusal; retain Reserve policy error mapping on delayed sends. */
+export class CodexReserveHelperUnsupportedError extends CodexReserveUnavailableError {
+  constructor() {
+    super();
+    this.name = "CodexReserveHelperUnsupportedError";
+    this.message = CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE;
+  }
+}
+
 export type CodexAuthPolicyConfig = Readonly<Pick<OcxConfig,
   "codexMainAccountHardLock" | "codexDesktopAuthless" | "runtimeRole" | "pausedCodexAccountIds"
 >>;
@@ -404,6 +413,7 @@ export function createCodexReserveDispatchGuard(
   config: CodexAuthPolicyConfig,
   modelId: string,
   admission?: Pick<DataPlaneAdmission, "source">,
+  terminalHelper = false,
 ): ((headers: Headers) => void) | undefined {
   // Snapshot the resolved source value, not the caller's mutable admission object. Config stays
   // live so policy changes remain visible after pacing and retry backoff.
@@ -412,7 +422,12 @@ export function createCodexReserveDispatchGuard(
   // Only immutable request facts decide whether to install the callback. Flag/role eligibility
   // is checked inside it, including an opt-in enabled while a send waits for pacing or WS open.
   const ingress = Object.freeze({ source });
-  return headers => assertMaterializedReserve(headers, ctx, { config, modelId, admission: ingress });
+  return headers => {
+    if (isCodexReserveHelperUnsupported(config, modelId, ingress, terminalHelper)) {
+      throw new CodexReserveHelperUnsupportedError();
+    }
+    assertMaterializedReserve(headers, ctx, { config, modelId, admission: ingress });
+  };
 }
 
 /** Retry history must not turn a later local admission refusal into a network failure. */

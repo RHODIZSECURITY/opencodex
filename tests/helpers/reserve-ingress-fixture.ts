@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, saveConfig } from "../../src/config";
+import { clearComboSelectionState, clearComboTargetCooldowns } from "../../src/combos";
 import { MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET } from "../../src/codex/account-namespace-match";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
 import * as mainAccount from "../../src/codex/main-account";
@@ -42,6 +43,8 @@ export function deferred<T>() {
 }
 
 function clearState(): void {
+  clearComboSelectionState();
+  clearComboTargetCooldowns();
   clearAccountQuota(); // Cancels pending quota persistence before fixture-home teardown.
   clearMainAccountInfoCache();
   clearCodexUpstreamHealth();
@@ -53,7 +56,10 @@ function clearState(): void {
 }
 
 /** Actual sibling listeners, native platform locks, owned homes; no external socket fallback. */
-export async function reserveIngressFixture() {
+export async function reserveIngressFixture(options: {
+  primaryLoopback?: boolean;
+  configure?: (config: OcxConfig) => void;
+} = {}) {
   expect(isTestHomeGuardArmed()).toBe(true);
   const names = ["OPENCODEX_HOME", "CODEX_HOME", "OPENCODEX_API_AUTH_TOKEN", "OPENCODEX_ADMIN_AUTH_TOKEN"] as const;
   const oldEnv = names.map(name => [name, process.env[name]] as const);
@@ -81,11 +87,14 @@ export async function reserveIngressFixture() {
   let allowReserve = false;
   let holdUsage: ReturnType<typeof deferred<void>> | undefined;
   let usageStarted = deferred<void>();
+  let holdCredential: ReturnType<typeof deferred<void>> | undefined;
+  let credentialStarted = deferred<void>();
   const sockets = new Set<WebSocket>();
   const unexpected: string[] = [];
 
   const close = async () => {
     holdUsage?.resolve();
+    holdCredential?.resolve();
     for (const socket of sockets) socket.close();
     try { await server?.stop(true); }
     finally {
@@ -112,9 +121,11 @@ export async function reserveIngressFixture() {
     });
     restores.push(() => liveSpy.mockRestore());
     const realToken = mainAccount.getValidMainAccountToken;
-    const tokenSpy = spyOn(mainAccount, "getValidMainAccountToken").mockImplementation(options => {
+    const tokenSpy = spyOn(mainAccount, "getValidMainAccountToken").mockImplementation(async options => {
       counters.credential++;
       expect(process.env.CODEX_HOME).toBe(codexHome);
+      credentialStarted.resolve();
+      if (holdCredential) await holdCredential.promise;
       return realToken(options);
     });
     restores.push(() => tokenSpy.mockRestore());
@@ -167,7 +178,8 @@ export async function reserveIngressFixture() {
     const localPort = await findAvailablePort(0, "127.0.0.1");
     const publicPort = await findAvailablePort(0, "0.0.0.0", { reservedPort: localPort });
     expect(publicPort).not.toBe(localPort);
-    const config: OcxConfig = { port: publicPort, hostname: "0.0.0.0", defaultProvider: "openai",
+    const hostname = options.primaryLoopback ? "127.0.0.1" : "0.0.0.0";
+    const config: OcxConfig = { port: publicPort, hostname, defaultProvider: "openai",
       openaiProviderTierVersion: 2, codexDesktopAuthless: true, codexMainAccountHardLock: false,
       websockets: true, subagentModels: [], codexAccounts: [], codexAccountNamespaces: { main: MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET },
       unauthenticatedLoopbackListener: { enabled: true, port: localPort },
@@ -176,8 +188,9 @@ export async function reserveIngressFixture() {
           baseUrl: "https://chatgpt.com/backend-api/codex" },
         keyed: { adapter: "openai-responses", authMode: "key", apiKey: "sk-ingress-fixture", baseUrl: "https://reserve-keyed.example.test/v1" },
       } };
+    options.configure?.(config);
     saveConfig(config);
-    expect(loadConfig()).toMatchObject({ hostname: "0.0.0.0", codexDesktopAuthless: true,
+    expect(loadConfig()).toMatchObject({ hostname, codexDesktopAuthless: config.codexDesktopAuthless,
       codexAccountNamespaces: { main: MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET } });
     server = startServer(publicPort, { inspectNativeCodexOwnership: ownedServiceHomeInspection("Reserve dual-listener fixture") });
     await waitForNativeMainStartupGate();
@@ -185,7 +198,7 @@ export async function reserveIngressFixture() {
     reconcileMainCodexAccountRuntimeState();
     observeMainQuotaCredential(ACCESS, ACCOUNT);
     expect(liveConfig).toBeDefined();
-    expect(liveConfig?.hostname).toBe("0.0.0.0");
+    expect(liveConfig?.hostname).toBe(hostname);
     const baselineDisk = readFileSync(join(configHome, "config.json"), "utf8");
     const baselineConfig = JSON.stringify(liveConfig);
     counters.wham = 0; counters.credential = 0; counters.tokenRead = 0;
@@ -238,6 +251,14 @@ export async function reserveIngressFixture() {
     return { counters, request, close, publicBase, localBase,
       allow: () => { allowReserve = true; },
       hold: () => { holdUsage = deferred<void>(); usageStarted = deferred<void>(); return { started: usageStarted.promise, release: () => holdUsage?.resolve() }; },
+      holdCredential: () => {
+        holdCredential = deferred<void>(); credentialStarted = deferred<void>();
+        return { started: credentialStarted.promise, release: () => holdCredential?.resolve() };
+      },
+      setAuthless: (enabled: boolean) => {
+        if (!liveConfig) throw new Error("Fixture server did not publish its live config");
+        liveConfig.codexDesktopAuthless = enabled;
+      },
       assertConfigUnchanged: () => {
         expect(JSON.stringify(liveConfig)).toBe(baselineConfig);
         expect(readFileSync(join(configHome, "config.json"), "utf8")).toBe(baselineDisk);

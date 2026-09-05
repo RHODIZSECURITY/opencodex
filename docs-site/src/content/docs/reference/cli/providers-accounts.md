@@ -133,6 +133,10 @@ When public and local listeners run together, Reserve compatibility applies only
 by the local listener. An authenticated public request stays on the normal path even if it originates
 from the same machine; request headers cannot select the local policy.
 
+Enable authless Desktop mode with `ocx system settings --desktop-authless on`, run `ocx sync`,
+then fully quit and reopen Codex Desktop so it reloads the rewritten configuration and catalog.
+Follow the [canonical authless Desktop workflow](/guides/codex-integration/#authless-codex-desktop-opt-in).
+
 Each compatibility request checks a credential-bound server authorization, cached for at most
 60 seconds. OpenCodex sends the Reserve capability header on an owned main-account usage read and
 requires ordinary usage to be disallowed, the Luna Reserve banner, and exactly one allowed Reserve

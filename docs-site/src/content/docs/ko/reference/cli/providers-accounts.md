@@ -110,6 +110,11 @@ Reserve가 활성화되지 않을 수 있습니다. 스위치를 끄면 원래 �
 적용됩니다. 같은 컴퓨터에서 보냈더라도 공개 리스너로 인증한 요청은 원래 경로를 유지하며,
 요청 헤더로 로컬 정책을 고를 수는 없습니다.
 
+`ocx system settings --desktop-authless on`으로 Desktop 로그인 생략 모드를 켜고,
+`ocx sync`를 실행한 다음 Codex Desktop을 완전히 종료했다가 다시 여세요.
+다시 쓴 설정과 모델 목록을 읽으려면 이 순서가 필요합니다. 자세한 절차는
+[Desktop 로그인 생략 모드 가이드](/guides/codex-integration/#authless-codex-desktop-opt-in)를 따르세요.
+
 각 요청은 해당 자격 증명에 묶인 서버 허용 결과를 확인하며, 캐시는 최대 60초만 유지합니다.
 메인 계정 사용량을 조회할 때 Reserve 기능 헤더를 보내고, 일반 사용량 불허·Luna Reserve 안내·
 허용된 Reserve 항목 하나가 모두 있는지 확인합니다. 근거가 없거나 오래됐거나 계정이 맞지 않으면

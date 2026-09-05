@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { codexWsUpstreamFetch } from "../../src/server/responses/ws-upstream";
 import { providerFetch } from "../../src/server/responses/fetch-helpers";
-import { CodexReserveUnavailableError, createCodexReserveDispatchGuard } from "../../src/codex/auth-context";
+import { CodexReserveHelperUnsupportedError, CodexReserveUnavailableError, createCodexReserveDispatchGuard } from "../../src/codex/auth-context";
 import { clearAccountNeedsReauth } from "../../src/codex/account-runtime-state";
 import { clearCodexUpstreamHealthForAccount } from "../../src/codex/routing";
+import { clearMainAccountInfoCache, observeMainQuotaCredential, observeMainQuotaIdentity } from "../../src/codex/main-account-cache";
+import { getMainReserveAuthorization, isMainReserveAuthorizationLive } from "../../src/codex/reserve-availability";
 import type { OcxProviderConfig } from "../../src/types";
 
 const URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -56,6 +58,71 @@ afterEach(() => {
 });
 
 describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
+  test.each([true, false])("valid-proof terminal helper with enabled-at-open=%s cannot confuse helper permission with conversation permission", async enabledAtOpen => {
+    install();
+    clearAccountNeedsReauth("__main__");
+    clearCodexUpstreamHealthForAccount("__main__");
+    clearMainAccountInfoCache();
+    const token = { accessToken: "fixture-reserve", chatgptAccountId: "fixture-workspace" };
+    observeMainQuotaIdentity(token.chatgptAccountId);
+    const writer = observeMainQuotaCredential(token.accessToken, token.chatgptAccountId);
+    let whamReads = 0;
+    let observations = 0;
+    let fallbacks = 0;
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (
+      input: Parameters<typeof fetch>[0], options?: RequestInit,
+    ) => {
+      const request = new Request(input, options);
+      expect(request.url).toBe("https://chatgpt.com/backend-api/wham/usage");
+      expect(request.headers.get("authorization")).toBe("Bearer fixture-reserve");
+      expect(request.headers.get("chatgpt-account-id")).toBe("fixture-workspace");
+      expect(request.headers.get("x-openai-codex-luna-reserve")).toBe("1");
+      whamReads++;
+      return Response.json({ account_id: token.chatgptAccountId, rate_limit: { allowed: false },
+        rate_limit_upsell: { banner_type: "luna_reserve" },
+        additional_rate_limits: [{ limit_name: "gpt-reserve", rate_limit: { allowed: true } }],
+      });
+    }, { preconnect() {} }));
+    try {
+      const proof = await getMainReserveAuthorization({ token, writer, observeOrdinaryQuota() { observations++; } });
+      expect(isMainReserveAuthorizationLive(proof, token)).toBe(true);
+      if (!proof) throw new Error("Expected genuine positive conversation proof");
+      const config = { codexDesktopAuthless: false };
+      const ctx = { kind: "main" as const, accountId: null, reserveAuthorization: proof };
+      const guard = createCodexReserveDispatchGuard(ctx, config, "gpt-reserve", { source: "loopback" }, true);
+      expect(guard).toBeDefined();
+      const fallback = Object.assign(async () => { fallbacks++; return new Response("unexpected fallback"); }, { preconnect() {} });
+      const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+      const observed = pending.then(
+        response => ({ status: "fulfilled" as const, response }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      expect(DelayedWebSocket.instances).toHaveLength(1); // Off at handshake, so the late guard must be exercised.
+      const socket = DelayedWebSocket.instances[0]!;
+      config.codexDesktopAuthless = enabledAtOpen;
+      socket.dispatchEvent(new Event("open"));
+      const outcome = await observed;
+      if (enabledAtOpen) {
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status !== "rejected") throw new Error("Expected terminal helper refusal");
+        expect(outcome.error).toBeInstanceOf(CodexReserveHelperUnsupportedError);
+        expect(socket.sent).toEqual([]);
+        expect(socket.closed).toBe(true);
+        expect(socket.listeners.size).toBe(0);
+      } else {
+        if (outcome.status !== "fulfilled") throw outcome.error;
+        expect(outcome.response.status).toBe(200);
+        expect(socket.sent).toHaveLength(1);
+        expect(JSON.parse(socket.sent[0]!)).toMatchObject({ type: "response.create", model: "gpt-reserve" });
+        await outcome.response.body?.cancel();
+      }
+      expect(isMainReserveAuthorizationLive(proof, token)).toBe(true);
+      expect(whamReads).toBe(1);
+      expect(observations).toBe(1);
+      expect(fallbacks).toBe(0);
+    } finally { fetchSpy.mockRestore(); clearMainAccountInfoCache(); }
+  });
+
   test("off-to-on during delayed WS open refuses the unproved create frame without fallback", async () => {
     install();
     clearAccountNeedsReauth("__main__");
