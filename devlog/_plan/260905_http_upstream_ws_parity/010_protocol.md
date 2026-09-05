@@ -111,6 +111,8 @@ Intermediate retry responses retain the existing prelude observation behavior an
 
 Focused baseline command and known existing skip are recorded in `000_plan.md`. Extend those existing files; add explicit layout registrations only if a new test file becomes necessary. Typecheck/privacy/secret scan and coordinated full verification precede review-ready/merge.
 
+B test placement refinement: reuse `tests/responses/responses-account-label.test.ts` and its existing isolated `withPoolHome` fixture for the pool/main-pool metadata-order scenarios. This exercises actual auth selection and cache writers instead of mocking the selected-account gate. The original transport file remains responsible for byte limits, frame order and no-resend behavior.
+
 ## Structural and review notes
 
 The existing WS source is 462 lines. Extract pure mapping responsibilities before adding them; lifecycle extraction in the next cycle must keep new modules under 400 lines. Do not refactor unrelated adapter/catalog behavior. Existing `ws-bridge` safe-header export remains compatible even if its pure owner is extracted. No novel enforcement claim: checks enforce wire/resource invariants inside this process; they do not establish provider billing behavior.

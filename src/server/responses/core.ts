@@ -13,6 +13,7 @@ import {
 } from "./outbound-body-guard";
 import { nativeContextLimits } from "../../codex/catalog";
 import { describeUpstreamConnectFailure } from "./upstream-error";
+import { observeCodexWsResponseMetadata } from "./codex-ws-metadata";
 import {
   multiAgentGuidanceEnabled,
   resolveEnvValue,
@@ -4760,6 +4761,7 @@ async function handleResponsesInner(
       }
       : undefined;
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
+    let detachWsMetadata: (() => void) | undefined;
     // Capture quota from upstream response for multi-account tracking
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
@@ -4772,6 +4774,14 @@ async function handleResponsesInner(
         authCtx.writerGeneration,
         authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined,
       );
+      // Prelude first, then the final exchange's latest snapshot. The socket may
+      // already have completed while auth/outcome inspection was awaiting.
+      const quotaAccountId = authCtx.accountId;
+      const quotaGeneration = authCtx.writerGeneration;
+      const mainQuotaWriter = authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined;
+      detachWsMetadata = observeCodexWsResponseMetadata(upstreamResponse, metadataHeaders => {
+        applyAccountQuotaFromUpstreamHeaders(quotaAccountId, metadataHeaders, quotaGeneration, mainQuotaWriter);
+      });
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
@@ -5024,7 +5034,7 @@ async function handleResponsesInner(
             }
           },
           onClientCancel: () => options.onNativePassthroughCancel?.(),
-          onDone: () => unregisterTurn(turnAc),
+          onDone: () => { detachWsMetadata?.(); unregisterTurn(turnAc); },
         }, {
           clientGoneSignal: options.abortSignal,
           ...(inlineEagerRewrite ? { rewriteBudget: translatorBudget } : {}),

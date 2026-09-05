@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fallbackCodexAccountLogLabel } from "../../src/codex/account-label";
 import { saveCodexAccountCredential } from "../../src/codex/account-store";
-import { clearAccountQuota, updateAccountQuota } from "../../src/codex/auth-api";
+import { clearAccountQuota, getAccountQuota, updateAccountQuota } from "../../src/codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
 import {
   clearCodexUpstreamHealth,
@@ -95,6 +95,64 @@ afterEach(() => {
 });
 
 describe("Responses account usage attribution", () => {
+  test("WS prelude and final quota stay with the selected pool or main-pool account", async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    try {
+      await withPoolHome(async home => {
+        writeFileSync(join(home, "auth.json"), JSON.stringify({
+          tokens: { access_token: "main-access-token", account_id: "main-account" },
+        }));
+        savePoolCredential("pool-ws");
+        class MetadataSocket {
+          listeners = new Map<string, Array<(event: unknown) => void>>();
+          constructor() { queueMicrotask(() => this.emit("open", {})); }
+          addEventListener(type: string, listener: (event: unknown) => void) {
+            this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+          }
+          emit(type: string, event: unknown) {
+            for (const listener of this.listeners.get(type) ?? []) listener(event);
+          }
+          send() {
+            queueMicrotask(() => {
+              const payload = (value: unknown) => this.emit("message", { data: JSON.stringify(value) });
+              const quota = (percent: number) => payload({ type: "codex.rate_limits", rate_limits: {
+                primary: { used_percent: percent, window_minutes: 10080, reset_at: 1900000000 },
+              } });
+              quota(10);
+              payload({ type: "response.created", response: { id: "quota-response" } });
+              quota(20);
+              payload({ type: "response.completed", response: { id: "quota-response", status: "completed", output: [] } });
+            });
+          }
+          close() { this.emit("close", {}); }
+        }
+        globalThis.WebSocket = MetadataSocket as unknown as typeof WebSocket;
+        globalThis.fetch = (async () => { throw new Error("unexpected HTTP request"); }) as typeof fetch;
+        for (const accountId of ["pool-ws", MAIN_CODEX_ACCOUNT_ID]) {
+          clearAccountQuota();
+          updateAccountQuota(accountId, 0);
+          updateAccountQuota("untouched-account", 7);
+          const config = poolConfig(accountId === MAIN_CODEX_ACCOUNT_ID ? [] : [accountId]);
+          config.activeCodexAccountId = accountId;
+          const req = new Request("http://localhost/v1/responses", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: "gpt-5.5", input: "hello", stream: true }),
+          });
+          const response = await handleResponses(req, config, { model: "", provider: "" }, {
+            codexWsRuntimeIdentity: "1.4.0",
+          });
+          expect(response.status).toBe(200);
+          expect(response.headers.get("x-codex-primary-used-percent")).toBe("10");
+          await response.text();
+          expect(getAccountQuota(accountId)?.weeklyPercent).toBe(20);
+          expect(getAccountQuota("untouched-account")?.weeklyPercent).toBe(7);
+        }
+      });
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
+  });
+
   test("main-pool and legacy added accounts carry their effective labels", async () => {
     await withPoolHome(async home => {
       writeFileSync(join(home, "auth.json"), JSON.stringify({

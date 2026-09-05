@@ -3,6 +3,7 @@ import { providerFetch } from "../../src/server/responses/fetch-helpers";
 import { handleResponses } from "../../src/server/responses";
 import { isEagerRelaySseResponse } from "../../src/server/relay";
 import { isWin32EagerRewrite } from "../../src/lib/bun-stream-caps";
+import { CodexWsMetadata, observeCodexWsResponseMetadata, CODEX_WS_METADATA_MAX_BYTES, CODEX_WS_METADATA_MAX_VALUE_BYTES } from "../../src/server/responses/codex-ws-metadata";
 import {
   bunSupportsBoundedCodexWsRelay,
   CODEX_WS_CREATE_FRAME_LIMIT_BYTES,
@@ -13,6 +14,7 @@ import {
   MAX_CODEX_WS_CREATE_FRAME_BYTES,
   MAX_CODEX_WS_FRAME_BYTES,
   MAX_CODEX_WS_QUEUE_BYTES,
+  CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS,
   shouldUseCodexWsUpstream as rawShouldUseCodexWsUpstream,
 } from "../../src/server/responses/ws-upstream";
 import type { OcxProviderConfig } from "../../src/types";
@@ -461,6 +463,64 @@ describe("isWin32EagerRewrite", () => {
 });
 
 describe("codexWsUpstreamFetch", () => {
+  test("the complete HTTP adapter dispatch maps Lite and final routing intent onto the actual WS", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const seenHeaders: Record<string, string>[] = [];
+    class CapturingSocket extends FakeWebSocket {
+      constructor(url: string, options?: { headers?: Record<string, string> }) {
+        super(url);
+        seenHeaders.push(options?.headers ?? {});
+      }
+      send(data: string) { super.send(data); frames.push(JSON.parse(data)); }
+    }
+    FakeWebSocket.script = ws => {
+      ws.emit("open", {});
+      ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1", status: "completed", output: [] } }) });
+    };
+    globalThis.WebSocket = CapturingSocket as unknown as typeof WebSocket;
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer fixture", "content-type": "application/json", "x-openai-internal-codex-responses-lite": "true" },
+      body: JSON.stringify({ model: "gpt-5.5", input: "hello", stream: true, service_tier: "priority" }),
+    }), {
+      defaultProvider: "openai", providers: { openai: { adapter: "openai-responses", authMode: "forward", codexAccountMode: "direct", baseUrl: "https://chatgpt.com/backend-api/codex" } },
+    } as OcxConfig, { model: "", provider: "" }, { codexWsRuntimeIdentity: BOUNDED_WS_RUNTIME });
+    await response.text();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].client_metadata).toEqual({ ws_request_header_x_openai_internal_codex_responses_lite: "true" });
+    expect(seenHeaders[0]["x-codex-routing-hint"]).toBe("model=gpt-5.5;tier=priority");
+  });
+
+  test("projects canonical WS prelude into the HTTP response before committing headers", async () => {
+    installFake(ws => {
+      ws.emit("open", {});
+      ws.emit("message", { data: JSON.stringify({
+        type: "codex.rate_limits",
+        rate_limits: { primary: { used_percent: 31, window_minutes: 10080, reset_at: 1900000000 } },
+        credits: { has_credits: true, unlimited: false, balance: "12.5" },
+      }) });
+      ws.emit("message", { data: JSON.stringify({
+        type: "codex.response.metadata",
+        headers: { "x-models-etag": "catalog-v2", "x-codex-turn-state": "turn-state", authorization: "must-not-leak", "set-cookie": "must-not-leak" },
+      }) });
+      ws.emit("message", { data: JSON.stringify({ type: "response.created", response: { id: "r1" } }) });
+      ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1", status: "completed" } }) });
+    });
+    const response = await codexWsUpstreamFetch(CODEX_URL, streamingInit(), (() => {
+      throw new Error("fallback must not run");
+    }) as unknown as typeof fetch);
+    expect(response.headers.get("x-codex-primary-used-percent")).toBe("31");
+    expect(response.headers.get("x-codex-primary-window-minutes")).toBe("10080");
+    expect(response.headers.get("x-codex-credits-balance")).toBe("12.5");
+    expect(response.headers.get("x-models-etag")).toBe("catalog-v2");
+    expect(response.headers.get("x-codex-turn-state")).toBe("turn-state");
+    expect(response.headers.has("authorization")).toBe(false);
+    expect(response.headers.has("set-cookie")).toBe(false);
+    const text = await response.text();
+    expect(text).toContain("response.completed");
+    expect(text).not.toContain("must-not-leak");
+  });
+
   test("relays event frames as an SSE response and sends one response.create frame", async () => {
     installFake(ws => {
       ws.emit("open", {});
@@ -476,8 +536,8 @@ describe("codexWsUpstreamFetch", () => {
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     expect(isCodexWsUpstreamResponse(response)).toBe(true);
     const text = await response.text();
-    // WS-only frames are dropped so clients see the exact SSE surface they always got.
-    expect(text).not.toContain("codex.rate_limits");
+    // Native control frames remain available; stock HTTP clients use their prelude headers.
+    expect(text).toContain("codex.rate_limits");
     expect(text).toContain("event: response.created");
     expect(text).toContain('data: {"type":"response.output_text.delta","delta":"hi"}');
     expect(text).toContain("event: response.completed");
@@ -760,18 +820,135 @@ describe("codexWsUpstreamFetch", () => {
   });
 
   test("aborting after open preserves the caller's abort reason", async () => {
-    installFake(ws => ws.emit("open", {}));
+    const opened = Promise.withResolvers<void>();
+    installFake(ws => { ws.emit("open", {}); opened.resolve(); });
     const controller = new AbortController();
-    const response = await codexWsUpstreamFetch(
+    const pending = codexWsUpstreamFetch(
       CODEX_URL,
       { ...streamingInit(), signal: controller.signal },
       (() => { throw new Error("fallback must not run"); }) as unknown as typeof fetch,
     );
 
+    await opened.promise;
     controller.abort(new Error("turn cancelled"));
+    const response = await pending;
 
     await expect(response.text()).rejects.toThrow("turn cancelled");
     expect(FakeWebSocket.instances[0].closed).toBe(true);
+  });
+
+  test("replays final quota to a late observer without regressing to the prelude", async () => {
+    installFake(ws => {
+      ws.emit("open", {});
+      const quota = (percent: number) => ws.emit("message", { data: JSON.stringify({
+        type: "codex.rate_limits", rate_limits: { primary: { used_percent: percent, window_minutes: 10080 } },
+      }) });
+      quota(10);
+      ws.emit("message", { data: JSON.stringify({ type: "response.created", response: { id: "r1" } }) });
+      quota(20);
+      ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1" } }) });
+    });
+    const response = await codexWsUpstreamFetch(CODEX_URL, streamingInit(), (() => {
+      throw new Error("fallback must not run");
+    }) as unknown as typeof fetch);
+    expect(response.headers.get("x-codex-primary-used-percent")).toBe("10");
+    const observations: string[] = [];
+    observeCodexWsResponseMetadata(response, headers => observations.push(headers.get("x-codex-primary-used-percent")!));
+    expect(observations).toEqual(["20"]);
+    await response.text();
+  });
+
+  test("post-send prelude overflow settles as an errored body without HTTP fallback", async () => {
+    installFake(ws => {
+      ws.emit("open", {});
+      ws.emit("message", { data: JSON.stringify({ type: "codex.response.metadata", headers: { "x-models-etag": "x".repeat(CODEX_WS_METADATA_MAX_BYTES) } }) });
+    });
+    let resends = 0;
+    const response = await codexWsUpstreamFetch(CODEX_URL, streamingInit(), (async () => {
+      resends++;
+      return new Response("unexpected resend");
+    }) as typeof fetch);
+    expect(response.status).toBe(200);
+    expect(isCodexWsUpstreamResponse(response)).toBe(true);
+    await expect(response.text()).rejects.toThrow("metadata");
+    expect(resends).toBe(0);
+    expect(FakeWebSocket.instances[0].sent).toHaveLength(1);
+  });
+
+  test("the first-response deadline settles a sent request through the outer retry wrapper without resending", async () => {
+    const { fetchWithTransientRetry } = await import("../../src/lib/upstream-retry");
+    jest.useFakeTimers();
+    const opened = Promise.withResolvers<void>();
+    installFake(ws => { ws.emit("open", {}); opened.resolve(); });
+    let sends = 0;
+    let http = 0;
+    try {
+      const pending = fetchWithTransientRetry(() => {
+        sends++;
+        return codexWsUpstreamFetch(CODEX_URL, streamingInit(), (async () => {
+          http++;
+          return new Response("must not resend");
+        }) as typeof fetch);
+      }, {});
+      await opened.promise;
+      jest.advanceTimersByTime(CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      await expect(response.text()).rejects.toThrow("prelude timed out");
+      expect(sends).toBe(1);
+      expect(http).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+describe("native WS metadata boundaries", () => {
+  test("metered families never overwrite the ordinary Codex quota", () => {
+    const owner = new CodexWsMetadata();
+    const ingest = (payload: Record<string, unknown>) => owner.consume(payload, Buffer.byteLength(JSON.stringify(payload)));
+    ingest({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 8, window_minutes: 10080 } } });
+    ingest({ type: "codex.rate_limits", metered_limit_name: "codex_bengalfox", limit_name: "codex", rate_limits: { primary: { used_percent: 17, window_minutes: 300 } } });
+    for (const metered_limit_name of ["invalid;codex", "gpt-reserve", 4, ""]) {
+      ingest({ type: "codex.rate_limits", metered_limit_name, rate_limits: { primary: { used_percent: 100 } } });
+    }
+    expect(owner.snapshot().get("x-codex-primary-used-percent")).toBe("8");
+    expect(owner.snapshot().get("x-codex-bengalfox-primary-used-percent")).toBe("17");
+    expect(owner.snapshot().has("x-gpt-reserve-primary-used-percent")).toBe(false);
+  });
+
+  test("invalid numeric values remain missing, explicit zero remains known", () => {
+    const owner = new CodexWsMetadata();
+    for (const used_percent of [null, "0", -1, Infinity, NaN]) {
+      owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent } } }, 100);
+    }
+    expect(owner.snapshot().has("x-codex-primary-used-percent")).toBe(false);
+    owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 0, reset_at: 0, window_minutes: 0 } } }, 100);
+    expect(owner.snapshot().get("x-codex-primary-used-percent")).toBe("0");
+    expect(owner.snapshot().get("x-codex-primary-reset-at")).toBe("0");
+  });
+
+  test("metadata value and cumulative prelude bounds cannot be bypassed by small frames", () => {
+    const owner = new CodexWsMetadata();
+    owner.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "x".repeat(CODEX_WS_METADATA_MAX_VALUE_BYTES) } }, CODEX_WS_METADATA_MAX_VALUE_BYTES);
+    expect(() => owner.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "x".repeat(CODEX_WS_METADATA_MAX_VALUE_BYTES + 1) } }, CODEX_WS_METADATA_MAX_VALUE_BYTES + 1)).toThrow("value");
+    const prelude = new CodexWsMetadata();
+    prelude.consume({ type: "codex.rate_limits" }, CODEX_WS_METADATA_MAX_BYTES);
+    expect(() => prelude.consume({ type: "codex.rate_limits" }, 1)).toThrow("prelude");
+  });
+
+  test("late observations detach on terminal and response metadata strips unknown authority", () => {
+    const owner = new CodexWsMetadata();
+    const response = new Response();
+    owner.bind(response);
+    let calls = 0;
+    observeCodexWsResponseMetadata(response, () => { calls++; });
+    const text = owner.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "good", authorization: "secret", "set-cookie": "secret", "x-codex-turn-state": "bad\r\nvalue" } }, 100);
+    expect(text).toBe('{"type":"codex.response.metadata","headers":{"x-models-etag":"good"}}');
+    owner.finish();
+    const endedCalls = calls;
+    owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 40 } } }, 100);
+    expect(calls).toBe(endedCalls);
   });
 });
 
