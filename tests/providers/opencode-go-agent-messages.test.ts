@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter } from "../../src/adapters/openai-responses";
-import { normalizeOpenCodeGoAgentMessages } from "../../src/adapters/opencode-go";
+import { isOpenCodeGo, normalizeOpenCodeGoAgentMessages } from "../../src/adapters/opencode-go";
 import { parseRequest } from "../../src/responses/parser";
+import { routeModel } from "../../src/router";
 import { createTranslatorBudget } from "../../src/lib/translator-budget";
 import type { OcxProviderConfig } from "../../src/types";
 
@@ -53,4 +54,127 @@ test("other destinations do not get Go normalization or session identity", async
   expect(JSON.parse(request.body as string).input[0].type).toBe("agent_message");
   expect(new Headers(request.headers).get("x-opencode-session")).toBeNull();
   budget.dispose();
+});
+
+test("canonical Go forward auth preserves private agent messages and the raw replay body", async () => {
+  const raw = body();
+  const original = structuredClone(raw);
+  const parsed = parseRequest(raw);
+  const budget = createTranslatorBudget();
+  try {
+    const request = await createResponsesPassthroughAdapter({ ...base, authMode: "forward" }).buildRequest(parsed, {
+      headers: new Headers(), translatorBudget: budget,
+    });
+    expect(request.url).toBe("https://opencode.ai/zen/go/v1/responses");
+    expect(JSON.parse(request.body as string).input[0]).toMatchObject({
+      type: "agent_message", author: "/root/reader", recipient: "/root/checker",
+      content: original.input[0]!.content,
+    });
+    expect(parsed._rawBody).toBe(raw);
+    expect(raw).toEqual(original);
+  } finally {
+    budget.dispose();
+  }
+});
+
+test.each(["https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1/"])(
+  "a renamed provider at %s still converts plaintext agent messages",
+  async baseUrl => {
+    const raw = body();
+    const original = structuredClone(raw);
+    const route = routeModel({
+      port: 0, defaultProvider: "my-go", providers: { "my-go": { ...base, baseUrl, models: [raw.model] } },
+    }, `my-go/${raw.model}`);
+    const parsed = parseRequest(raw);
+    const budget = createTranslatorBudget();
+    try {
+      const request = await createResponsesPassthroughAdapter(route.provider).buildRequest(parsed, {
+        headers: new Headers(), translatorBudget: budget,
+      });
+      const sent = JSON.parse(request.body as string);
+      expect(request.url).toBe("https://opencode.ai/zen/go/v1/responses");
+      expect(sent.input[0]).toMatchObject({ type: "message", role: "user" });
+      expect(sent.input[0].content.slice(1)).toEqual(original.input[0]!.content);
+      expect(parsed._rawBody).toBe(raw);
+      expect(raw).toEqual(original);
+    } finally {
+      budget.dispose();
+    }
+  },
+);
+
+test.each([
+  "https://opencode.ai.evil.test/zen/go/v1",
+  "http://opencode.ai/zen/go/v1",
+  "https://opencode.ai/zen/v1",
+  "https://opencode.ai/zen/go/v10",
+])("Go-like destination %s preserves private agent messages", async baseUrl => {
+  const raw = body();
+  const original = structuredClone(raw);
+  const parsed = parseRequest(raw);
+  const budget = createTranslatorBudget();
+  try {
+    const request = await createResponsesPassthroughAdapter({ ...base, baseUrl }).buildRequest(parsed, {
+      headers: new Headers(), translatorBudget: budget,
+    });
+    expect(JSON.parse(request.body as string).input[0]).toMatchObject({
+      type: "agent_message", content: original.input[0]!.content,
+    });
+    expect(parsed._rawBody).toBe(raw);
+    expect(raw).toEqual(original);
+  } finally {
+    budget.dispose();
+  }
+});
+
+test.each(["not a URL", "https://", "/zen/go/v1"])(
+  "malformed destination %s is not classified as Go",
+  baseUrl => expect(isOpenCodeGo(baseUrl)).toBe(false),
+);
+
+test("Go conversion preserves file payloads beside text without mutating raw replay", async () => {
+  const file = { type: "input_file", filename: "assignment.txt", file_data: "data:text/plain;base64,SGVsbG8=" };
+  const message = body().input[0]!;
+  const raw = { ...body(), input: [{ ...message, content: [...message.content, file] }] };
+  const original = structuredClone(raw);
+  const parsed = parseRequest(raw);
+  const budget = createTranslatorBudget();
+  try {
+    const request = await createResponsesPassthroughAdapter(base).buildRequest(parsed, {
+      headers: new Headers(), translatorBudget: budget,
+    });
+    const sent = JSON.parse(request.body as string);
+    expect(sent.input[0]).toMatchObject({ type: "message", role: "user" });
+    expect(sent.input[0].content.slice(1)).toEqual(original.input[0]!.content);
+    expect(parsed._rawBody).toBe(raw);
+    expect(raw).toEqual(original);
+  } finally {
+    budget.dispose();
+  }
+});
+
+for (const { name, content } of [
+  { name: "empty content", content: [] },
+  { name: "text mixed with an unknown part", content: [
+    { type: "input_text", text: "Known prefix" }, { type: "future_type", text: "Do not lose this" },
+  ] },
+  { name: "text mixed with ciphertext", content: [
+    { type: "input_text", text: "Routing header" }, { type: "encrypted_content", encrypted_content: "opaque" },
+  ] },
+]) test(`Go preserves ${name} without partially converting it`, async () => {
+  const raw = { ...body(), input: [{ ...body().input[0]!, content }] };
+  const original = structuredClone(raw);
+  expect(normalizeOpenCodeGoAgentMessages(raw)).toBe(raw);
+  const parsed = parseRequest(raw);
+  const budget = createTranslatorBudget();
+  try {
+    const request = await createResponsesPassthroughAdapter(base).buildRequest(parsed, {
+      headers: new Headers(), translatorBudget: budget,
+    });
+    expect(JSON.parse(request.body as string).input[0]).toMatchObject({ type: "agent_message", content });
+    expect(parsed._rawBody).toBe(raw);
+    expect(raw).toEqual(original);
+  } finally {
+    budget.dispose();
+  }
 });

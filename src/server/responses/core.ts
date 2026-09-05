@@ -3280,6 +3280,7 @@ async function handleResponsesInner(
               (reparsed as unknown as Record<string, unknown>)[key] = parsed[key];
             }
           }
+          bindTurnTerminationScope(reparsed, resolvedConversationId);
           parsed = reparsed;
           // The recovery mutated `body.input` in place, so `_rawBody` now carries decrypted task
           // text. Bar it from the continuation cache before any recording path can reach it —
