@@ -38,7 +38,7 @@ type QuotaAutoRefreshSettings = Record<string, { fiveHour?: boolean; weekly?: bo
  * (the Codex Auth page passes its mode banner); `embedded` (WP090) omits page
  * title chrome while retaining the shared account actions in the Providers workspace.
  */
-export default function CodexAccountPool({ apiBase, accountModeState = null, banner = null, embedded = false, onActiveNeedsReauthChange, controller: injectedController, advancedExtras = null }: {
+export default function CodexAccountPool({ apiBase, accountModeState = null, banner = null, embedded = false, onActiveNeedsReauthChange, controller: injectedController, advancedExtras = null, hasMainHardLockSetting = false }: {
   apiBase: string;
   accountModeState?: CodexAccountModeState | null;
   banner?: ReactNode;
@@ -46,6 +46,8 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   onActiveNeedsReauthChange?: (needs: boolean) => void;
   /** Whole boxes rendered inside Advanced settings. Never fold these internally. */
   advancedExtras?: ReactNode;
+  /** This surface supplies the protection setting in advancedExtras; manage opens it locally. */
+  hasMainHardLockSetting?: boolean;
   /**
    * WP3: when Providers owns the controller, every surface shares one instance so a
    * mutation on Overview is immediately visible on the Accounts tab. The standalone
@@ -72,6 +74,22 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const [showAdd, setShowAdd] = useState(false);
   const [modelsNotice, setModelsNotice] = useState<{ catalogRefreshPending: boolean } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const hardLockFocusPending = useRef(false);
+  const focusHardLockSetting = useCallback(() => {
+    const target = document.getElementById("codex-main-hard-lock-setting");
+    target?.focus();
+    target?.scrollIntoView({ block: "nearest" });
+  }, []);
+  useEffect(() => {
+    if (advancedOpen && hardLockFocusPending.current) {
+      hardLockFocusPending.current = false;
+      focusHardLockSetting();
+    }
+  }, [advancedOpen, focusHardLockSetting]);
+  const manageMainHardLock = () => {
+    if (advancedOpen) focusHardLockSetting();
+    else { hardLockFocusPending.current = true; setAdvancedOpen(true); }
+  };
   const [reauthId, setReauthId] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [actionFeedbackTone, setActionFeedbackTone] = useState<NoticeTone | null>(null);
@@ -455,6 +473,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
             doctorCopyOutcomeFor={showDoctorCopy ? doctorCopy.outcomeFor : undefined}
             quotaAutoRefreshBusy={quotaAutoRefreshBusy}
             onToggleQuotaAutoRefresh={(entry, window) => { void toggleQuotaAutoRefresh(entry, window); }}
+            onManageMainHardLock={hasMainHardLockSetting ? manageMainHardLock : undefined}
           />
 
           <div className="section-sep">
