@@ -151,8 +151,8 @@ predictions. Explicit provider/model price overrides still take precedence.
 | `xaiResponsesXSearch?` | `boolean` | Disabled by default. On an xAI Responses destination, append the provider-hosted `x_search` declaration only when a live `web_search` tool survives final request normalization. Existing declarations are not duplicated, caller `tool_choice`/`allowed_tools` selectors are never widened, and this is separate from the web-search sidecar's `search.xSearch` options. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | Exact-model opt-in for non-forward Responses gateways that reserve a hosted-tool namespace. Currently accepts only `["image_generation"]`; a matching model must use the `openai-responses` wire and support that hosted tool. It removes colliding client `image_gen` declarations and rewrites their selectors to preserve caller tool choice. For OpenAI API virtual `-pro` models, the selected public ID is matched first and the resolved base wire-model ID is a fallback. `modelAdapters` resolves the public ID first, then the base ID; the second resolution determines the final wire. Other models retain normal alias behavior. |
 | `annotateEmptyToolOutputs?` | `boolean` | Replace a present-but-empty tool result with a short marker before it reaches the model, so a blank result is not read as a missing one. Applies to blank strings and text-only part arrays; image, file, and encrypted parts are never touched. Defaults to `true` for DeepSeek from the built-in registry and is otherwise unset. Set `false` to opt a provider out — an explicit `false` is preserved across later edits that omit the field. `PATCH /api/providers?name=<provider>` accepts `true`, `false`, or `null` to clear the override and return to registry-default behavior. |
-| `reasoningEffortMap?` | `Record<string, string>` | Provider-wide wire aliases for reasoning labels. |
-| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model wire aliases for reasoning labels. |
+| `reasoningEffortMap?` | `Record<string, string>` | Provider-wide wire aliases for reasoning labels. Map a label to `"__omit__"` to drop the reasoning field from the upstream request entirely: `reasoning_effort` on an OpenAI-compatible wire, and Ollama's native `think` field on the Ollama native adapter (#2356). |
+| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model wire aliases for reasoning labels. Map a label to `"__omit__"` to drop the reasoning field from the upstream request entirely. |
 | `reasoningWireFormat?` | `"gateway-object"` | For OpenAI-compatible gateways that accept `reasoning: { enabled, effort }` instead of `reasoning_effort`. The ClinePass preset sets this automatically. |
 | `noReasoningModels?` | `string[]` | Models that reject reasoning/thinking parameters. |
 | `noTemperatureModels?` | `string[]` | Models that reject caller-specified `temperature`. |
@@ -350,6 +350,16 @@ bracketed IPv6, and `*`; for example, list `192.168.1.50` explicitly. Metadata a
 destinations stay blocked. Diagnostic
 requests reject redirects and report a credential-stripped target. Ordinary provider request redirect
 review remains separate from this diagnostic guard.
+
+Two fake-IP DNS accommodations exist for Clash / Surge / Mihomo users, and both apply to DNS
+*answers* only — a literal address in the URL is still rejected. The IANA benchmark range
+`198.18.0.0/15` (and its IPv4-mapped IPv6 spellings) is accepted whenever an outbound proxy applies
+to the host. Mihomo's default IPv6 fake-IP range `fdfe:dcba:9876::/48` is accepted on a stricter
+gate: the proxy variable that matches the URL scheme (`HTTPS_PROXY` for `https:`, `HTTP_PROXY` for
+`http:`; `ALL_PROXY` does not count) must be set, the host must not match `NO_PROXY`, and the
+request is then bound to that proxy explicitly. Any other ULA, an adjacent prefix, or a fake-IP answer
+mixed with a real private answer still requires `allowPrivateNetwork: true`. Provider save-time
+validation never applies the IPv6 accommodation.
 
 ## Codex account pool
 

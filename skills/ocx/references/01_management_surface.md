@@ -58,21 +58,6 @@ JSON mode: `envelope`.
 
 - Start here when driving ocx programmatically: it is the declared surface index, not a complete verb list.
 
-### `ocx provider resets`
-
-Show recently detected quota resets.
-
-| Method | Route |
-|---|---|
-| GET | `/api/quota-resets` |
-
-| Flag | Value | Meaning |
-|---|---|---|
-| `--limit` | number | Maximum events to return. |
-| `--json` | boolean | Emit the API payload as JSON. |
-
-JSON mode: `payload`.
-
 ### `ocx provider list`
 
 Configured providers with connectivity and selected models.
@@ -86,6 +71,21 @@ Drives no management route.
 JSON mode: `envelope`.
 
 - Reads local config; drives no management API route.
+
+### `ocx provider resets`
+
+Recently detected quota resets and whether reset notifications are enabled.
+
+| Method | Route |
+|---|---|
+| GET | `/api/quota-resets` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--json` | boolean | Emit reset events as JSON. |
+| `--limit` | number | Limit returned events; defaults to 20, capped at 100. |
+
+JSON mode: `payload`.
 
 ### `ocx account list`
 

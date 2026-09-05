@@ -94,8 +94,8 @@ selector，而不是分配一个新名称。
 | `xaiResponsesXSearch?` | `boolean` | 默认禁用。在 xAI Responses 目标上，仅当有效的 `web_search` 工具在最终请求规范化后仍保留时，才附加由提供方托管的 `x_search` 声明。不会重复已有声明，绝不会扩大调用方的 `tool_choice`/`allowed_tools` 选择范围，并且此项独立于网络搜索辅助服务的 `search.xSearch` 选项。 |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | 非 forward Responses gateway 的精确模型 ID opt-in，用于上游预留 hosted tool namespace 的情况。目前只支持 `["image_generation"]`；匹配模型必须使用 `openai-responses` wire 且支持该 hosted 工具。它会移除冲突的客户端 `image_gen` 声明，并改写其 selector 以保持调用方的 tool choice。对于 OpenAI API 的虚拟 `-pro` 模型，先匹配所选公开 ID，未命中时才使用解析出的基础 wire-model ID 作为回退。`modelAdapters` 会先按公开 ID、再按基础 ID 解析；后一次结果决定最终 wire。未配置模型保持普通 alias 行为。 |
 | `annotateEmptyToolOutputs?` | `boolean` | 在工具结果到达模型之前，将存在但为空的结果替换为简短标记，以免空白结果被误认为缺失结果。适用于空白字符串和仅包含文本的部件数组；图像、文件和加密部件绝不会被修改。内置注册表中 `DeepSeek` 的默认值为 `true`，其他情况下不设置。设为 `false` 可让提供者退出此行为——后续编辑即使省略该字段，也会保留显式的 `false`。`PATCH /api/providers?name=<provider>` 接受 `true`、`false` 或 `null`；传入 `null` 可清除覆盖值并恢复注册表默认行为。 |
-| `reasoningEffortMap?` | `Record<string, string>` | 提供者级、用于推理标签的线协议别名。 |
-| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | 按模型设置的推理标签线协议别名。 |
+| `reasoningEffortMap?` | `Record<string, string>` | 提供者级、用于推理标签的线协议别名。将标签映射为 `"__omit__"` 可在上游请求中完全省略推理字段（例如针对需要省略 `reasoning_effort` 才能触发深度思考模式的 Ollama 本地模型）。 |
+| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | 按模型设置的推理标签线协议别名。将标签映射为 `"__omit__"` 可在上游请求中完全省略推理字段。 |
 | `reasoningWireFormat?` | `"gateway-object"` | 用于接受 `reasoning: { enabled, effort }` 而非 `reasoning_effort` 的 OpenAI 兼容 gateway。ClinePass preset 会自动设置。 |
 | `noReasoningModels?` | `string[]` | 会拒绝推理/思考参数的模型。 |
 | `noTemperatureModels?` | `string[]` | 会拒绝调用方指定 `temperature` 的模型。 |
@@ -133,6 +133,8 @@ API key 提供者可以持有字面量 key，或环境引用。OAuth 提供者�
 当 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY` 生效时，这些操作会继续使用 Bun 的原生 fetch。URL 和字面量地址检查仍会执行，但最终路由、DNS 解析结果和对端由代理决定，因此 opencodex 无法固定或验证该对端。这是一个明确的安全限制。
 
 私有/本地目标需要 `allowPrivateNetwork: true`，并且在出站代理启用时，还需要匹配的 `NO_PROXY` 条目。回环地址会自动加入；每个 LAN 主机都必须显式列出，因为 CIDR 条目不会被解释。匹配器支持精确主机、域后缀、可选端口、带方括号的 IPv6 以及 `*`；例如，应显式列出 `192.168.1.50`。元数据和链路本地目标仍会被阻止。诊断请求会拒绝重定向，并报告一个已剥离凭据的目标。普通提供者请求的重定向审查仍然独立于这个诊断保护。
+
+面向 Clash / Surge / Mihomo 用户的 fake-IP DNS 例外有两种，且都只作用于 DNS *应答*——URL 中的字面地址仍会被拒绝。IANA 基准段 `198.18.0.0/15`（含 IPv4-mapped IPv6 写法）在该主机适用出站代理时被接受。Mihomo 默认的 IPv6 fake-IP 段 `fdfe:dcba:9876::/48` 采用更严格的门槛：必须设置与 URL 协议匹配的代理变量（`https:` 对应 `HTTPS_PROXY`，`http:` 对应 `HTTP_PROXY`，`ALL_PROXY` 不算），主机不能命中 `NO_PROXY`，随后请求会被显式绑定到该代理。其他 ULA、相邻前缀，或与真实私网应答混合的 fake-IP 应答仍需要 `allowPrivateNetwork: true`。提供方保存时的校验不应用该 IPv6 例外。
 
 ## Codex 账户池
 
