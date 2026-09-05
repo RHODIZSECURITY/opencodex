@@ -75,6 +75,11 @@ ocx login xai
 ocx login anthropic
 ```
 
+OAuth reauthentication preserves operator settings such as model selections, pricing overrides,
+and account failover preferences. Login-owned transport/authentication fields and registry-owned
+catalog metadata are refreshed. A live-discovery provider keeps its selected default model; a
+static provider can replace a default that no longer exists in its refreshed catalog.
+
 A proxy that is already running picks up the new credential without a restart: the CLI asks it to
 reload that one provider from disk, and the request carries no credential of its own. If the
 running proxy cannot accept that request — most often because it started from a build that predates
