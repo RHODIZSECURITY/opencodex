@@ -14,7 +14,7 @@ import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
-  clearMainAccountInfoCache, maskEmail, fetchMainAccountInfo,
+  clearMainAccountInfoCache, maskEmail, fetchMainAccountInfo, fetchMainAccountInfoSnapshot,
   clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
   type CodexAuthAccountDto,
   listCodexAuthAccounts,
@@ -27,6 +27,7 @@ import {
   saveCodexAccountCredential,
 } from "../../src/codex/account-store";
 import * as accountStoreModule from "../../src/codex/account-store";
+import * as reserveAvailabilityModule from "../../src/codex/reserve-availability";
 import {
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
@@ -255,6 +256,164 @@ function seedPoolAccount(
   });
 }
 
+describe("main quota refresh diagnostics", () => {
+  function writeMain(): void {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "fixture-account" },
+    }));
+  }
+
+  test.each([401, 403, 429, 503])("HTTP %s is diagnostic, not proof of sign-out", async status => {
+    writeMain();
+    globalThis.fetch = (async () => new Response("private-upstream-canary", { status })) as typeof fetch;
+    const main = (await listCodexAuthAccounts(makeConfig(), true)).find(row => row.isMain);
+    expect(main).toMatchObject({ quotaRefresh: { status: "http_error", httpStatus: status },
+      plan: null, quota: null, hasCredential: true, needsReauth: false });
+    expect(JSON.stringify(main)).not.toContain("private-upstream-canary");
+  });
+
+  test.each(["network_error", "invalid_response", "not_reported", "body_reset"] as const)("classifies %s without serializing errors", async kind => {
+    writeMain();
+    globalThis.fetch = (async () => {
+      if (kind === "network_error") throw new TypeError("private-network-canary");
+      if (kind === "body_reset") return new Response(new ReadableStream({
+        start(controller) { controller.error(new TypeError("private-stream-canary")); },
+      }));
+      return kind === "invalid_response" ? new Response("private-json-canary") : Response.json({});
+    }) as typeof fetch;
+    const result = await fetchMainAccountInfoSnapshot(true);
+    expect(result.quotaRefresh).toEqual({ status: kind === "body_reset" ? "network_error" : kind });
+    expect(result.info.quota).toBeNull();
+    expect(JSON.stringify(result)).not.toContain("canary");
+  });
+
+  test("timeout reports only the fixed category", async () => {
+    writeMain();
+    const signal = AbortSignal.abort(new DOMException("private-timeout-canary", "TimeoutError"));
+    const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    globalThis.fetch = (async () => { throw signal.reason; }) as typeof fetch;
+    try {
+      expect((await fetchMainAccountInfoSnapshot(true)).quotaRefresh).toEqual({ status: "timeout" });
+    } finally { timeout.mockRestore(); }
+  });
+
+  test.each([401, 403])("HTTP %s takes precedence over an unreadable error body", async status => {
+    writeMain();
+    globalThis.fetch = (async () => new Response(new ReadableStream({
+      start(controller) { controller.error(new TypeError("private-error-body-canary")); },
+    }), { status })) as typeof fetch;
+    const main = (await listCodexAuthAccounts(makeConfig(), true)).find(row => row.isMain);
+    expect(main).toMatchObject({ quotaRefresh: { status: "http_error", httpStatus: status },
+      quota: null, hasCredential: true, needsReauth: false });
+    expect(JSON.stringify(main)).not.toContain("canary");
+  });
+
+  test("HTTP status survives an aborted error body", async () => {
+    writeMain();
+    const controller = new AbortController();
+    const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    globalThis.fetch = (async () => {
+      controller.abort(new DOMException("private-http-timeout-canary", "TimeoutError"));
+      return new Response(new ReadableStream({
+        start(stream) { stream.error(controller.signal.reason); },
+      }), { status: 403 });
+    }) as typeof fetch;
+    try {
+      expect((await fetchMainAccountInfoSnapshot(true)).quotaRefresh)
+        .toEqual({ status: "http_error", httpStatus: 403 });
+      expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+    } finally { timeout.mockRestore(); }
+  });
+
+  test("timeout while reading a successful body reports timeout", async () => {
+    writeMain();
+    const controller = new AbortController();
+    const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    globalThis.fetch = (async () => new Response(new ReadableStream({
+      start(stream) {
+        controller.abort(new DOMException("private-body-timeout-canary", "TimeoutError"));
+        stream.error(controller.signal.reason);
+      },
+    }))) as typeof fetch;
+    try {
+      const result = await fetchMainAccountInfoSnapshot(true);
+      expect(result.quotaRefresh).toEqual({ status: "timeout" });
+      expect(JSON.stringify(result)).not.toContain("canary");
+    } finally { timeout.mockRestore(); }
+  });
+
+  test("Reserve observer failure is internal even if the request timer has expired", async () => {
+    writeMain();
+    const controller = new AbortController();
+    const timeout = spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const observer = spyOn(reserveAvailabilityModule, "observeMainReserveRevocation")
+      .mockImplementation(() => {
+        controller.abort();
+        throw new Error("private-reserve-publication-canary");
+      });
+    globalThis.fetch = (async () => Response.json({ plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 37 } } })) as typeof fetch;
+    try {
+      const result = await fetchMainAccountInfoSnapshot(true);
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(result.quotaRefresh).toEqual({ status: "internal_error" });
+      expect(result.info.quota).toBeNull();
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)).toBeNull();
+      expect(JSON.stringify(result)).not.toContain("canary");
+    } finally { observer.mockRestore(); timeout.mockRestore(); }
+  });
+
+  test("decoded invalid usage is distinct from a response body failure", async () => {
+    writeMain();
+    const observer = spyOn(reserveAvailabilityModule, "observeMainReserveRevocation")
+      .mockImplementation(() => {});
+    globalThis.fetch = (async () => Response.json(null)) as typeof fetch;
+    try {
+      const result = await fetchMainAccountInfoSnapshot(true);
+      expect(result.quotaRefresh).toEqual({ status: "invalid_response" });
+      expect(result.info.quota).toBeNull();
+    } finally { observer.mockRestore(); }
+  });
+
+  test("missing credentials omit diagnostics without issuing a request", async () => {
+    let reads = 0;
+    globalThis.fetch = (async () => { reads++; return Response.json({}); }) as typeof fetch;
+    const result = await fetchMainAccountInfoSnapshot(true);
+    expect(result.quotaRefresh).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+
+  test("exhausted identity retry does not publish either account's diagnostic", async () => {
+    writeMain();
+    let reads = 0;
+    globalThis.fetch = (async () => {
+      reads++;
+      writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+        tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600),
+          account_id: `replacement-${reads}` },
+      }));
+      return Response.json({ rate_limit: { primary_window: { used_percent: 37 } } });
+    }) as typeof fetch;
+    const result = await fetchMainAccountInfoSnapshot(true);
+    expect(reads).toBe(2);
+    expect(result.quotaRefresh).toBeUndefined();
+    expect(result.info.quota).toBeNull();
+  });
+
+  test("fresh success reports ok while cache reuse never claims another probe", async () => {
+    writeMain();
+    let reads = 0;
+    globalThis.fetch = (async () => { reads++; return Response.json({ plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 37 } } }); }) as typeof fetch;
+    const fresh = await fetchMainAccountInfoSnapshot(true);
+    expect(fresh.quotaRefresh).toEqual({ status: "ok" });
+    const cached = await fetchMainAccountInfoSnapshot(false);
+    expect(cached.quotaRefresh).toBeUndefined();
+    expect(cached.info.quota).toEqual(fresh.info.quota);
+    expect(reads).toBe(1);
+  });
+});
+
 beforeEach(() => {
   resetLifecycleDrainStateForTests();
   previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -432,6 +591,7 @@ describe("codex-auth API", () => {
       releasePool();
       const response = await pending;
       const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).not.toHaveProperty("quotaRefresh");
       expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).toMatchObject({
         email: "Codex App login",
         plan: null,
@@ -462,7 +622,9 @@ describe("codex-auth API", () => {
     clearMainAccountInfoCache();
     let drain = acquireNativeMainProfileDrain("credential-snapshot-cold-cache");
     try {
-      expect((await listMain()).hasCredential).toBe(true);
+      const main = await listMain();
+      expect(main.hasCredential).toBe(true);
+      expect(main).not.toHaveProperty("quotaRefresh");
     } finally {
       drain?.release();
     }
@@ -472,7 +634,9 @@ describe("codex-auth API", () => {
     expect((await listMain()).hasCredential).toBe(false);
     drain = acquireNativeMainProfileDrain("credential-snapshot-warm-cache");
     try {
-      expect((await listMain()).hasCredential).toBe(false);
+      const main = await listMain();
+      expect(main.hasCredential).toBe(false);
+      expect(main).not.toHaveProperty("quotaRefresh");
     } finally {
       drain?.release();
     }
