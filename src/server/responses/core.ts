@@ -1798,6 +1798,7 @@ function canPassThroughEncryptedV2AgentTask(
   route: RouteResult,
   inboundWire: InboundWire,
 ): boolean {
+  if (route.combo !== undefined) return false;
   const provider = route.provider;
   if (
     inboundWire !== "responses"
@@ -3137,6 +3138,7 @@ async function handleResponsesInner(
       subagentFallbackAccountPreview,
       subagentFallbackModelEligibleAccountIdsForModel,
       fallbackChain,
+      candidateRoute => canPassThroughEncryptedV2AgentTask(candidateRoute, inboundWire),
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -3306,7 +3308,7 @@ async function handleResponsesInner(
   const finalRouteCanPassThroughEncryptedTask = !options.comboAttempt
     && canPassThroughEncryptedV2AgentTask(route, inboundWire);
   if (
-    !isCanonicalOpenAiForwardProvider(route.provider)
+    (route.combo !== undefined || !isCanonicalOpenAiForwardProvider(route.provider))
     && !finalRouteCanPassThroughEncryptedTask
     && unreadableEncryptedAgentTask
   ) {
