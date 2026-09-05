@@ -13,10 +13,12 @@ description: 供應商項目、認證、端點、模型目錄、配額、context
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+在介面中完成註冊或 OAuth 登入後，提示視窗可開啟 Models 頁面。CLI 會輸出模型管理指令，JSON 也包含後續步驟。`--no-wait` 表示登入仍在等待中，並非已完成。使用即時模型指令前，請先執行 `ocx start` 啟動代理。
 
 ## 供應商相關的頂層欄位
 

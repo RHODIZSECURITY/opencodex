@@ -13,10 +13,12 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+GUI에서 등록이나 OAuth 로그인을 마치면 Models 페이지로 이동하는 안내 팝업이 뜹니다. CLI는 모델 관리 명령을 출력하며 JSON 응답에도 다음 단계가 포함됩니다. `--no-wait`는 로그인 완료가 아닌 대기 상태를 표시합니다. 실시간 모델 명령을 쓰기 전에 `ocx start`로 프록시를 시작하세요.
 
 ## 공급자 관련 최상위 필드
 

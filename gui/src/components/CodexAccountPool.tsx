@@ -25,6 +25,8 @@ import { quotaAutoRefreshAvailability } from "../codex-quota-utils";
 
 // Single definition lives with the controller that owns this data (WP3).
 export type { CodexAccountEntry } from "../hooks/useCodexAccountPool";
+import ProviderModelsNotice from "./ProviderModelsNotice";
+import { navigateHash } from "../hash-routing";
 
 const DOCTOR_CMD = "ocx doctor";
 type QuotaAutoRefreshSettings = Record<string, { fiveHour?: boolean; weekly?: boolean }>;
@@ -68,6 +70,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const { accounts, activeId, loadState, switchingId, pauseUpdatingId, priorityUpdatingId, pausingExhausted, activePinnedId, load } = controller;
   const [confirm, setConfirm] = useState<CodexAccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [modelsNotice, setModelsNotice] = useState<{ catalogRefreshPending: boolean } | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [reauthId, setReauthId] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
@@ -162,6 +165,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
       completion.catalogRefreshPending ? "warn" : "ok",
     );
     closeAddModal();
+    setModelsNotice({ catalogRefreshPending: completion.catalogRefreshPending });
   }, [closeAddModal, controller, showActionFeedback, t]);
 
   const setActive = async (id: string | null) => {
@@ -562,6 +566,12 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
           onAdded={handleAccountAdded}
         />
       )}
+      {modelsNotice && <ProviderModelsNotice
+        provider="openai" loading={false} failed={false} providerKnown initialRegistration={false}
+        catalogRefreshPending={modelsNotice.catalogRefreshPending}
+        onClose={() => setModelsNotice(null)}
+        onOpenModels={() => { setModelsNotice(null); navigateHash("models"); }}
+      />}
     </div>
   );
 }

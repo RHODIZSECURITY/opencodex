@@ -14,10 +14,12 @@ Cette règle ne s’applique qu’à l’inscription d’un nouveau fournisseur.
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+Après une inscription ou une connexion OAuth dans l’interface, une boîte de dialogue permet d’ouvrir Models. La CLI affiche les commandes de gestion des modèles, aussi présentes dans les étapes suivantes du JSON. `--no-wait` indique une connexion en attente, pas terminée. Lancez le proxy avec `ocx start` avant les commandes de modèles en direct.
 
 ## Champs de premier niveau liés aux fournisseurs
 

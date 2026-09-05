@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { modelSelectionGuidance } from "./model-selection-guidance";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { injectCodexConfig } from "../codex/inject";
@@ -200,6 +201,7 @@ export async function runInit(): Promise<void> {
     }
 
     console.log(`\n🚀 Setup complete! Run 'ocx start' to start the proxy.`);
+    for (const line of modelSelectionGuidance(providerName)) console.log(line);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/stdin (closed|reached EOF)/i.test(message)) {
