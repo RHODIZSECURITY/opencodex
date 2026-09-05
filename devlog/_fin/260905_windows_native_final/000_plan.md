@@ -50,3 +50,11 @@ Verifier baseline: focused original status-row test1pass locally; original
 12-scenario startup case1pass/72assertions in5.31s locally. Windows failure logs
 are the authoritative red baseline, not these local timings. Final gate is a
 fresh repaired-head Windows full suite plus causal probes and reviewed delivery.
+
+## Final verification
+
+Windows run33949825505 on6ad49c8b5 is green: six successful shards,
+18718pass84skip0fail across1091files. See015_windows_green.md for per-job evidence,
+the original-failure closures and delivery requirements. The plan is archived
+with the reviewed stack's final evidence; the host goal closes only after the
+exact-head/merged-ancestry receipt succeeds.
