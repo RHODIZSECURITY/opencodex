@@ -318,6 +318,7 @@ import {
   agentTaskRecoveryConfig,
   discardEncryptedAgentTaskRecovery,
   recoverEncryptedAgentTask,
+  restoreCachedEncryptedAgentTasks,
 } from "./agent-task-recovery";
 import { relaySseEagerBounded } from "../relay-eager";
 import {
@@ -3234,14 +3235,18 @@ async function handleResponsesInner(
     inboundWire === "responses"
     &&
     threadSpawn
-    && unreadableEncryptedAgentTask
     && agentTaskRecovery
     && !isCanonicalOpenAiForwardProvider(route.provider)
     && !options.comboAttempt
     && !canPassThroughEncryptedV2AgentTask(route, inboundWire)
   ) {
-    let recovered = false;
-    try {
+    let recovered = restoreCachedEncryptedAgentTasks(
+      req, (body as { input?: unknown } | undefined)?.input, config, { parentThreadId },
+    ) > 0;
+    unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
+      (body as { input?: unknown } | undefined)?.input,
+    );
+    if (unreadableEncryptedAgentTask) try {
       recovered = await recoverEncryptedAgentTask(
         req,
         (body as { input?: unknown } | undefined)?.input,
@@ -3275,6 +3280,7 @@ async function handleResponsesInner(
               (reparsed as unknown as Record<string, unknown>)[key] = parsed[key];
             }
           }
+          bindTurnTerminationScope(reparsed, resolvedConversationId);
           parsed = reparsed;
           // The recovery mutated `body.input` in place, so `_rawBody` now carries decrypted task
           // text. Bar it from the continuation cache before any recording path can reach it —
