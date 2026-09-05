@@ -186,8 +186,10 @@ ocx agent status
 ocx agent injection set --model anthropic/claude-sonnet-5 --effort xhigh
 ocx agent subagents set gpt-5.6-sol,anthropic/claude-sonnet-5
 ocx agent fallback set gpt-5.4-mini,xai/grok-4.5 --poll-ms 60000
-ocx agent effort set --subagent max
+ocx effort set --subagent max
 ```
+
+The top-level `ocx effort` command is the canonical entry point for effort inspection and caps (e.g. `ocx effort high`, `ocx effort status`, `ocx effort clear`), with `ocx agent effort` preserved as a backward-compatible path. Note that `ocx effort clear` removes active main-agent and sub-agent caps while leaving delegation `injectionEffort` untouched (use `ocx effort set --injection -` or `ocx agent injection set --effort -` to clear injection effort).
 
 Pass `-` to clear a nullable `ocx agent injection` value, or use the relevant `clear` action for a
 roster or fallback list. See the [CLI reference](/reference/cli/) for all command families.
