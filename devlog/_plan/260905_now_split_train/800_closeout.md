@@ -1,5 +1,9 @@
 # 800 — Existing split-train cutoff closeout
 
+> Latest user sequencing:830 now governs delivery. Publish and admin-merge
+> the verified aggregate into dev FIRST, then run two full post-merge
+> regression cycles840/850. Earlier prepublication ordering below is historical.
+
 ## Loop spec
 
 - Archetype: satisfy-spec integration closeout; C3 refactor integration with explicit security review for affected trust boundaries.
