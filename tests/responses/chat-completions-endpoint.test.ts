@@ -239,6 +239,15 @@ test("chatCompletionsToResponsesBody maps messages/tools/system", () => {
 });
 
 describe("chatCompletionsToResponsesBody image parts", () => {
+  test.each([
+    { part: { type: "image_url", image_url: "https://example.com/image.png" }, expected: { type: "input_image", image_url: "https://example.com/image.png" } },
+    { part: { type: "image_url", image_url: "https://example.com/image.png", detail: "low" }, expected: { type: "input_image", image_url: "https://example.com/image.png", detail: "low" } },
+    { part: { type: "image_url", image_url: { url: "https://example.com/image.png" } }, expected: { type: "input_image", image_url: "https://example.com/image.png" } },
+  ])("preserves user image shorthand and omitted detail: %j", ({ part, expected }) => {
+    const body = chatCompletionsToResponsesBody({ model: "mock/test-model", messages: [{ role: "user", content: [part] }] });
+    expect(body.input).toEqual([{ type: "message", role: "user", content: [expected] }]);
+  });
+
   test.each(["auto", "low", "high"])("preserves user image detail %s", detail => {
     const url = "https://example.com/screenshot.png";
     const body = chatCompletionsToResponsesBody({
