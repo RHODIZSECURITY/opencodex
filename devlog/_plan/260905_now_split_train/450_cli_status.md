@@ -283,3 +283,13 @@ supported transition in this CLI, so the unfinished cycle was explicitly
 reset to IDLE and restarted at P with goal, work-phase and evidence retained.
 This reset is not completion; all P/A/B/C gates must run again. All current-head
 checks, lease protection, privacy constraints and CI scheduling remain intact.
+
+## Reconstruction B result
+
+Carver applied the three approved source/test file states with apply_patch
+during the fresh B. Main applied the single Runtime row. The source/test blobs
+match preserved d8671a8c exactly: facade02e39f7f, leafd3848c95, test2969d651.
+Sizes384/168 and15declarations/11exports are preserved. Static parsing and
+whitespace checks passed; no runtime checks were run during another owner's
+CI. This is now a genuine source delta from B's547-line parent baseline.
+Fresh resulting-head C checks remain pending.
