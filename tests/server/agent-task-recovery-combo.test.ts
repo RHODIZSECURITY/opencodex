@@ -172,6 +172,35 @@ describe("combo path encrypted agent task recovery", () => {
     expect(providerFetches).toBe(1);
   });
 
+  test("keeps an opted-in Responses target out of encrypted combo dispatch", async () => {
+    const config = comboConfig([
+      { provider: "relay", model: "relay-model" },
+      { provider: "openai", model: "gpt-5.5" },
+    ]);
+    config.providers.relay = {
+      adapter: "openai-responses",
+      baseUrl: "https://relay.example.test/v1",
+      authMode: "key",
+      apiKey: "test-relay-key",
+      allowEncryptedV2AgentTasks: true,
+    };
+    const fetchedUrls: string[] = [];
+    const forwardedBodies: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      fetchedUrls.push(String(input));
+      forwardedBodies.push(typeof init?.body === "string" ? init.body : "");
+      return providerResponse();
+    }) as typeof fetch;
+
+    const response = await post(config, "combo/routed", encryptedInput(), codexHeaders());
+
+    expect(response.status).toBe(200);
+    expect(fetchedUrls).toEqual(["https://chatgpt.com/backend-api/codex/responses"]);
+    expect(forwardedBodies).toHaveLength(1);
+    expect(forwardedBodies[0]).toContain(FERNET_TASK);
+    expect(forwardedBodies[0]).not.toContain("capture_assignment");
+  });
+
   test("keeps the canonical target bypass in a mixed combo without running recovery", async () => {
     const forwardedBodies: string[] = [];
     globalThis.fetch = (async (_input, init) => {

@@ -1759,6 +1759,30 @@ function unreadableEncryptedAgentTaskResponse(): Response {
   );
 }
 
+/**
+ * Keep this trust boundary deliberately narrow: only a key-auth Responses route may consume
+ * opaque child-task ciphertext, and the model's final wire override must still be Responses.
+ * Callers keep combo attempts on their existing native-only recovery/fail-closed behavior.
+ */
+function canPassThroughEncryptedV2AgentTask(
+  route: RouteResult,
+  inboundWire: InboundWire,
+): boolean {
+  const provider = route.provider;
+  if (
+    inboundWire !== "responses"
+    || provider.allowEncryptedV2AgentTasks !== true
+    || (provider.authMode ?? "key") !== "key"
+  ) return false;
+
+  return resolveWireProtocolOverride(
+    route.providerName,
+    route.modelId,
+    provider,
+    inboundWire,
+  ).adapter === "openai-responses";
+}
+
 type ResponsesAuthResolution =
   | { ok: true; authCtx: CodexAuthContext; headers: Headers; substituteMainCredential: boolean }
   | { ok: false; response: Response };
@@ -3087,7 +3111,8 @@ async function handleResponsesInner(
     previewSelectionAdmission?.release();
   }
 
-  // Native fallback can consume ciphertext, so recover only after final route selection.
+  // Native fallback and explicitly trusted direct Responses routes can consume ciphertext,
+  // so recover only after final route selection.
   if (
     inboundWire === "responses"
     &&
@@ -3096,6 +3121,7 @@ async function handleResponsesInner(
     && agentTaskRecovery
     && !isCanonicalOpenAiForwardProvider(route.provider)
     && !options.comboAttempt
+    && !canPassThroughEncryptedV2AgentTask(route, inboundWire)
   ) {
     let recovered = false;
     try {
@@ -3219,9 +3245,16 @@ async function handleResponsesInner(
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
 
-  // Encrypted child tasks may only reach the canonical native backend. This check
-  // runs against the FINAL route so native-only fallback can rescue a routed primary.
-  if (!isCanonicalOpenAiForwardProvider(route.provider) && unreadableEncryptedAgentTask) {
+  // Encrypted child tasks may reach the canonical native backend or an explicitly trusted
+  // direct Responses route. This runs against the FINAL route so native-only fallback can
+  // rescue an incompatible primary without weakening combo behavior.
+  const finalRouteCanPassThroughEncryptedTask = !options.comboAttempt
+    && canPassThroughEncryptedV2AgentTask(route, inboundWire);
+  if (
+    !isCanonicalOpenAiForwardProvider(route.provider)
+    && !finalRouteCanPassThroughEncryptedTask
+    && unreadableEncryptedAgentTask
+  ) {
     return unreadableEncryptedAgentTaskResponse();
   }
 

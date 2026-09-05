@@ -271,6 +271,12 @@ export interface OcxProviderConfig {
    */
   decodesNativeCompactionBlobs?: boolean;
   /**
+   * Trust this direct key-auth Responses provider to consume or relay opaque encrypted
+   * V2 agent tasks. OpenCodex does not decrypt, translate, or recover an eligible task.
+   * Absent or false keeps the existing recovery/fail-closed behavior.
+   */
+  allowEncryptedV2AgentTasks?: boolean;
+  /**
    * Explicit opt-in for non-registry private-network destinations such as localhost, RFC1918,
    * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
    */
