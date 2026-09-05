@@ -841,6 +841,9 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       return jsonResponse({ error: "mode must be preset, all, or custom" }, 400);
     }
     const target = config.providers[provider];
+    if (initialModelSelectionPending(target)) {
+      return jsonResponse({ error: "Initial model discovery is pending. Refresh the model list and retry.", code: "initial_model_selection_pending" }, 409);
+    }
     if (mode === "all") {
       // Same effect as today's empty-list PUT: no allowlist, no marker to reconcile.
       delete target.selectedModels;
@@ -903,6 +906,9 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const provider = typeof body.provider === "string" ? body.provider : "";
     if (!provider || !hasOwnProvider(config.providers, provider)) {
       return jsonResponse({ error: "unknown provider" }, provider ? 404 : 400);
+    }
+    if (initialModelSelectionPending(config.providers[provider])) {
+      return jsonResponse({ error: "Initial model discovery is pending. Refresh the model list and retry.", code: "initial_model_selection_pending" }, 409);
     }
     const models = Array.isArray(body.models)
       ? [...new Set(body.models.filter((m): m is string => typeof m === "string"))]

@@ -12,6 +12,7 @@ import { providerConfigSeed } from "../../src/providers/derive";
 import { getProviderRegistryEntry } from "../../src/providers/registry";
 import { safeConfigDTO, providerEditorConfigDTO } from "../../src/server/auth-cors";
 import { handleManagementAPI } from "../../src/server/management-api";
+import { buildClaudeDesktopState } from "../../src/server/management/shared";
 import { upsertOAuthProvider } from "../../src/oauth";
 import { commitKeyLoginProvider } from "../../src/oauth/login-cli";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
@@ -320,6 +321,7 @@ describe("initial provider model switches", () => {
     const listed = (await response.json()).filter((row: { provider: string }) => row.provider === "vendor");
     expect(listed).toHaveLength(20);
     expect(listed.every((row: { disabled: boolean; initialSelectionPending: boolean }) => row.disabled && row.initialSelectionPending)).toBe(true);
+    expect((await buildClaudeDesktopState(config)).models.some(model => model.route.startsWith("vendor/"))).toBe(false);
     for (const path of ["/api/injection-model", "/api/subagent-model-fallback"]) {
       const candidates = await (await api(config, path)).json();
       expect(JSON.stringify(candidates.available)).not.toContain("vendor/");
