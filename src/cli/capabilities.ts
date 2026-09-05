@@ -155,11 +155,11 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     command: ["provider", "resets"],
-    summary: "List recently detected quota-window resets and whether detection is enabled.",
+    summary: "Recently detected quota resets and whether reset notifications are enabled.",
     routes: [{ method: "GET", path: "/api/quota-resets" }],
     flags: [
-      { name: "--limit", value: "number", summary: "Maximum events to return (default 20, capped at 100; non-negative integer)." },
-      { name: "--json", value: "boolean", summary: "Emit the quota-reset payload as JSON." },
+      { name: "--json", value: "boolean", summary: "Emit reset events as JSON." },
+      { name: "--limit", value: "number", summary: "Limit returned events; defaults to 20, capped at 100." },
     ],
     mutates: false,
     json: "payload",

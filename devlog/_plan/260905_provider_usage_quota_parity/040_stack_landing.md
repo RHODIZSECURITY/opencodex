@@ -47,4 +47,11 @@ delta and the four-file route/capability delta: PASS, including explicit securit
 of unchanged authentication, exact inner method/path guards and lazy imports. All three
 new heads still require remote CI.
 
+Concrete follow-on conflict: upstream PR #3622 landed the same quota-reset integration repairs,
+followed by #3623's update-test diagnostic change, at `dev`1c1ca060a. Preserve both commits.
+Use upstream's route/capability declarations and generated reference verbatim; retain this
+unit's stricter observation-time and HTTPS-transport/privacy assertions without duplicate
+properties or fixtures. This conflict resolution, not unrelated base chasing, advances the
+frozen baseline. Cascade every child and require fresh exact-head CI.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.
