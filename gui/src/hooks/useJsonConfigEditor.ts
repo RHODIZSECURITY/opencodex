@@ -10,6 +10,7 @@ const PROVIDER_EDITOR_DERIVED_FIELDS = [
   "hasApiKey",
   "hasHeaders",
   "xaiResponsesOptInState",
+  "initialModelSelection",
 ] as const;
 
 type ProviderEditorConfig = {
