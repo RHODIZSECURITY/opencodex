@@ -1434,8 +1434,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
     // Branch 1: per-provider toggle (checked first: a per-provider request may carry an
     // explicit `value`, which must never fall through to the global-value branch). Enable
-    // writes the current global default unless an explicit per-provider value is supplied;
-    // that value is never copied to other providers.
+    // restores the selected provider value, then the global default, unless an explicit
+    // per-provider value is supplied; that value is never copied to other providers.
     if (typeof body.provider === "string" && typeof body.enabled === "boolean") {
       const provider = body.provider.trim();
       if (!isValidProviderName(provider)) {
