@@ -95,6 +95,8 @@ export function useProviderAccountPools(deps: {
   const mountedRef = useRef(true);
   const serverRef = useRef(apiBase);
   useEffect(() => {
+    const generations = accountRequestGenerationRef.current;
+    const requests = requestsRef.current;
     mountedRef.current = true;
     const serverChanged = serverRef.current !== apiBase;
     serverRef.current = apiBase;
@@ -106,9 +108,9 @@ export function useProviderAccountPools(deps: {
     });
     return () => {
       mountedRef.current = false;
-      for (const key of Object.keys(accountRequestGenerationRef.current)) accountRequestGenerationRef.current[key] += 1;
-      for (const controller of requestsRef.current) controller.abort();
-      requestsRef.current.clear();
+      for (const key of Object.keys(generations)) generations[key] += 1;
+      for (const controller of requests) controller.abort();
+      requests.clear();
     };
   }, [apiBase]);
   // Provider lists this instance has already fetched for. The deferred loads below are deliberately

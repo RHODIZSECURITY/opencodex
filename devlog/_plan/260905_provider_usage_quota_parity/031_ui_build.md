@@ -36,3 +36,9 @@ upstream requests. The temporary fixture is not a shipped page.
 Desktop, tablet and mobile captures were read back. Temporary viewport overrides were reset.
 The source fixture's active account switch and refresh are synthetic UI state transitions,
 not writes to the user's account. Exact-head remote CI and final stack integration are pending.
+
+Remote React Doctor atd78a02a63 reported test-harness render-time global assignments in two
+new hook tests, one unused mock parameter, and cleanup-ref capture warnings in the account
+loader. Its detail was read from the signed-in GitHub summary using Aside, not by running
+the tool locally. Repair keeps assertions: capture test observations in layout effects,
+remove the unused parameter and capture the stable cleanup containers inside the effect.

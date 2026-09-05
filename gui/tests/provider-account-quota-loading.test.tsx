@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { Window } from "happy-dom";
-import { act, useRef } from "react";
+import { act, useLayoutEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useProviderAccountPools, type OAuthAccount, type ApiKeyEntry } from "../src/hooks/useProviderAccountPools";
 
@@ -22,9 +22,10 @@ function deferred<T>() {
 }
 function Harness({ apiBase = "/quota-hook" }: { apiBase?: string }) {
   const aliveRef = useRef(true);
-  pools = useProviderAccountPools({ apiBase, config: null, aliveRef, t: key => key,
+  const currentPools = useProviderAccountPools({ apiBase, config: null, aliveRef, t: key => key,
     oauthStatus: {}, notify: () => {}, fetchConfig: noop, fetchOauth: noop,
     fetchProviderQuotas: noop, codexActiveNeedsReauth: false });
+  useLayoutEffect(() => { pools = currentPools; }, [currentPools]);
   return null;
 }
 beforeEach(async () => {

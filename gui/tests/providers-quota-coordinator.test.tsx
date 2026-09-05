@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useQuotaRefreshCoordinator } from "../src/pages/Providers";
 
@@ -11,7 +11,8 @@ let root: Root | null;
 let coordinator: ReturnType<typeof useQuotaRefreshCoordinator>;
 
 function Harness() {
-  coordinator = useQuotaRefreshCoordinator("/coordinator");
+  const currentCoordinator = useQuotaRefreshCoordinator("/coordinator");
+  useLayoutEffect(() => { coordinator = currentCoordinator; }, [currentCoordinator]);
   return null;
 }
 function deferred<T>() {
