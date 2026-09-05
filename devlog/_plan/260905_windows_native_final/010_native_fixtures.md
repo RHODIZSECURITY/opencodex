@@ -94,3 +94,8 @@ failure proof; folded above using the existing stall-on-stop hook plus the error
 aggregation wrapper. The local platform for the16second fault is explicit.
 Path identity, per-scenario splitting and intrinsic spawn budget were approved
 subject to these causal and admission-ablation proofs.
+
+Integration residual: run33947540953 revealed the same intrinsic-child budget
+class in codex-restore-app-rewrite.test.ts. Research is001; dependent child-layer
+repair specification is012. This remains the same native fixture stabilization
+work-phase and its Windows-green gate; no successful monitoring substitute.
