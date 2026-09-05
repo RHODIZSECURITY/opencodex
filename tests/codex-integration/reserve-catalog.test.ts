@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OcxConfig } from "../../src/types";
+import { isLoopbackHostname as isServerLoopbackHostname } from "../../src/server/auth-cors";
 import {
   isEffectiveCodexDesktopAuthless,
   isLoopbackHostname,
@@ -117,18 +118,21 @@ function merge(rows: RawEntry[], overrides: Partial<ObservedCatalogMergeInput> =
 }
 
 describe("Reserve effective authless configuration", () => {
-  test.each([undefined, "", "localhost", " LOCALHOST ", "127.0.0.1", "::1", "[::1]"])(
+  test.each([undefined, "", "localhost", " LOCALHOST ", "localhost.", " LOCALHOST. ", "127.0.0.1", "::1", "[::1]"])(
     "loopback %s admits only the explicit opt-in", hostname => {
       expect(isLoopbackHostname(hostname)).toBe(true);
+      expect(isServerLoopbackHostname(hostname)).toBe(true);
       expect(shouldInjectApiAuthHeader({ hostname })).toBe(false);
       expect(isEffectiveCodexDesktopAuthless(config({ hostname }))).toBe(true);
       expect(isEffectiveCodexDesktopAuthless(config({ hostname, codexDesktopAuthless: false }))).toBe(false);
       expect(isEffectiveCodexDesktopAuthless(config({ hostname, codexDesktopAuthless: undefined }))).toBe(false);
     },
   );
-  test.each(["0.0.0.0", "::", "[::]", "192.0.2.10", "proxy.example"])(
+  test.each(["localhost..", "0.0.0.0", "::", "[::]", "192.0.2.10", "proxy.example"])(
     "non-loopback %s keeps admission and hides Reserve", hostname => {
       const state = config({ hostname });
+      expect(isLoopbackHostname(hostname)).toBe(false);
+      expect(isServerLoopbackHostname(hostname)).toBe(false);
       expect(shouldInjectApiAuthHeader(state)).toBe(true);
       expect(isEffectiveCodexDesktopAuthless(state)).toBe(false);
       expect(build(state).map(row => row.slug)).toEqual(["external/model"]);

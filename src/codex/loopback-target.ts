@@ -12,7 +12,7 @@ export function isCodexReserveRequestEligible(
 
 /** Bind scope, not the dial address: wildcard listeners are never loopback-only. */
 export function isLoopbackHostname(hostname: string | undefined): boolean {
-  const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase();
+  const normalized = (hostname ?? "127.0.0.1").trim().toLowerCase().replace(/\.$/, "");
   return (
     normalized === "" ||
     normalized === "localhost" ||
