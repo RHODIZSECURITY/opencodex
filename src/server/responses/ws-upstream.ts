@@ -14,8 +14,8 @@
 
 import { MAX_CLIENT_SSE_FRAME_BYTES } from "../sse-frame-buffer";
 import { compareBunVersions } from "../../lib/bun-stream-caps";
-import { CodexWsMetadata } from "./codex-ws-metadata";
-import { CODEX_RESPONSES_HTTP_URL, CODEX_RESPONSES_WS_URL, prepareCodexWsRequest } from "./codex-ws-request";
+import { CodexWsMetadata, type CodexWsQuotaObserver } from "./codex-ws-metadata";
+import { CODEX_RESPONSES_HTTP_URL, CODEX_RESPONSES_WS_URL, prepareCodexHttpInit, prepareCodexWsRequest } from "./codex-ws-request";
 
 /**
  * Dial URL for a request URL. The canonical ChatGPT backend keeps its constant;
@@ -85,6 +85,12 @@ export type BunRuntimeIdentity = {
 export type BunRuntimeGateInput = string | BunRuntimeIdentity;
 
 const codexWsUpstreamResponses = new WeakSet<Response>();
+const quotaObservedResponses = new WeakSet<Response>();
+
+/** Quota arrived directly at its captured account; do not replay old HTTP prelude headers. */
+export function isCodexWsQuotaObservedResponse(response: Response): boolean {
+  return quotaObservedResponses.has(response);
+}
 
 /** True only for a successful Codex WebSocket upgrade, never an HTTP fallback. */
 export function isCodexWsUpstreamResponse(response: Response): boolean {
@@ -248,9 +254,10 @@ export function codexWsUpstreamFetch(
   init: RequestInit,
   sseFallback: typeof globalThis.fetch,
   runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
+  onQuota?: CodexWsQuotaObserver,
 ): Promise<Response> {
   const prepared = prepareCodexWsRequest(url, init);
-  if (!prepared) return sseFallback(url, init);
+  if (!prepared) return sseFallback(url, prepareCodexHttpInit(url, init));
   init = prepared.httpInit;
   if (!bunSupportsBoundedCodexWsRelay(runtime)) {
     return sseFallback(url, init);
@@ -294,7 +301,7 @@ export function codexWsUpstreamFetch(
     let terminal = false;
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     const encoder = new TextEncoder();
-    const metadata = url === CODEX_RESPONSES_HTTP_URL ? new CodexWsMetadata() : null;
+    const metadata = url === CODEX_RESPONSES_HTTP_URL ? new CodexWsMetadata(onQuota) : null;
     let preludeTimer: ReturnType<typeof setTimeout> | undefined;
     const stream = new ReadableStream<Uint8Array>({
       start(c) { controller = c; },
@@ -319,8 +326,9 @@ export function codexWsUpstreamFetch(
       const responseHeaders = metadata?.snapshot() ?? new Headers();
       responseHeaders.set("content-type", "text/event-stream; charset=utf-8");
       const response = new Response(stream, { status: 200, headers: responseHeaders });
-      metadata?.bind(response);
+      metadata?.commit();
       codexWsUpstreamResponses.add(response);
+      if (metadata && onQuota) quotaObservedResponses.add(response);
       resolve(response);
     };
 

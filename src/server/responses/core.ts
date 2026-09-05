@@ -13,7 +13,9 @@ import {
 } from "./outbound-body-guard";
 import { nativeContextLimits } from "../../codex/catalog";
 import { describeUpstreamConnectFailure } from "./upstream-error";
-import { observeCodexWsResponseMetadata } from "./codex-ws-metadata";
+import type { CodexWsQuotaObserver } from "./codex-ws-metadata";
+import { applyAccountQuotaFromUpstreamHeaders as applyCapturedCodexQuota } from "../../codex/quota";
+import { isCodexWsQuotaObservedResponse } from "./ws-upstream";
 import {
   multiAgentGuidanceEnabled,
   resolveEnvValue,
@@ -868,6 +870,13 @@ export function usesCodexForwardPoolAuth(
     && provider.authMode === "forward" && provider.adapter === "openai-responses";
 }
 
+function codexWsQuotaObserver(authCtx: CodexAuthContext, provider: OcxProviderConfig): CodexWsQuotaObserver | undefined {
+  if (!isCanonicalOpenAiForwardProvider(provider) || !usesCodexForwardPoolAuth(authCtx, provider)) return undefined;
+  const { accountId, writerGeneration } = authCtx;
+  const mainWriter = authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined;
+  return headers => applyCapturedCodexQuota(accountId, headers, writerGeneration, mainWriter);
+}
+
 export function preAuthUpstreamHostCircuitKey(
   route: Pick<RouteResult, "provider" | "providerName" | "codexAccountMode" | "codexAccountId">,
   config: OcxConfig,
@@ -1311,6 +1320,7 @@ async function retryCodexPoolOnAlternateAccount(
           providerFetch(route.provider, options.codexWsRuntimeIdentity, {
             providerName: route.providerName,
             modelId: route.modelId,
+            onCodexWsQuota: codexWsQuotaObserver(retryAuthCtx, route.provider),
           }),
           // Credential-bearing forward send: never follow a redirect into a
           // dead-host rejection after the credential was seen (#914).
@@ -4268,6 +4278,7 @@ async function handleResponsesInner(
             providerFetch(route.provider, options.codexWsRuntimeIdentity, {
               providerName: route.providerName,
               modelId: route.modelId,
+              onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
             }),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
@@ -4341,6 +4352,7 @@ async function handleResponsesInner(
               providerFetch(route.provider, options.codexWsRuntimeIdentity, {
                 providerName: route.providerName,
                 modelId: route.modelId,
+                onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
               }),
               route.provider.authMode === "forward")
               .then(response => {
@@ -4442,6 +4454,7 @@ async function handleResponsesInner(
             providerFetch(route.provider, options.codexWsRuntimeIdentity, {
               providerName: route.providerName,
               modelId: route.modelId,
+              onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
             }),
             codex401ReplayKind === "stored" ? options.onStoredPool401ReplayDispatched : undefined,
           ),
@@ -4548,6 +4561,7 @@ async function handleResponsesInner(
               providerFetch(route.provider, options.codexWsRuntimeIdentity, {
                 providerName: route.providerName,
                 modelId: route.modelId,
+                onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
               }),
               route.provider.authMode === "forward")
               .then(res => {
@@ -4610,6 +4624,7 @@ async function handleResponsesInner(
               providerFetch(route.provider, options.codexWsRuntimeIdentity, {
                 providerName: route.providerName,
                 modelId: route.modelId,
+                onCodexWsQuota: codexWsQuotaObserver(authCtx, route.provider),
               }),
               route.provider.authMode === "forward")
               .then(res => {
@@ -4761,27 +4776,16 @@ async function handleResponsesInner(
       }
       : undefined;
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
-    let detachWsMetadata: (() => void) | undefined;
     // Capture quota from upstream response for multi-account tracking
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
       const quotaMeta = { ...codexQuotaOutcomeMeta(upstreamResponse), ...(await codexDenialOutcomeMeta(upstreamResponse)) };
       const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
-      applyAccountQuotaFromUpstreamHeaders(
-        authCtx.accountId,
-        upstreamResponse.headers,
-        authCtx.writerGeneration,
-        authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined,
-      );
-      // Prelude first, then the final exchange's latest snapshot. The socket may
-      // already have completed while auth/outcome inspection was awaiting.
-      const quotaAccountId = authCtx.accountId;
-      const quotaGeneration = authCtx.writerGeneration;
-      const mainQuotaWriter = authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined;
-      detachWsMetadata = observeCodexWsResponseMetadata(upstreamResponse, metadataHeaders => {
-        applyAccountQuotaFromUpstreamHeaders(quotaAccountId, metadataHeaders, quotaGeneration, mainQuotaWriter);
-      });
+      if (!isCodexWsQuotaObservedResponse(upstreamResponse)) {
+        applyAccountQuotaFromUpstreamHeaders(authCtx.accountId, upstreamResponse.headers,
+          authCtx.writerGeneration, authCtx.kind === "main-pool" ? authCtx.mainQuotaWriter : undefined);
+      }
       if (terminalBodyWillRecord) {
         options.setTerminalOutcomeRecorder?.((status, httpStatusOverride) => {
           terminalRecorder(status, httpStatusOverride);
@@ -5034,7 +5038,7 @@ async function handleResponsesInner(
             }
           },
           onClientCancel: () => options.onNativePassthroughCancel?.(),
-          onDone: () => { detachWsMetadata?.(); unregisterTurn(turnAc); },
+          onDone: () => unregisterTurn(turnAc),
         }, {
           clientGoneSignal: options.abortSignal,
           ...(inlineEagerRewrite ? { rewriteBudget: translatorBudget } : {}),

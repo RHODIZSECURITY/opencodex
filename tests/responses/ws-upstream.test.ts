@@ -3,7 +3,7 @@ import { providerFetch } from "../../src/server/responses/fetch-helpers";
 import { handleResponses } from "../../src/server/responses";
 import { isEagerRelaySseResponse } from "../../src/server/relay";
 import { isWin32EagerRewrite } from "../../src/lib/bun-stream-caps";
-import { CodexWsMetadata, observeCodexWsResponseMetadata, CODEX_WS_METADATA_MAX_BYTES, CODEX_WS_METADATA_MAX_VALUE_BYTES } from "../../src/server/responses/codex-ws-metadata";
+import { CodexWsMetadata, CODEX_WS_METADATA_MAX_BYTES, CODEX_WS_METADATA_MAX_VALUE_BYTES } from "../../src/server/responses/codex-ws-metadata";
 import {
   bunSupportsBoundedCodexWsRelay,
   CODEX_WS_CREATE_FRAME_LIMIT_BYTES,
@@ -837,7 +837,8 @@ describe("codexWsUpstreamFetch", () => {
     expect(FakeWebSocket.instances[0].closed).toBe(true);
   });
 
-  test("replays final quota to a late observer without regressing to the prelude", async () => {
+  test("a pre-dispatch observer receives every quota before the Response consumer attaches", async () => {
+    const observations: string[] = [];
     installFake(ws => {
       ws.emit("open", {});
       const quota = (percent: number) => ws.emit("message", { data: JSON.stringify({
@@ -848,13 +849,11 @@ describe("codexWsUpstreamFetch", () => {
       quota(20);
       ws.emit("message", { data: JSON.stringify({ type: "response.completed", response: { id: "r1" } }) });
     });
-    const response = await codexWsUpstreamFetch(CODEX_URL, streamingInit(), (() => {
+    const response = await rawCodexWsUpstreamFetch(CODEX_URL, streamingInit(), (() => {
       throw new Error("fallback must not run");
-    }) as unknown as typeof fetch);
+    }) as unknown as typeof fetch, BOUNDED_WS_RUNTIME, headers => observations.push(headers.get("x-codex-primary-used-percent")!));
     expect(response.headers.get("x-codex-primary-used-percent")).toBe("10");
-    const observations: string[] = [];
-    observeCodexWsResponseMetadata(response, headers => observations.push(headers.get("x-codex-primary-used-percent")!));
-    expect(observations).toEqual(["20"]);
+    expect(observations).toEqual(["10", "20"]);
     await response.text();
   });
 
@@ -901,9 +900,43 @@ describe("codexWsUpstreamFetch", () => {
       jest.useRealTimers();
     }
   });
+
+  test("malformed native WS metadata still normalizes the real HTTP fallback routing hint", async () => {
+    let fallbackInit: RequestInit | undefined;
+    const body = JSON.stringify({ model: "gpt-6-astra", service_tier: "priority", stream: true, client_metadata: [] });
+    const response = await codexWsUpstreamFetch(CODEX_URL, {
+      method: "POST", body, headers: { "x-codex-routing-hint": "model=stale;tier=flex" },
+    }, (async (_url: unknown, init?: RequestInit) => {
+      fallbackInit = init;
+      return new Response("http-fallback");
+    }) as typeof fetch);
+    expect(await response.text()).toBe("http-fallback");
+    expect(new Headers(fallbackInit?.headers).get("x-codex-routing-hint")).toBe("model=gpt-6-astra;tier=priority");
+    expect(fallbackInit?.body).toBe(body);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
 });
 
 describe("native WS metadata boundaries", () => {
+  test("new valid windows replace missing optional fields instead of inheriting old resets", () => {
+    const owner = new CodexWsMetadata();
+    owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 8, window_minutes: 300, reset_at: 1900000000 } } }, 100);
+    owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 9 } } }, 100);
+    expect(owner.snapshot().get("x-codex-primary-used-percent")).toBe("9");
+    expect(owner.snapshot().has("x-codex-primary-window-minutes")).toBe(false);
+    expect(owner.snapshot().has("x-codex-primary-reset-at")).toBe(false);
+  });
+
+  test("etag and extra-family events do not republish accumulated ordinary quota", () => {
+    const observed: string[] = [];
+    const owner = new CodexWsMetadata(headers => observed.push(headers.get("x-codex-primary-used-percent")!));
+    owner.commit();
+    owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 10 } } }, 100);
+    owner.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "new" } }, 100);
+    owner.consume({ type: "codex.rate_limits", metered_limit_name: "codex_bengalfox", rate_limits: { primary: { used_percent: 20 } } }, 100);
+    expect(observed).toEqual(["10"]);
+  });
+
   test("metered families never overwrite the ordinary Codex quota", () => {
     const owner = new CodexWsMetadata();
     const ingest = (payload: Record<string, unknown>) => owner.consume(payload, Buffer.byteLength(JSON.stringify(payload)));
@@ -938,17 +971,33 @@ describe("native WS metadata boundaries", () => {
   });
 
   test("late observations detach on terminal and response metadata strips unknown authority", () => {
-    const owner = new CodexWsMetadata();
-    const response = new Response();
-    owner.bind(response);
     let calls = 0;
-    observeCodexWsResponseMetadata(response, () => { calls++; });
+    const owner = new CodexWsMetadata(() => { calls++; });
+    owner.commit();
     const text = owner.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "good", authorization: "secret", "set-cookie": "secret", "x-codex-turn-state": "bad\r\nvalue" } }, 100);
     expect(text).toBe('{"type":"codex.response.metadata","headers":{"x-models-etag":"good"}}');
     owner.finish();
     const endedCalls = calls;
     owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 40 } } }, 100);
     expect(calls).toBe(endedCalls);
+    expect(owner.snapshot().has("x-codex-primary-used-percent")).toBe(false);
+  });
+
+  test("metadata family and header-count caps reject only the overflowing addition", () => {
+    const families = new CodexWsMetadata();
+    families.commit();
+    for (let i = 0; i < 16; i++) {
+      families.consume({ type: "codex.rate_limits", metered_limit_name: `codex-family-${i}`, rate_limits: { primary: { used_percent: i } } }, 100);
+    }
+    expect(families.snapshot().get("x-codex-family-15-primary-used-percent")).toBe("15");
+    expect(() => families.consume({ type: "codex.rate_limits", metered_limit_name: "codex-family-16", rate_limits: { primary: { used_percent: 16 } } }, 100)).toThrow("header budget");
+    expect(families.snapshot().has("x-codex-family-16-primary-used-percent")).toBe(false);
+    const headers = new CodexWsMetadata();
+    headers.commit();
+    headers.consume({ type: "codex.response.metadata", headers: Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`x-ratelimit-fixture-${i}`, "1"])) }, 4000);
+    expect([...headers.snapshot()]).toHaveLength(128);
+    expect(() => headers.consume({ type: "codex.response.metadata", headers: { "x-ratelimit-extra": "1" } }, 100)).toThrow("header budget");
+    expect([...headers.snapshot()]).toHaveLength(128);
   });
 });
 

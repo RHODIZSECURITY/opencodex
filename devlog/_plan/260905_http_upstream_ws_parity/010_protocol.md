@@ -12,7 +12,8 @@ Depends on: reviewed roadmap. This cycle changes protocol mapping and observatio
 | NEW | `src/server/responses/codex-ws-request.ts` | Pure canonical request preparation described below; no config, auth-store, timer or network imports. |
 | NEW | `src/server/responses/codex-ws-metadata.ts` | Pure, bounded native metadata-to-safe-header projection plus response-scoped observation ownership described below. |
 | MODIFY | `src/server/responses/ws-upstream.ts` | Use prepared frame/headers; collect native prelude metadata before committing the synthetic Response; preserve late native metadata through the bounded per-response observer; preserve existing noncanonical behavior. |
-| MODIFY | `src/server/responses/core.ts` | Bind the native response metadata observer to the already-selected account and generation using the existing quota/header owner. Do not select credentials in the transport. |
+| MODIFY | `src/server/responses/core.ts` | Capture a quota observer from the selected account before each native dispatch, including retries; pass it through providerFetch. Do not select credentials in the transport. |
+| MODIFY | `src/server/responses/fetch-helpers.ts` | Add optional `onCodexWsQuota(headers)` to ProviderFetchOptions and pass it to the canonical WS exchange before opening/sending. |
 | MODIFY | `src/server/ws-bridge.ts` | Reuse the safe native header projection without introducing a transport-to-adapter import cycle; preserve `safeResponseHeaders` export. |
 | MODIFY | existing transport and metadata test files | Add independently specified positive/negative fixtures and actual dispatch-path assertions. |
 | MODIFY | `structure/04_transports-and-sidecars.md` and English provider/server reference as needed | Describe HTTP ingress, canonical mapping, metadata fidelity, and unchanged third-party policy. |
@@ -56,17 +57,18 @@ The new pure metadata module accepts a parsed provider event and returns only va
 - Keep metadata frames within the existing raw/enveloped byte limits. Cap accumulated prelude/header bytes and family count; malformed or excessive metadata follows the bounded stream-error policy.
 - Resolve the canonical synthetic Response when the first Responses/error frame arrives, after earlier metadata is reflected in its headers. A connection that opens but supplies no response remains covered by the caller's header deadline; do not add an unbounded open-but-unresolved state.
 - A provider `error` frame is not a completed response. Preserve its existing structured error/status semantics and never replay inference merely because an error preceded the first output.
-- Later metadata updates notify a response-scoped observer. Buffer only the latest bounded snapshot until its observer is attached, replay it once on attachment, and clear the listener on terminal/cancel/error. A terminal owner retains its final bounded snapshot in its WeakMap entry until Response GC, but never retains a callback after terminal. An observer attached after terminal receives that final snapshot once and is not stored. Never attach metadata to a different retry's account.
+- Every ordinary quota update notifies the attempt's observer synchronously when received. That observer is captured before opening/sending; there is no late attachment, replay ledger or freshness-stamp reconstruction. Only newly observed ordinary window fields are passed, not the accumulated HTTP header snapshot. Clear the callback on terminal/cancel/error. Metadata-only and additional-family events never refresh ordinary account usage.
 - Do not invent a late HTTP header update after headers have been committed. Forward supported metadata events for consumers that understand them and update the proxy's selected-account state separately; the HTTP header snapshot represents the prelude only.
 
 Proposed observation interface (creation -> use chain):
 
 ```ts
-type CodexWsMetadataObserver = (headers: Headers) => void;
-observeCodexWsResponseMetadata(response: Response, observer: CodexWsMetadataObserver): () => void;
+type CodexWsQuotaObserver = (headers: Headers) => void;
+// ProviderFetchOptions.onCodexWsQuota -> optional fifth WS transport argument
+// -> CodexWsMetadata constructor -> synchronous ordinary-quota event callback.
 ```
 
-Creation: canonical `ws-upstream` attaches its bounded owner to the synthetic Response. Serialization: only the safe snapshot is projected into HTTP headers/SSE. Deserialization: the native event parser validates values once. Consumers: core's selected-account quota hook plus HTTP/native client header readers. Noncanonical responses and HTTP fallback have no native observation owner. Weak response ownership and detach prevent a process-wide history ledger.
+Creation: core captures selected accountId/writerGeneration/mainQuotaWriter before dispatch. Serialization: callback is process-local only; safe snapshots become HTTP headers/SSE. Deserialization: native event parser validates once. Consumers: existing quota header writer called at receive time, and HTTP clients consume the prelude header projection. Native direct mode without a stored account has no proxy quota observer. Noncanonical/HTTP fallback has no WS observer marker. No new quota timestamp API or stored-quota merge policy is introduced.
 
 ### Exact post-send settlement
 
@@ -95,9 +97,11 @@ The pure safe-header owner retains current exact names and quota family pattern 
 
 ### Exact account-observer binding
 
-In core's native passthrough block, AFTER all retry/failover replacements and within `usesCodexForwardPoolAuth`, capture immutable locals for `accountId`, `writerGeneration`, and the main-pool `mainQuotaWriter`. The sequence is existing prelude `applyAccountQuotaFromUpstreamHeaders` first, then `observeCodexWsResponseMetadata` attach/replay, then constructing/starting the downstream relay. The callback references only captured locals, not mutable `authCtx`. Its observer owner auto-detaches on transport terminal/cancel/error; the returned detach is also included in the stream cleanup callback. Prelude-only HTTP fallback uses no observer.
+Core's `codexWsQuotaObserver(authCtx, provider)` checks the existing canonical pool/main-pool predicate and captures immutable accountId/writerGeneration/mainQuotaWriter; the returned function calls the existing `applyAccountQuotaFromUpstreamHeaders`. It is created in six `providerFetch` constructions: alternate-account model/quota retry uses `retryAuthCtx`; initial native dispatch, opaque/rebuilt replay, shared stored/main-401 replay, generic OAuth replay and key-provider 429 replay use their current `authCtx`. The last two produce no observer when noncanonical/ineligible. Each fresh providerFetch receives the callback before its WS transport runs; no closure reads mutable authCtx later. Other providerFetch callers remain unchanged and one-shot/no-observer.
 
-Intermediate retry responses retain the existing prelude observation behavior and cannot donate response-specific headers to their successor; late observation is installed only for the final chosen response. Fixtures MUST construct pool and main-pool auth contexts (not just the existing direct fixture), exercise prelude 10 -> late 20 -> terminal BEFORE attachment, and assert the selected cache ends at 20 without touching another account or overwriting with the old 10.
+The WS Response is marked in a WeakSet only when its canonical exchange had an observer installed. Core skips its old post-fetch quota-header write for this marker because events already updated state; HTTP fallback and unmarked responses retain the original header write. Metadata callbacks are cleared on terminal/cancel/error and never migrate across retries. Intermediate failed attempts may update THEIR serving account immediately; they cannot donate response-specific metadata to a later response.
+
+Fixtures MUST use real pool/main-pool selection and cover ordinary primary+secondary followed by secondary-only before response consumption, etag/credit/extra-family interleaving with a newer account update, failed attempt then alternate account, and no update after terminal. This exercises arrival order directly, without synthetic receive-time stamps or late replay.
 
 ## Reachable acceptance scenarios
 
@@ -112,6 +116,10 @@ Intermediate retry responses retain the existing prelude observation behavior an
 Focused baseline command and known existing skip are recorded in `000_plan.md`. Extend those existing files; add explicit layout registrations only if a new test file becomes necessary. Typecheck/privacy/secret scan and coordinated full verification precede review-ready/merge.
 
 B test placement refinement: reuse `tests/responses/responses-account-label.test.ts` and its existing isolated `withPoolHome` fixture for the pool/main-pool metadata-order scenarios. This exercises actual auth selection and cache writers instead of mocking the selected-account gate. The original transport file remains responsible for byte limits, frame order and no-resend behavior.
+
+### B review amendment: simplify observation placement
+
+Two failed partial-window repairs exposed the wrong abstraction: reconstructing freshness after the selected-account consumer attaches late creates an unnecessary second merge policy. Replan to attach the immutable callback before dispatch, when the selected account is already known. Remove the uncommitted `quota-observation.ts` and all proposed `quota.ts` timestamp changes. Existing quota merge semantics remain untouched. Keep the independently verified atomic header-window replacement and pre-refusal HTTP hint normalization fixes.
 
 ## Structural and review notes
 

@@ -36,6 +36,16 @@ function applyLiteMetadata(body: Record<string, unknown>, headers: Headers): boo
 }
 
 /** Pure preparation; null keeps malformed requests on the existing HTTP fallback path. */
+export function prepareCodexHttpInit(url: string, init: RequestInit): RequestInit {
+  if (url !== CODEX_RESPONSES_HTTP_URL || typeof init.body !== "string") return init;
+  const headers = new Headers(init.headers);
+  let body: unknown;
+  try { body = JSON.parse(init.body); } catch { /* malformed body cannot authorize a hint */ }
+  applyCodexRoutingHint(headers, body);
+  return { ...init, headers };
+}
+
+/** Null refuses only WS conversion; canonical HTTP normalization is independently reusable. */
 export function prepareCodexWsRequest(url: string, init: RequestInit): PreparedCodexWsRequest | null {
   if (typeof init.body !== "string") return null;
   try {

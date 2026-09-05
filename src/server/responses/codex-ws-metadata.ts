@@ -5,8 +5,7 @@ export const CODEX_WS_METADATA_MAX_FAMILIES = 16;
 export const CODEX_WS_METADATA_MAX_HEADERS = 128;
 export const CODEX_WS_METADATA_MAX_VALUE_BYTES = 4096;
 
-type MetadataObserver = (headers: Headers) => void;
-const owners = new WeakMap<Response, CodexWsMetadata>();
+export type CodexWsQuotaObserver = (headers: Headers) => void;
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -84,48 +83,52 @@ function assertMetadataBounds(headers: Headers): void {
 /** One exchange's metadata. The Response owns its final snapshot, not a global history ledger. */
 export class CodexWsMetadata {
   private headers = new Headers();
-  private observer: MetadataObserver | undefined;
   private ended = false;
   private preludeBytes = 0;
   private committed = false;
 
+  constructor(private observer?: CodexWsQuotaObserver) {}
+
   snapshot(): Headers { return new Headers(this.headers); }
 
-  bind(response: Response): void {
+  private publishQuota(headers: Headers): void {
+    // Observation is auxiliary bookkeeping; a consumer exception cannot turn
+    // a valid provider frame into a retryable transport failure.
+    try { this.observer?.(new Headers(headers)); } catch { /* quota observation is best-effort */ }
+  }
+
+  commit(): void {
     this.committed = true;
-    owners.set(response, this);
   }
 
   /** Returns a sanitized control frame, or null for an ordinary Responses event. */
   consume(event: Record<string, unknown>, bytes: number): string | null {
+    if (this.ended) return null;
     if (event.type !== "codex.rate_limits" && event.type !== "codex.response.metadata") return null;
     if (bytes > CODEX_WS_METADATA_MAX_BYTES) throw new Error("codex websocket metadata frame exceeds the size limit");
     if (!this.committed) this.preludeBytes += bytes;
     if (this.preludeBytes > CODEX_WS_METADATA_MAX_BYTES) throw new Error("codex websocket metadata prelude exceeds the size limit");
     const updates = event.type === "codex.rate_limits" ? quotaHeaders(event) : responseHeaders(event.headers);
     const next = this.snapshot();
+    for (const name of updates.keys()) {
+      if (!name.endsWith("-used-percent")) continue;
+      const prefix = name.slice(0, -"used-percent".length);
+      next.delete(`${prefix}window-minutes`);
+      next.delete(`${prefix}reset-at`);
+    }
     for (const [name, value] of updates) next.set(name, value);
     assertMetadataBounds(next);
     this.headers = next;
-    this.observer?.(this.snapshot());
+    if (["primary", "secondary", "tertiary"].some(window => updates.has(`x-codex-${window}-used-percent`))) {
+      this.publishQuota(updates);
+    }
     return event.type === "codex.response.metadata"
       ? JSON.stringify({ type: event.type, headers: safeResponseHeaders(updates) })
       : JSON.stringify(event);
-  }
-
-  observe(observer: MetadataObserver): () => void {
-    observer(this.snapshot());
-    if (!this.ended) this.observer = observer;
-    return () => { if (this.observer === observer) this.observer = undefined; };
   }
 
   finish(): void {
     this.ended = true;
     this.observer = undefined;
   }
-}
-
-/** Attach after the prelude quota write; a completed exchange replays its final snapshot once. */
-export function observeCodexWsResponseMetadata(response: Response, observer: MetadataObserver): () => void {
-  return owners.get(response)?.observe(observer) ?? (() => {});
 }

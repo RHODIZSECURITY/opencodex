@@ -15,6 +15,8 @@ import type { RequestLogContext } from "../../src/server/request-log";
 import { handleResponses } from "../../src/server/responses";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { CodexWsMetadata } from "../../src/server/responses/codex-ws-metadata";
+import { applyAccountQuotaFromUpstreamHeaders } from "../../src/codex/quota";
 
 const originalFetch = globalThis.fetch;
 
@@ -95,6 +97,38 @@ afterEach(() => {
 });
 
 describe("Responses account usage attribution", () => {
+  test("interleaved old WS metadata cannot overwrite a newer account observation", async () => {
+    await withPoolHome(async () => {
+      const old = new CodexWsMetadata(headers => applyAccountQuotaFromUpstreamHeaders("observed-account", headers));
+      old.commit();
+      old.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 10, reset_at: 1900000000 } } }, 100);
+      updateAccountQuota("observed-account", 90);
+      const before = { ...getAccountQuota("observed-account")! };
+      old.consume({ type: "codex.response.metadata", headers: { "x-models-etag": "changed" } }, 100);
+      old.consume({ type: "codex.rate_limits", metered_limit_name: "codex_bengalfox", rate_limits: { primary: { used_percent: 1 } } }, 100);
+      expect(getAccountQuota("observed-account")).toEqual(before);
+      old.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 91 } } }, 100);
+      expect(getAccountQuota("observed-account")?.weeklyPercent).toBe(91);
+      expect(getAccountQuota("observed-account")?.weeklyResetAt).toBeUndefined();
+      old.finish();
+    });
+  });
+
+  test("immediate WS quota observation preserves disjoint windows and credits-only interleaving", async () => {
+    await withPoolHome(async () => {
+      const { setAccountQuotaFromParsed } = await import("../../src/codex/quota");
+      const owner = new CodexWsMetadata(headers => applyAccountQuotaFromUpstreamHeaders("window-account", headers));
+      owner.consume({ type: "codex.rate_limits", rate_limits: {
+        primary: { used_percent: 100, window_minutes: 300, reset_at: 1900000000 },
+        secondary: { used_percent: 20, window_minutes: 10080 },
+      } }, 100);
+      setAccountQuotaFromParsed("window-account", { resetCredits: 3 });
+      owner.consume({ type: "codex.rate_limits", rate_limits: { secondary: { used_percent: 21, window_minutes: 10080 } } }, 100);
+      owner.finish();
+      expect(getAccountQuota("window-account")).toMatchObject({ shortPercent: 100, shortWindowSeconds: 18000, weeklyPercent: 21, resetCredits: 3 });
+    });
+  });
+
   test("WS prelude and final quota stay with the selected pool or main-pool account", async () => {
     const originalWebSocket = globalThis.WebSocket;
     try {
