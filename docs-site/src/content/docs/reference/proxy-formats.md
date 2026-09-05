@@ -253,6 +253,12 @@ Anthropic and Command Code adapters retain the image in a provenance-labeled use
 than embedding its bytes in prompt text. They do not invent a successful tool call. Results for
 valid pending calls still precede these carriers, preserving the upstream pairing contract.
 
+For Cursor external models, data-URL screenshots in the active trailing tool-result batch are
+attached to the continuation request. The existing 12-image active-attachment limit applies to
+the whole batch. Bounded source labels remain beside the attachments even if older history is
+pruned. Native Composer/MCP handling, historical-image recall, and remote-URL omission policy
+are unchanged; this does not promise every model can see every image source.
+
 Native Anthropic passthrough is eligible only when all of these are true:
 
 - native passthrough has not been disabled in Claude Code configuration;
