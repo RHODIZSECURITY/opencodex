@@ -92,20 +92,24 @@ describe("quota reset claim store", () => {
 
   test("a claim survives a real second process", async () => {
     const script = join(getConfigDir(), "claim-probe.ts");
-    const storeUrl = new URL("../../src/quota/reset-seen-store.ts", import.meta.url).pathname;
+    const storeUrl = new URL("../../src/quota/reset-seen-store.ts", import.meta.url).href;
     writeFileSync(script, [
       `const store = await import(${JSON.stringify(storeUrl)});`,
       `console.log(String(store.claimQuotaReset("cross-process", Date.now(), Date.now() + 86400000)));`,
     ].join("\n"));
 
     const run = async (): Promise<string> => {
-      const proc = Bun.spawn(["bun", script], {
+      const proc = Bun.spawn([process.execPath, script], {
         env: { ...process.env, OPENCODEX_HOME: getConfigDir() },
         stdout: "pipe",
         stderr: "pipe",
       });
-      const out = await new Response(proc.stdout).text();
-      await proc.exited;
+      const [exitCode, out, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      expect(exitCode, `claim probe failed: ${stderr}\nstdout: ${out}`).toBe(0);
       return out.trim();
     };
 
@@ -116,13 +120,38 @@ describe("quota reset claim store", () => {
   });
 
   test("the hard ceiling bounds the map even when every claim is live", () => {
-    const future = NOW + 365 * DAY;
-    for (let index = 0; index < 2_000; index += 1) {
-      claimQuotaReset(`live-${index}`, NOW, future + index);
-    }
-    // 512 is the soft budget, honoured by evicting settled claims. With none settled, the hard
-    // ceiling at 1024 is what stops unbounded growth of the map and the JSON beside it.
-    expect(claimCountForTests()).toBeLessThanOrEqual(1_024);
+    const now = Date.now();
+    const future = now + 365 * DAY;
+    const path = join(getConfigDir(), "quota-reset-state.json");
+    // Seed below the cap: fixture construction is not the behavior under test.
+    // Hydration does not prune; only the real insertions below cross the boundary.
+    const seeded = Object.fromEntries(Array.from({ length: 1_023 }, (_, index) => [
+      `live-${index}`, { at: now, resetAt: future + index },
+    ]));
+    writeFileSync(path, JSON.stringify({ version: 1, claims: seeded, events: [] }));
+    resetQuotaResetStoreForTests();
+    expect(claimCountForTests()).toBe(1_023);
+    expect(claimQuotaReset("boundary", now, future + 1_023)).toBe(true);
+    expect(claimCountForTests()).toBe(1_024);
+
+    // All deadlines are live, so only hard-cap eviction can retain the nearer
+    // claim while evicting the furthest one. Both successful claims really persist.
+    expect(claimQuotaReset("nearer", now, future - 1)).toBe(true);
+    expect(claimCountForTests()).toBe(1_024);
+    expect(hasSeenQuotaReset("boundary")).toBe(false);
+    const expected = { ...seeded, nearer: { at: now, resetAt: future - 1 } };
+    expect(JSON.parse(readFileSync(path, "utf8")).claims).toEqual(expected);
+
+    // An overflowing newcomer can itself be evicted: never report it durable.
+    expect(claimQuotaReset("furthest", now, future + 2_000)).toBe(false);
+    expect(hasSeenQuotaReset("furthest")).toBe(false);
+    expect(claimCountForTests()).toBe(1_024);
+    expect(JSON.parse(readFileSync(path, "utf8")).claims).toEqual(expected);
+    resetQuotaResetStoreForTests();
+    expect(claimCountForTests()).toBe(1_024);
+    expect(hasSeenQuotaReset("nearer")).toBe(true);
+    expect(hasSeenQuotaReset("boundary")).toBe(false);
+    expect(hasSeenQuotaReset("furthest")).toBe(false);
   });
 
   test("a corrupt state file hydrates to empty without throwing", () => {
