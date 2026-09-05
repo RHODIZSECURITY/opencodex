@@ -39,6 +39,12 @@ specific reproduction. The HTTP variant demonstrates that client abort is
 not sufficient disposal. The prior CI instance has no live stack, so its
 precise attribution remains unconfirmed until further evidence.
 
+A third control matched the recovery test's sequential polling: each HTTP
+attempt aborts after2s, then waits100ms before the next attempt. It also held
+the real probe at iteration0 beyond5s, with no active fetch, and remained held
+for another2s after polling stopped. This removes aggressive overlapping
+polling as a prerequisite for the reproduced defect.
+
 Unchanged head and CI merge-tree singleton/batch controls passed. Even the
 complete original CI shard4/4 passed remotely with Bun1.4.0, isolate mode,
 GUI built, and two-core affinity. This does not erase the failed hosted job.
