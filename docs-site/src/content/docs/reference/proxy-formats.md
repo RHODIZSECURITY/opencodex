@@ -72,6 +72,8 @@ object. Both forms preserve the selected model, output items, terminal status, a
 
 For native HTTP/SSE passthrough, a client cancellation without an observed upstream terminal is
 logged as `499` with `closeReason: "client_cancel"` and does not penalize the account pool.
+This applies to both tee inspection and eager relay, including Windows rewrite traffic,
+even when the upstream read rejects before the response-body cancellation hook runs.
 A terminal captured during the bounded post-disconnect drain retains its actual outcome.
 
 Client-facing Responses SSE frames are limited to 4 MiB per frame, measured in raw bytes before the

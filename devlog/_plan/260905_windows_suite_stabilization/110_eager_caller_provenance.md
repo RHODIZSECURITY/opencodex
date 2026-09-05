@@ -125,3 +125,19 @@ fails again; never commit or push a mutant.
   novelty; validate corpus locally with its scripts, not an OpenCodex full suite.
 - Completion record belongs to this unit and c-6. A failed Windows shard keeps
   c-6 open, regardless of macOS or prior pre-merge green runs.
+
+## Implementation evidence before Windows dispatch
+
+New rejected-read/caller-signal test on original source: exit1, expected no
+synthetic outcome but received [failed]. After source fix: exit0, cancellation
+once and downstream closed. Full eager file:71pass/0fail,354assertions. Failed-tail,
+passthrough-abort and stream-capability files:73pass/0fail. WS upstream file:
+40pass/1skip/0fail. Unchanged server-auth caller/reset pair:2pass/0fail locally
+(Windows evidence still required). Typecheck exit0. Docs build:425pages,exit0.
+Independent implementation reviewer: PASS, no blockers; caller provenance,
+listener/timer cleanup, real terminal precedence and negative reset preserved.
+
+Verification command correction: sse-failed-tail lives under tests/responses/,
+and the WS file is tests/responses/ws-upstream.test.ts. An initially supplied
+nonexistent filter selected no extra file; the corrected commands above were
+run separately and counts match the files actually executed.
