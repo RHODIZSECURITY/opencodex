@@ -815,6 +815,27 @@ describe("relaySseEagerBounded — side-effect parity", () => {
     },
   );
 
+  test.each(unframedReadErrorCases)(
+    "caller abort preserves an already received unframed $label terminal",
+    async (fixture) => {
+      const { hooks, rec } = makeHooks();
+      const up = controlledUpstream();
+      const caller = new AbortController();
+      const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks, {
+        clientGoneSignal: caller.signal,
+      });
+      up.push(enc.encode(`event: ${fixture.type}\ndata: ${JSON.stringify(fixture.payload)}`));
+      up.fail(new Error("reset after received terminal"));
+      caller.abort();
+      const text = await readAll(relayed);
+      expect(rec.terminals).toEqual([{ status: fixture.status, ...(fixture.httpStatus ? { httpStatus: fixture.httpStatus } : {}) }]);
+      expect(rec.synthetics).toEqual([]);
+      expect(rec.cancels).toBe(0);
+      expect(rec.dones).toBe(1);
+      expect(text).not.toContain("upstream_reset");
+    },
+  );
+
   test("eager keeps an ordinary top-level error fail-closed on reader error", async () => {
     const { hooks, rec } = makeHooks();
     const up = controlledUpstream();
@@ -1302,6 +1323,134 @@ describe("relaySseEagerBounded — error paths", () => {
     expect(countOccurrences(out, "event: response.failed")).toBe(0);
     expect(rec.terminals).toEqual([{ status: "completed", httpStatus: undefined }]);
     expect(rec.synthetics).toEqual([]);
+    expect(rec.dones).toBe(1);
+  });
+
+  test("caller signal before body cancel classifies a rejected read as cancellation", async () => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const turn = new AbortController();
+    const caller = new AbortController();
+    // A local variable keeps this red-capable against the old options type:
+    // the unfixed relay ignores caller provenance and synthesizes a failure.
+    const options = { postCancelDrainMs: 5_000, clientGoneSignal: caller.signal };
+    const reader = relaySseEagerBounded(up.stream, turn, hooks, options).getReader();
+    try {
+      up.push(sse(DELTA));
+      expect((await reader.read()).done).toBe(false);
+      up.fail(new Error("injected read rejection"));
+      caller.abort("caller gone");
+      const final = await reader.read();
+      expect(rec.synthetics).toEqual([]);
+      expect(rec.cancels).toBe(1);
+      expect(rec.terminals).toEqual([]);
+      expect(rec.dones).toBe(1);
+      expect(rec.disposes).toBe(1);
+      expect(final.done).toBe(true);
+    } finally {
+      turn.abort();
+      await reader.cancel().catch(() => {});
+    }
+  });
+
+  test("a live caller signal does not hide an upstream reset", async () => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks, {
+      clientGoneSignal: new AbortController().signal,
+    });
+    up.fail(new Error("real upstream reset"));
+    expect(await readAll(relayed)).toContain("event: response.failed");
+    expect(rec.synthetics).toEqual(["failed"]);
+    expect(rec.cancels).toBe(0);
+    expect(rec.dones).toBe(1);
+  });
+
+  test("a settled framed terminal wins over same-turn caller abort", async () => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const caller = new AbortController();
+    const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks, {
+      clientGoneSignal: caller.signal,
+    });
+    up.push(sse(COMPLETED));
+    caller.abort();
+    await readAll(relayed);
+    expect(rec.terminals).toEqual([{ status: "completed", httpStatus: undefined }]);
+    expect(rec.synthetics).toEqual([]);
+    expect(rec.cancels).toBe(0);
+    expect(rec.dones).toBe(1);
+  });
+
+  test.each([false, true])("caller abort bounds a silent source (pre-aborted=%s)", async (preAborted) => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const caller = new AbortController();
+    const turn = new AbortController();
+    if (preAborted) caller.abort();
+    const relayed = relaySseEagerBounded(up.stream, turn, hooks, {
+      clientGoneSignal: caller.signal,
+      postCancelDrainMs: 10,
+    });
+    caller.abort();
+    expect(await readAll(relayed)).toBe("");
+    expect(turn.signal.aborted).toBe(true);
+    expect(rec.cancels).toBe(1);
+    expect(rec.synthetics).toEqual([]);
+    expect(rec.dones).toBe(1);
+  });
+
+  test("caller abort wakes a producer paused on its queue budget", async () => {
+    const { hooks, rec } = makeHooks();
+    const inspected = Promise.withResolvers<void>();
+    const up = controlledUpstream();
+    const caller = new AbortController();
+    const relayed = relaySseEagerBounded(up.stream, new AbortController(), {
+      ...hooks,
+      inspectChunk: chunk => { hooks.inspectChunk(chunk); inspected.resolve(); },
+    }, { clientGoneSignal: caller.signal, maxQueueBytes: 1, postCancelDrainMs: 10 });
+    up.push(sse(DELTA));
+    await inspected.promise;
+    caller.abort();
+    await readAll(relayed);
+    expect(rec.cancels).toBe(1);
+    expect(rec.synthetics).toEqual([]);
+    expect(rec.dones).toBe(1);
+  });
+
+  test("late caller cancellation does not restart a completed drain", async () => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const caller = new AbortController();
+    let clockReads = 0;
+    const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks, {
+      clientGoneSignal: caller.signal,
+      now: () => ++clockReads,
+    });
+    up.push(sse(COMPLETED));
+    await readAll(relayed);
+    caller.abort();
+    // readAll retains its reader lock; signal removal is independently observable
+    // through the clock that would be read to arm a new discard-drain window.
+    expect(clockReads).toBe(0);
+    expect(rec.cancels).toBe(0);
+    expect(rec.dones).toBe(1);
+    expect(rec.disposes).toBe(1);
+  });
+
+  test("caller abort re-entered by error serialization suppresses a failed tail", async () => {
+    const { hooks, rec } = makeHooks();
+    const up = controlledUpstream();
+    const caller = new AbortController();
+    const relayed = relaySseEagerBounded(up.stream, new AbortController(), hooks, {
+      clientGoneSignal: caller.signal,
+    });
+    const error = new Error("re-entrant");
+    Object.defineProperty(error, "message", { get() { caller.abort(); return "caller gone"; } });
+    up.fail(error);
+    expect(await readAll(relayed)).toBe("");
+    expect(rec.synthetics).toEqual([]);
+    expect(rec.cancels).toBe(1);
     expect(rec.dones).toBe(1);
   });
 
