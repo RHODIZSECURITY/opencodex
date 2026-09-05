@@ -2,6 +2,7 @@ import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
 import { modelInList, toolChoiceToolPredicate } from "../types";
 import { isModelTextOnly } from "../vision";
 import type { SidecarSettings } from "./executor";
+import type { CodexAuthPolicyConfig } from "../codex/auth-context";
 import { isCodexReserveRequestEligible } from "../codex/loopback-target";
 import type { DataPlaneAdmission } from "../server/auth-cors";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
@@ -217,7 +218,7 @@ export function planWebSearch(
   provider: OcxProviderConfig,
   modelId: string,
   openAiSidecar?: ResolvedOpenAiForwardSidecar,
-  options: { admission?: Pick<DataPlaneAdmission, "source"> } = {},
+  options: { admission?: Pick<DataPlaneAdmission, "source">; codexAuthPolicy?: CodexAuthPolicyConfig } = {},
 ): SidecarPlan | undefined {
   if (!parsed._webSearch || isPassthrough) return undefined;
   if (!toolChoiceToolPredicate(parsed.options.toolChoice)(buildWebSearchTool())) return undefined;
@@ -327,7 +328,7 @@ export function planWebSearch(
     hostedTool: parsed._webSearch,
     settings: {
       model: cfg.model ?? DEFAULT_SIDECAR_MODEL, reasoning, timeoutMs, describeImages,
-      ...(isCodexReserveRequestEligible(config, options.admission) ? { reserveCompatibility: true } : {}),
+      ...(isCodexReserveRequestEligible(options.codexAuthPolicy ?? config, options.admission) ? { reserveCompatibility: true } : {}),
     },
     maxSearches,
     routedModelStallTimeoutMs,

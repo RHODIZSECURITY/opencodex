@@ -8,7 +8,6 @@ import {
   isCodexAccountGenerationLive,
 } from "./account-store";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
-import { isCodexAccountPaused } from "./account-pause";
 import { ConfigMutationLockError } from "../config";
 import { NativeProfileError } from "./native-profile-types";
 import { isCodexAccountUsable } from "./account-usability";
@@ -322,10 +321,9 @@ export class CodexReserveUnavailableError extends CodexAccountCooldownError {
   }
 }
 
-type CodexAuthPolicyConfig = Pick<OcxConfig,
-  "codexMainAccountHardLock" | "codexDesktopAuthless" | "hostname"
-  | "unauthenticatedLoopbackListener" | "runtimeRole" | "pausedCodexAccountIds"
->;
+export type CodexAuthPolicyConfig = Readonly<Pick<OcxConfig,
+  "codexMainAccountHardLock" | "codexDesktopAuthless" | "runtimeRole" | "pausedCodexAccountIds"
+>>;
 
 interface CodexAuthMaterializationOptions {
   substituteMainCredential?: boolean;
@@ -537,6 +535,8 @@ export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown):
 
 export interface ResolveCodexAuthContextOptions {
   admission?: Pick<DataPlaneAdmission, "source">;
+  /** Live policy owner when the routing config is a caller-specific replay snapshot. */
+  codexAuthPolicy?: CodexAuthPolicyConfig;
   excludeAccountId?: string;
   /** Resolve exactly this account without consulting or mutating Pool selection. */
   accountId?: string;
@@ -574,9 +574,10 @@ export async function resolveCodexAuthContext(
   options: ResolveCodexAuthContextOptions = {},
 ): Promise<CodexAuthContext> {
   const writerGeneration = captureConfigGeneration();
+  const policy = options.codexAuthPolicy ?? config;
   const requestScopedMainCredential = options.requestScopedMainCredential === true
     && hasCallerCodexBearer(headers);
-  const reserve = requiresReserveAuthorization(config, options.modelId, options.admission);
+  const reserve = requiresReserveAuthorization(policy, options.modelId, options.admission);
   if (reserve && (options.excludeAccountId !== undefined
     || (options.accountId !== undefined && options.accountId !== MAIN_CODEX_ACCOUNT_ID))) {
     throw new CodexReserveUnavailableError();
@@ -586,8 +587,8 @@ export async function resolveCodexAuthContext(
     && fixedAccountId === undefined
     && config.activeCodexAccountPinned === MAIN_CODEX_ACCOUNT_ID
     && isEffectiveCodexAccountPinned(config)
-    && !isCodexAccountPaused(config, MAIN_CODEX_ACCOUNT_ID)
-    && !(callerMatchesObservedMain(headers) && isMainAccountHardLocked(config))
+    && !policy.pausedCodexAccountIds?.includes(MAIN_CODEX_ACCOUNT_ID)
+    && !(callerMatchesObservedMain(headers) && isMainAccountHardLocked(policy))
     && requestOwnedMainPinHasQuotaHeadroom(config);
   if (fixedAccountId !== undefined && options.excludeAccountId !== undefined) {
     throw new Error("Codex auth context cannot select and exclude an account simultaneously");
@@ -596,12 +597,12 @@ export async function resolveCodexAuthContext(
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     const substituteStoredMain = options.substituteMainCredentialForDirect === true;
     if (!substituteStoredMain) {
-      if (callerMatchesObservedMain(headers)) assertMainAccountPolicy(config);
+      if (callerMatchesObservedMain(headers)) assertMainAccountPolicy(policy);
       if (reserve) {
-        const selected = materializeCodexUpstreamAuth(headers, { kind: "main", accountId: null }, { config });
+        const selected = materializeCodexUpstreamAuth(headers, { kind: "main", accountId: null }, { config: policy });
         const token = selectedCodexToken(selected);
         const reserveAuthorization = await authorizeReserveCredential(token, captureMainQuotaWriter(token.chatgptAccountId),
-          config, options.signal, undefined, writerGeneration);
+          policy, options.signal, undefined, writerGeneration);
         return { kind: "main", accountId: null, reserveAuthorization };
       }
       if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
@@ -612,7 +613,7 @@ export async function resolveCodexAuthContext(
           throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
         }
       }
-      if (callerMatchesObservedMain(headers)) assertMainAccountPolicy(config);
+      if (callerMatchesObservedMain(headers)) assertMainAccountPolicy(policy);
       return { kind: "main", accountId: null };
     }
 
@@ -632,8 +633,8 @@ export async function resolveCodexAuthContext(
       ) {
         throw new CodexMainProfileDrainingError();
       }
-      if (config.codexMainAccountHardLock === true) reconcileMainCodexAccountRuntimeState();
-      assertMainAccountPolicy(config);
+      if (policy.codexMainAccountHardLock === true) reconcileMainCodexAccountRuntimeState();
+      assertMainAccountPolicy(policy);
       if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
         const entitled = entitledCodexAccountIdsForModel(
           await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config, {
@@ -646,7 +647,7 @@ export async function resolveCodexAuthContext(
           throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
         }
       }
-      assertMainAccountPolicy(config);
+      assertMainAccountPolicy(policy);
       return { kind: "main", accountId: null };
     } finally {
       // The short selector reservation ends here. A successful claim remains owned by
@@ -665,7 +666,7 @@ export async function resolveCodexAuthContext(
       || await (
         options.isDirectCallerEntitledToCodexModel ?? isDirectCallerEntitledToCodexModel
       )(headers, options.modelId);
-    if (callerEntitled && !(callerMatchesObservedMain(headers) && isMainAccountHardLocked(config))) {
+    if (callerEntitled && !(callerMatchesObservedMain(headers) && isMainAccountHardLocked(policy))) {
       return { kind: "main", accountId: null };
     }
   }
@@ -786,9 +787,9 @@ export async function resolveCodexAuthContext(
         throw new CodexMainProfileDrainingError();
       }
       if (!nativeMainReadsForbidden && options.excludeAccountId !== MAIN_CODEX_ACCOUNT_ID
-        && !isCodexAccountPaused(config, MAIN_CODEX_ACCOUNT_ID)
+        && !policy.pausedCodexAccountIds?.includes(MAIN_CODEX_ACCOUNT_ID)
         && (!modelEligibleAccountIds || modelEligibleAccountIds.has(MAIN_CODEX_ACCOUNT_ID))) {
-        assertMainAccountPolicy(config);
+        assertMainAccountPolicy(policy);
       }
       throw new CodexPoolAuthenticationError(
         modelEligibleAccountIds === undefined
@@ -799,7 +800,7 @@ export async function resolveCodexAuthContext(
       );
     }
     accountId = selected;
-    if (accountId === MAIN_CODEX_ACCOUNT_ID) assertMainAccountPolicy(config);
+    if (accountId === MAIN_CODEX_ACCOUNT_ID) assertMainAccountPolicy(policy);
     if (accountId === MAIN_CODEX_ACCOUNT_ID && nativeMainTrafficBlocked) {
       throw new CodexMainProfileDrainingError();
     }
@@ -822,7 +823,7 @@ export async function resolveCodexAuthContext(
       );
     }
     if (fixedAccountId !== undefined) {
-      if (isCodexAccountPaused(config, accountId)) {
+      if (policy.pausedCodexAccountIds?.includes(accountId)) {
         throw new CodexPoolAuthenticationError("Selected Codex account is unavailable");
       }
       if (isAccountNeedsReauth(accountId)) {
@@ -883,7 +884,7 @@ export async function resolveCodexAuthContext(
         ...(options.nativeMainRefreshDependencies ?? {}),
       });
       if (token) mainQuotaWriter = observeSelectedMainCredential(token, mainQuotaWriter);
-      assertMainAccountPolicy(config);
+      assertMainAccountPolicy(policy);
     } catch (cause) {
       if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);
       else if (probeLeaseId) releaseCodexQuotaProbeLease(accountId, probeLeaseId);
@@ -902,7 +903,7 @@ export async function resolveCodexAuthContext(
       );
     }
     const reserveAuthorization = reserve
-      ? await authorizeReserveCredential(token, mainQuotaWriter, config, options.signal, undefined, writerGeneration)
+      ? await authorizeReserveCredential(token, mainQuotaWriter, policy, options.signal, undefined, writerGeneration)
       : undefined;
     return {
       kind: "main-pool",

@@ -94,6 +94,9 @@ Runtime eligibility is separate: only trusted receiving-listener admission with 
 the opt-in flag and non-client role activates compatibility. A secondary listener's existence does
 not affect public ingress. Admission flows through Responses, compact, WS handshake/turns,
 translated replay and helper planning; missing admission is not inferred from a URL or Host header.
+Claude's replay keeps its existing sidecar/routing overrides but passes the original live policy
+reference separately. Policy flags/role/pause remain current through materialization and dispatch;
+the replay snapshot must not hide a policy change while a send waits for pacing.
 
 Reserve availability belongs to `reserve-availability`, not the catalog. An already-owned main
 token/writer makes a capability-aware fixed WHAM GET, bounded to8s/64KiB. Ordinary disallowed,

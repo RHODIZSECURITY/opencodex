@@ -828,6 +828,8 @@ async function handleClaudeMessagesWithBudget(
     addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
   };
   const upstream = await handleResponses(internalReq, buildClaudeReplayConfig(config), logCtx, {
+    // Routing keeps Claude-only sidecar overrides; admission policy must follow the live owner.
+    codexAuthPolicy: config,
     ...(logIds?.admission ? { admission: logIds.admission } : {}),
     ...(logIds?.turnAdmissionLease ? { turnAdmissionLease: logIds.turnAdmissionLease } : {}),
     abortSignal: req.signal,

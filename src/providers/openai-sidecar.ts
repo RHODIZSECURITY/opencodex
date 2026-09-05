@@ -7,6 +7,7 @@ import {
   resolveCodexAuthContext,
   type CodexAccountSelectionAdmission,
   type CodexAuthContext,
+  type CodexAuthPolicyConfig,
 } from "../codex/auth-context";
 import { recordCodexUpstreamOutcome, type CodexUpstreamOutcome } from "../codex/routing";
 import { extractAccountId } from "../oauth/chatgpt";
@@ -78,7 +79,7 @@ export function listOpenAiForwardSidecarCandidates(config: OcxConfig): OpenAiFor
 
 function directSidecarHeaders(
   incomingHeaders: Headers,
-  config: OcxConfig,
+  config: CodexAuthPolicyConfig,
   admission?: Pick<DataPlaneAdmission, "source">,
 ): Headers | undefined {
   const bearer = incomingHeaders.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
@@ -102,10 +103,12 @@ export async function resolveFirstUsableOpenAiSidecar(
   options: {
     exactAccount?: ExactOpenAiSidecarAccount;
     admission?: Pick<DataPlaneAdmission, "source">;
+    codexAuthPolicy?: CodexAuthPolicyConfig;
     beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
   } = {},
 ): Promise<ResolvedOpenAiForwardSidecar | undefined> {
   const { exactAccount } = options;
+  const policy = options.codexAuthPolicy ?? config;
   let callerBearerMayBeForwarded = true;
   try {
     validateForwardAdmissionCredential(incomingHeaders, config);
@@ -119,12 +122,13 @@ export async function resolveFirstUsableOpenAiSidecar(
       // credential directly even when the provider is globally Direct, and never
       // consult Pool active state, affinity, probes, or alternates.
       const authContext = await resolveCodexAuthContext(incomingHeaders, config, "pool", {
+        codexAuthPolicy: policy,
         accountId: exactAccount.accountId,
         modelId: exactAccount.modelId,
         admission: options.admission,
         beginCodexAccountSelection: options.beginCodexAccountSelection,
       });
-      const selectedHeaders = headersForCodexAuthContext(incomingHeaders, authContext, config, exactAccount.modelId, options.admission);
+      const selectedHeaders = headersForCodexAuthContext(incomingHeaders, authContext, policy, exactAccount.modelId, options.admission);
       if ((authContext.kind !== "pool" && authContext.kind !== "main-pool")
         || !isCodexAuthContextUsable(authContext, config)) {
         // Exact selection is fail-closed. A generation/runtime-state race must not fall through
@@ -154,7 +158,7 @@ export async function resolveFirstUsableOpenAiSidecar(
     }
     if (candidate.accountMode === "direct") {
       if (!callerBearerMayBeForwarded || !hasCallerCodexBearer(incomingHeaders)) continue;
-      const headers = directSidecarHeaders(incomingHeaders, config, options.admission);
+      const headers = directSidecarHeaders(incomingHeaders, policy, options.admission);
       if (!headers) continue;
       return {
         ...candidate,
@@ -163,10 +167,11 @@ export async function resolveFirstUsableOpenAiSidecar(
       };
     }
     const authContext = await resolveCodexAuthContext(incomingHeaders, config, candidate.accountMode, {
+      codexAuthPolicy: policy,
       admission: options.admission,
       beginCodexAccountSelection: options.beginCodexAccountSelection,
     });
-    const selectedHeaders = headersForCodexAuthContext(incomingHeaders, authContext, config, undefined, options.admission);
+    const selectedHeaders = headersForCodexAuthContext(incomingHeaders, authContext, policy, undefined, options.admission);
     if (!isCodexAuthContextUsable(authContext, config)) continue;
     return {
       ...candidate,

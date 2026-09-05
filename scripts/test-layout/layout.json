@@ -969,6 +969,7 @@
     "reserve-auth-context.test.ts": "codex-integration",
     "reserve-catalog.test.ts": "codex-integration",
     "reserve-catalog-lifecycle.test.ts": "codex-integration",
+    "reserve-claude-policy.test.ts": "server",
     "reserve-dispatch.test.ts": "codex-integration",
     "reserve-dispatch-ws.test.ts": "responses",
     "reserve-helper-boundary.test.ts": "codex-integration",
