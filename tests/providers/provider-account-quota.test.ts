@@ -522,6 +522,7 @@ describe("explicit OAuth account quota readers", () => {
         seen.add(auth);
         const url = String(input);
         expect(init?.redirect).toBe("error");
+        expect(new URL(url).protocol).toBe("https:");
         if (fixture.provider === "xai") {
           expect(headers.get("x-userid")).toBe(`user-${label}`);
           return Response.json({ config: { creditUsagePercent: amount, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" } } });
