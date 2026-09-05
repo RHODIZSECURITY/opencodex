@@ -79,3 +79,48 @@ MODIFY `structure/05_gui-and-management-api.md` usage/quota paragraphs and `docs
 ## Bypass/residual
 
 UI state is presentation, not credential authorization. Backend fixed-destination account/key readers are the actual boundary. Existing account mutation permissions are unchanged; no new enforcement claim.
+
+## P stale-check and locked refinements at 768e5a004
+
+The backend now emits the row-level mode/availability fields, including Kimi's omitted-key-auth
+default. 000's no-local-validation directive supersedes all local command examples above.
+
+1. Main owns a shared `AccountQuotaMode` and `AccountQuotaReading` in existing view types:
+   `quotaMode?: "probe"|"passive"|"unsupported"`, `quota?: AccountQuota|null`,
+   `quotaUnavailable?: boolean`, `quotaPending?: boolean`. OAuth/key rows and hook interfaces
+   reuse it. Pending is GUI-only. Worker reads this contract, does not edit types.ts.
+2. Main owns NEW `ProviderAccountQuota.tsx`, shared by all three tabs. Props exactly match
+   AccountQuotaReading. Unsupported ignores retained data; passive without observation has an
+   honest unobserved message; only explicit probe pending can show a skeleton. Failed reads
+   retain last-good numbers with a warning and their actual age. Reuse ProviderCapacityQuota
+   for windows AND credits-only balances. No summation of different accounts/keys.
+3. NEW ProviderCurrentQuota accepts `report`, optional `reading: AccountQuotaReading`, and
+   optional refresh callback. ProviderDetails supplies the active OAuth/key row only. A present
+   row with a known quotaMode (including passive with no observation), pending/unavailable,
+   or an explicit quota overrides the provider report;
+   never substitute the previous active account's quota. Codex uses report aggregation's current
+   account. Use the actual quota.updatedAt for current metadata, not aggregate refresh time.
+4. `currentAccountQuotaReport` treats present malformed aggregation as unknown, not as a
+   non-pool current quota. Valid aggregate missing current likewise stays unknown. Tests pin
+   aggregate20/current70, absent current, malformed aggregation and distinct measurement age.
+5. Preserve callback argument order: shell reports `onQuotaRefreshSettled(ok, epoch)` with
+   captured epoch second. Page resolves matching ticket only; superseded/unmounted tickets
+   resolve false. Existing one-argument callback consumers still receive a boolean.
+6. The account loader merges last-good quota only by surviving credential id, publishes explicit
+   pending for probe rows, awaits forced enrichment, handles HTTP failure behind generation
+   fences, and uses a bounded fetch deadline rather than a never-ending spinner. Passive and
+   unsupported rows never get absence-driven loading. Key subset refresh merges other providers.
+7. Refresh outcome text says the quota check completed, not that every upstream value is freshly
+   measured; passive reloads and a provider-report last-good fallback cannot prove freshness.
+
+New localized keys owned by main: `pws.currentAccountUsage`, `pws.quotaUnsupported`,
+`pws.quotaUnobserved`, `pws.quotaCheckCompleted`. Existing error/refresh labels are reused.
+Worker's AuthPanel imports ProviderAccountQuota and uses the above keys; no locale edits there.
+
+Source delta verification is remote CI plus existing in-app browser on synthetic data only.
+
+A repair: Kant identified a passive account switch while the old provider report remains cached.
+Accepted. Any active passive row is authoritative even with no quota: render unobserved and never
+reuse the old report. The direct current-section regression must provide an old report75% plus a
+new active passive row lacking quota and assert that75% is absent. Unknown-mode legacy rows may
+only use a provider report when no row-specific state/data exists; absence is never confirmation.
