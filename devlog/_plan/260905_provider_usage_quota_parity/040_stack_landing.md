@@ -2,6 +2,13 @@
 
 ## Final integration pass
 
+Pre-merge freshness update: all four45f3-based integration runs passed, but published
+dev advanced to `09335d7d451335a74ad1c02e88ee37ef89f5a007` before landing. Its seven-file
+delta is the upstream CLI status split, adjacent regression and documentation. Preserve
+it verbatim through a normal merge and cascade, then require new exact-head/tree CI for
+all four layers. No quota behavior or prior review fix is replaced, and no historical
+passing run is relabeled as proof of the new integration tree.
+
 The user ended cross-task CI coordination and instructed the remaining tasks to proceed
 independently. Continue this stack without waiting for another task's START or sending it
 messages. No local tests, typecheck, build, lint or scan; the previously authorized
