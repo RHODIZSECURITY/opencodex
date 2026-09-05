@@ -3,7 +3,7 @@
 ## Loop spec
 
 - Archetype: pure-move, C3 CLI/module refactor; main owns the goal and persisted PABCD.
-- Goal: extract the existing health/stale-process probes while preserving status/doctor behavior and all original exports. Current base: `codex/fix-port-probe-peer-disposal` at `d2b4a81c61294c3c9ae7a2d58a01397167b120d0` (verified prerequisite PR #3640). The547-line base source still matches the original1362b1a38 inventory byte-for-byte.
+- Goal: extract the existing health/stale-process probes while preserving status/doctor behavior and all original exports. Implementation basis is `d2b4a81c61294c3c9ae7a2d58a01397167b120d0` from verified prerequisite PR #3640, now merged into `dev` as `ebb0e5e174e0cc035d4e7ffa668c25652bd1caca`. PR #3633 therefore keeps `dev` as its target. The547-line basis source still matches the original1362b1a38 inventory byte-for-byte.
 - Scope: MODIFY `src/cli/status.ts`, NEW `src/cli/status-probes.ts`, MODIFY existing `tests/cli/cli-status-json.test.ts` for forwarding assertions, and add the planned ownership row in `structure/01_runtime.md`. Unit documents and isolated verification evidence are included.
 - Non-goals: changed timing, liveness/refusal semantics, snapshots, rendering/schema, service/auth/runtime resolution, generic diagnostics, other S14 implementations, merges or releases.
 - Verifier: this document's remote-only Verification recipe, structural/export identity review, named mutation controls, and exact-head CI. No local suites.
@@ -171,7 +171,7 @@ Local checks are read-only: `git diff --check`, `wc -l src/cli/status-probes.ts 
 
 Title: `refactor(cli): isolate status health and stale-process probes (split S14 L1/3)`
 
-Branch: `codex/split-cli-status`. Base: `codex/fix-port-probe-peer-disposal` (PR #3640); retarget existing PR #3633 only in its allocated CI slot. Closes: none.
+Branch: `codex/split-cli-status`. Base: `dev`; verified prerequisite #3640 has landed. Existing PR #3633 already targets dev, so no retarget is necessary. Closes: none.
 
 Use every section of `.github/PULL_REQUEST_TEMPLATE.md` (Summary, Verification, Checklist); paste actual checks only. This table is the DEV-STACK-03 map; replace PR-number placeholders when created:
 
@@ -179,11 +179,11 @@ Use every section of `.github/PULL_REQUEST_TEMPLATE.md` (Summary, Verification, 
 |---|---|---|---|---|
 | 3 | #<S14-L3> | hub transport / codex/split-client-hub-client | dev | transport and error identity |
 | 2 | #<S14-L2> | provider readers / codex/split-cli-provider | dev | read handlers and argument parsing |
-| 1 | #3633 | status probes / codex/split-cli-status — this PR | codex/fix-port-probe-peer-disposal | diagnostic probes and old exports |
+| 1 | #3633 | status probes / codex/split-cli-status — this PR | dev (includes #3640) | diagnostic probes and old exports |
 
-Base is the separately verified maintenance prerequisite #3640. Other S14 layers remain independent; do not add their code. Preserve the parent branch while this child targets it, and recheck the child before a later retarget. No merge is authorized by this train.
+The implementation consumes separately verified prerequisite #3640, now on dev. Other S14 layers remain independent; do not add their code. Recheck the current dev integration tree before publication and landing. Admin landing after passing CI is authorized by USER-ADMIN-LANDING-01 in003.
 
-Review only this layer's diff. Other layers are not needed for its correctness; merges remain prohibited by the train's scope.
+Review only this layer's diff. Other S14 layers are not needed for correctness. The later user instruction authorizes admin landing after final-head CI and valid review closure; earlier no-merge wording below is historical.
 
 ## Initial P stale check and continuity (historical)
 
