@@ -29,6 +29,13 @@ commit `b37841448816107c856171277dff0464032d282e`, limited to the update-recover
 and its numbered record. Retain it as a fourth test-only stack layer. No new production
 behavior is planned. Any semantic conflict requires a concrete plan amendment and review.
 
+The UI cascade has one textual conflict in `gui/src/pages/Providers.tsx`: retain this
+unit's `useQuotaRefreshCoordinator(apiBase)` and upstream's `fetchConfig:
+refreshConfigResult` binding together. Keep the upstream void-returning `fetchConfig`
+adapter and result-aware `useProviderModelsNotice` caller unchanged. Existing quota epoch
+and registration-notice tests must both execute in the new CI. This composes the two
+existing contracts; it does not restore superseded unbounded refresh waiters.
+
 Preserve all original commits; use normal merge commits and fast-forward no-verify pushes,
 not rebases or force-pushes. Inspect each integration diff, check that inherited quota,
 registration and pricing semantics survive, and obtain independent review before publication.

@@ -353,6 +353,15 @@ retain their original timestamp and never trigger inference or token renewal. Un
 unobserved, failed and measured-zero readings remain distinct; multiple keys are not summed
 because they may share one upstream balance.
 
+Provider details use one account-quota reading renderer for Overview, Usage and Accounts/API
+keys. Current-account usage sits below usage statistics; a known-mode active row is authoritative
+even when empty, so a newly selected passive account cannot inherit a previous account's cached
+report. Pool reports project only `aggregation.currentAccount.quota` with its own timestamp;
+missing or malformed aggregation stays unknown rather than using total capacity. Shared states
+include credits-only and measured-zero readings, unsupported, unobserved, explicit pending and
+unavailable-with-last-good. Forced account/key enrichment settles before its control reports a
+completed check, and provider-report waiters are bound to the exact refresh epoch.
+
 `src/usage/log.ts` writes append-only JSONL to `~/.opencodex/usage.jsonl` with file mode `0o600`.
 An opt-in shadow-call rewrite persists the bounded, redacted original helper model as
 `shadowCallRewrittenFrom`, so helper traffic remains identifiable after restart without storing

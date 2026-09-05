@@ -59,6 +59,12 @@ jobs are still mandatory at landing, not claimed green. Next quota-api P reverif
 the unchanged quota/management baseline; attribution changes do not alter its signatures.
 API layer branch `codex/provider-account-quota-api` starts at the verified attribution head.
 
+Quota API D: `768e5a004`, PR #3584, run33940065554 all four backend shards/gates/API usage
+successful, including explicit credential isolation, passive no-network and post-await age
+regressions. Wegener full/interdiff review and Kant omitted-mode delta PASS. No local validation
+was executed. Next UI P reverified 030 against that additive row contract; remaining platform
+rollups remain mandatory before merge. UI branch `codex/provider-quota-parity` starts here.
+
 ## Delegation write map (locked before Build)
 
 User reiterated no local suites during quota-api A. No local test suite has been run;
@@ -69,5 +75,5 @@ CI result checks. This supersedes the earlier local-static/build verification al
 
 - Attribution cycle: Harvey owns `src/usage`, `src/router.ts`, the identified Chat/Messages error catches, `src/server/management/shared.ts`, and corresponding existing backend regression files. Main owns the provider model annotation/share/caching UI, its GUI regressions, docs, commits and CI. No overlapping writes.
 - Quota API cycle: Euclid owns quota readers/key-cache/types and relevant provider regression files. Main owns management route joins, API-route regressions and docs; clarify exact exported signatures before either writes.
-- Quota UI cycle: main owns report projection/current section; a bounded worker may own account hook/panel refresh and regression changes only after an explicit P amendment gives disjoint paths.
+- Quota UI cycle: main owns shared `types.ts`, `report.ts`, NEW ProviderAccountQuota/ProviderCurrentQuota, ProviderDetails/Overview/Usage, all locale keys, public docs and direct shared-renderer regression. Harvey owns useProviderAccountPools, Providers page refresh coordinator, shell refresh callback epoch, ProviderAuthPanel and focused hook/refresh regressions. Worker may read shared contracts but never edit them. No overlapping writes or local validation.
 - Independent Kant audits plans read-only; fresh independent final implementation review remains required. No worker changes FSM, goals, branches, commits or remote state, and no worker runs local tests.

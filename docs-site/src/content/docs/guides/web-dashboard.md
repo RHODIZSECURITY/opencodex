@@ -109,6 +109,14 @@ vendor's model price alone is not enough to estimate cost; an exact provider or 
 still applies. Model shares are calculated within the selected provider. Requests for an unknown
 reserved `policy/` name now fail before reaching an upstream provider; historical usage is retained.
 
+The selected provider's **Overview** and **Usage** tabs show **Current account usage** below the
+usage statistics. **Accounts** and **API keys** show each supported credential's own quota,
+including credit balances. The provider-wide overview still shows pooled capacity where available;
+it is not substituted for a missing current-account reading. Unsupported lookup, no passive
+observation yet, loading, failed lookup with last-known values, and measured zero are separate
+states. **Quota check completed** means the read settled—not that a passive observation became
+new or that every upstream measurement was refreshed.
+
 ## Model visibility
 
 The **Models** switches show final Codex visibility: a routed model is on only when its provider allowlist includes it (or no allowlist is set) and it is not disabled. Turning a model on reconciles both filters atomically; **All on** clears the provider allowlist so newly discovered models are also on.
