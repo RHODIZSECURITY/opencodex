@@ -1,0 +1,285 @@
+# 450 — S14 L1 — CLI status probe extraction
+
+## Loop spec
+
+- Archetype: pure-move, C3 CLI/module refactor; main owns the goal and persisted PABCD.
+- Goal: extract the existing health/stale-process probes while preserving status/doctor behavior and all original exports. Current base: `codex/fix-port-probe-peer-disposal` at `d2b4a81c61294c3c9ae7a2d58a01397167b120d0` (verified prerequisite PR #3640). The547-line base source still matches the original1362b1a38 inventory byte-for-byte.
+- Scope: MODIFY `src/cli/status.ts`, NEW `src/cli/status-probes.ts`, MODIFY existing `tests/cli/cli-status-json.test.ts` for forwarding assertions, and add the planned ownership row in `structure/01_runtime.md`. Unit documents and isolated verification evidence are included.
+- Non-goals: changed timing, liveness/refusal semantics, snapshots, rendering/schema, service/auth/runtime resolution, generic diagnostics, other S14 implementations, merges or releases.
+- Verifier: this document's remote-only Verification recipe, structural/export identity review, named mutation controls, and exact-head CI. No local suites.
+- Stop: all layer criteria actually verified, PR ready and evidence recorded; close D and immediately continue the remaining goal. Do not stop merely on a wait timeout.
+- Resource scope: local source/docs/Git and configured origin PR/CI maintenance; isolated SSH `lidge` checks. Existing configured credentials only, never printed. User authorized unbounded time/tokens and gpt-6-astra high delegation; no live-proxy/service changes.
+- Delegation: one worker owns only the two source paths and existing test; main owns SoT/docs/Git/remote checks. Independent audit and check review are read-only. Main reclaims a packet after two distinct failed workers; new write scope requires a P amendment.
+- Bounds: planned source churn is below500 and non-move wiring/tests below150 under003. Stale symbols, new cycles, oversized leaves or semantic changes require re-planning, not silent waivers.
+
+Structural decision: lane 016:390–401 identifies probes behind `collectStatus` as the seam. Current map is `src/cli/index.ts:51` / `src/cli/doctor.ts:15` / two test importers → `status.ts` → process-state, liveness and diagnostics dependencies (`status.ts:1–21`). Intended map is the same consumers → retained status boundary → `status-probes.ts` → the existing process-state/liveness/HTTP/process-control owners. Blast radius is the CLI diagnostic feature, not server lifecycle. Doing nothing leaves 547 lines; deleting or configuring cannot remove required diagnostics; reusing an unrelated probe would change semantics. Move the existing implementation intact, not a new abstraction. Existing `src/cli/status-oauth.ts:1` and `src/cli/version-skew.ts` establish the concern-named sibling convention.
+
+## Symbol inventory
+
+Ranges were checked with `git show origin/dev:src/cli/status.ts | nl -ba` and ast-grep declaration ranges. They include syntax, not preceding comments. Every owned top-level declaration is listed; imported bindings are dependencies, not new declarations. Consumer counts are distinct **external importing files**: `rg -l -w '<symbol>' src gui/src scripts tests`, then inspect the hits for imports resolving to this file and exclude the defining file. Private symbols therefore have zero external consumers. `ListenTarget` in PowerShell and `collectStatus` in a capabilities comment are not importers. File fan-in: **4** (2 production, 2 tests).
+
+Aliases: `P` = `src/cli/status-probes.ts` (new); `R` = `src/cli/status.ts` (residual).
+
+| symbol | kind | lines start–end | exported? | consumers (count from rg) | target leaf |
+|---|---|---|---|---:|---|
+| HealthCheck | type | 23–30 | no | 0 | P |
+| CliStatusJson | type | 32–106 | yes | 0 | R |
+| CliStatusView | type | 108–112 | yes | 0 | R |
+| ListenTarget | type | 115–121 | yes | 0 | P |
+| StatusListenConfig | type | 123–123 | no | 0 | R |
+| statusDashboardUrl | function | 125–136 | no | 0 | R |
+| selectListenTarget | function | 138–153 | yes | 1 | R |
+| resolveStatusPid | function | 156–161 | yes | 1 | R |
+| proxyHealthFailureReason | function | 163–167 | yes | 1 | P |
+| isConnectionRefused | function | 175–185 | yes | 1 | P |
+| isUncleanExitEvidence | function | 214–230 | yes | 1 | P |
+| unusedProxyWarningLines | function | 244–253 | yes | 2 | R |
+| checkProxyHealth | async function | 255–280 | no | 0 | P |
+| probeUncleanExitState | async function | 295–331 | yes | 1 | P |
+| collectStatus | async function | 333–547 | yes | 1 | R |
+
+The one-consumer predicates resolve to `tests/cli/cli-status-json.test.ts:9`; `probeUncleanExitState` to `src/cli/doctor.ts:15`; `collectStatus` to `src/cli/index.ts:51`. `unusedProxyWarningLines` has that index consumer plus `tests/service/autostart-health.test.ts:3`.
+
+## Leaf partition
+
+1. **`src/cli/status-probes.ts` — 168 lines, ceiling 400.** Own `HealthCheck`, `ListenTarget`, `proxyHealthFailureReason`, `isConnectionRefused`, `isUncleanExitEvidence`, `checkProxyHealth`, `probeUncleanExitState`. Relocate source ranges **23–31, 115–122, 163–231, 255–331**, including all attached comments: 9 + 8 + 69 + 77 = **163 relocated lines**. The former separator at332 is omitted at the new file's EOF so `git diff --check` stays clean; count that one blank-line deletion as non-move formatting, not a declaration/body change. Export `checkProxyHealth` only for its production caller in the residual; do not add it to the old public surface. `HealthCheck` stays private. Own imports (four lines plus one separator):
+
+   ```ts
+   import { readPidFileValue, readRuntimePort } from "../config/process-state";
+   import { isOpencodexHealthz, probeHostname } from "../server/proxy-liveness";
+   import { directLocalHttpFetch } from "../server/direct-local-http";
+   import { isProcessAlive } from "../lib/process-control";
+   ```
+
+2. **Residual `src/cli/status.ts` — 384 lines, ceiling 400.** Retain all R declarations and their implementation verbatim. Remove import lines6 and10; remove only `readPidFileValue` from line3 and `isOpencodexHealthz` from line5. Keep `readRuntimePort`, `RuntimePortState`, `findLiveProxy`, and `probeHostname`: the assembler/listen selector still uses them. Keep every other original import. Add the three lines below. Accounting: **547 − 163 relocated − 1 terminal separator − 2 imports + 3 wiring = 384**; leaf163 +5 =168; aggregate552 = original547 +6 wiring −1 separator. No #b is needed.
+
+Owner search: `rg -n 'checkProxyHealth|isUncleanExitEvidence|probeUncleanExitState' src/cli src/server` identifies this implementation and its callers, not an interchangeable existing leaf. Preserve the existing `directLocalHttpFetch` owner instead of copying transport. Expected ordinary numstat churn is about 340 source lines (move deletion/addition plus wiring), below 500; measure the actual parent-relative diff before publication.
+
+## Re-export block
+
+Exact additions to the original file, one physical line each:
+
+```ts
+export { proxyHealthFailureReason, isConnectionRefused, isUncleanExitEvidence, probeUncleanExitState } from "./status-probes";
+export type { ListenTarget } from "./status-probes";
+import { checkProxyHealth, probeUncleanExitState, type ListenTarget } from "./status-probes";
+```
+
+`CliStatusJson`, `CliStatusView`, `selectListenTarget`, `resolveStatusPid`, `unusedProxyWarningLines`, and `collectStatus` remain exported declarations in the original. No wildcard exports, wrappers, aliases or new `index.ts`. The existing public-path compatibility requirement explicitly calls for a residual with named re-exports; this is not a new internal convenience barrel. Re-export does not bind `probeUncleanExitState` or `ListenTarget` locally, hence the explicit import.
+
+## Module-level state and cycles
+
+No top-level `let`, mutable Map/Set/WeakMap/WeakSet, lock or timer exists in the source (lane 016:396, rechecked declaration inventory). The loop variables at `status.ts:176` and `AbortController` / timer at 257–258 are invocation-local, owned by the moved functions; `clearTimeout` at 278 stays in `finally`. No duplicated process-state cache is introduced.
+
+Keep the `ListenTarget` type with the probe so the probe never imports the residual, even type-only. Keeping that type only in the residual would create `status.ts → status-probes.ts → status.ts`; this partition avoids it. R → P is functional coupling. The before/after process-record reads (301–303 and 318–320) and refusal probe (311) have existing temporal coupling; keep them together in P, not split into independently cached helpers. No callback, lazy-import workaround or copied singleton is needed.
+
+Lane 016:397 reports no return cycle through the current module. During implementation re-run its method G (AST relative import/export and literal dynamic-import resolution, including type edges) over the changed closure; require no return path through R or P. The leaf has exactly the four imports listed above. `PROTECTED` roots in `tests/lab/core-lab-boundary.test.ts` remain untouched; this layer edits no server/router/lib source.
+
+## Tests
+
+Exact direct-test `rg -l 'cli/status["\x27]' tests` list:
+
+| test file | source anchor | disposition |
+|---|---|---|
+| tests/service/autostart-health.test.ts | import at 3 | unchanged; original public path |
+| tests/cli/cli-status-json.test.ts | import at 9 | unchanged; original public path exercises re-exports |
+
+Source-oracle audit: no test reads **`src/cli/status.ts`** as source after basename, qualified-path and split path-segment searches. `tests/cli/cli-json-contract.test.ts:22` is its source-read helper, but the status assertion at 26 reads **`src/cli/index.ts`**; unchanged. There is no `retarget-to-leaf` or `add-leaf-to-scan-list` action for this layer. Subprocess consumers in cli-status-json (`cliPath` at 14, spawn at 17) remain pointed to the executable entry, not the leaf.
+
+Guards to drive red once in a disposable remote checkout, then restore before green: change the moved `isUncleanExitEvidence` refusal check corresponding to old line 225 and observe `tests/cli/cli-status-json.test.ts:445` fail; change the old line-227 before/after predicate and observe its line-449 case fail. Confirm the end-to-end recorded-port case at 564 still exercises the shared gatherer. These are planned negative controls, not results claimed by this document. Do not weaken assertions or redirect behavior tests away from the public boundary.
+
+
+### Regression and SoT additions
+
+Add a small test to existing `tests/cli/cli-status-json.test.ts`: import the facade namespace and the leaf's existing forwarded probes; assert the four forwarded function bindings have identical identity and `checkProxyHealth` is absent from the original runtime namespace. Preserve all original assertions. Typecheck and the export inventory cover the three type exports. No new test file or layout-registry change is needed.
+
+MODIFY `structure/01_runtime.md` by inserting this ownership row immediately after its existing `src/config/process-state.ts` row; no other runtime prose changes:
+
+| Path | Responsibility |
+|---|---|
+| `src/cli/status.ts` / `src/cli/status-probes.ts` | Status snapshot assembly and the shared read-only health/stale-process probes used by status and doctor. Probe evidence keeps recorded-port choice, before/after snapshots and per-call timer cleanup together. |
+
+## Verification
+
+Run this Bash recipe from the bound a2c0 checkout at C after the clean layer head is published. The session id is this task's binding; other tasks use their own newest binding. All Bun commands are remote. The receipt command checks local identity before/after SSH, creates a fresh remote clone, matches the fetched branch head, and propagates command/logging failures.
+
+```bash
+set -euo pipefail
+wp450_root=$(git rev-parse --show-toplevel)
+wp450_expected=$(git rev-parse HEAD)
+wp450_status=$(git status --porcelain)
+test -z "$wp450_status"
+wp450_log="$wp450_root/.codexclaw/evidence/01a06e97-b9d8-7250-8204-bb788338c288/wp450-remote-check-$wp450_expected.log"
+mkdir -p "$(dirname "$wp450_log")"
+cxc receipt test --cwd "$wp450_root" --session 01a06e97-b9d8-7250-8204-bb788338c288 -- bash -c '
+set -euo pipefail
+test "$(git rev-parse HEAD)" = "$1"
+local_status=$(git status --porcelain)
+test -z "$local_status"
+ssh lidge bash -s -- "$1" 2>&1 | tee "$2"
+test "$(git rev-parse HEAD)" = "$1"
+local_status=$(git status --porcelain)
+test -z "$local_status"
+' -- "$wp450_expected" "$wp450_log" <<'REMOTE'
+set -euo pipefail
+expected=${1:?expected SHA required}
+[[ "$expected" =~ ^[0-9a-f]{40}$ ]]
+run_dir=$(mktemp -d /tmp/ocx-wp450.XXXXXX)
+printf 'RETAINED_RUN_DIR=%s\n' "$run_dir"
+git clone --no-checkout https://github.com/lidge-jun/opencodex.git "$run_dir/repo"
+cd "$run_dir/repo"
+git fetch origin refs/heads/codex/split-cli-status
+test "$(git rev-parse FETCH_HEAD)" = "$expected"
+git checkout --detach "$expected"
+bun install --frozen-lockfile
+export PATH="$PWD/node_modules/.bin:$PATH"
+test "$(bun --version)" = 1.4.0
+(cd gui && bun install --frozen-lockfile && bun run build)
+tree_status=$(git status --porcelain)
+test -z "$tree_status"
+printf 'CHECKOUT=%s\nHEAD=%s\n' "$PWD" "$(git rev-parse HEAD)"
+unset OCX_TEST_NO_QUEUE
+bun run typecheck
+bun test tests/cli/cli-status-json.test.ts tests/service/autostart-health.test.ts tests/cli/cli-json-contract.test.ts
+bun run privacy:scan
+if bun run test; then
+  test_rc=0
+else
+  test_rc=$?
+fi
+printf 'SUITE_EXIT=%s\n' "$test_rc"
+if [ "$test_rc" -ne 0 ]; then exit "$test_rc"; fi
+test "$(git rev-parse HEAD)" = "$expected"
+tree_status=$(git status --porcelain)
+test -z "$tree_status"
+printf 'VERIFIED_HEAD=%s\n' "$expected"
+REMOTE
+```
+
+Local checks are read-only: `git diff --check`, `wc -l src/cli/status-probes.ts src/cli/status.ts`, and importer discovery with `rg`. Require the original four direct consumers and all11exports; resolve static/re-export/type/literal-dynamic edges for cycle proof. The three focused files include subprocess/source-oracle coverage; full-suite output and exact-head CI are additionally required. No protected root is edited. Record actual exits and output; the recipe is not evidence of a pass by itself.
+
+## Accept criteria
+
+1. All 15 owned declarations are assigned once; the moved bodies/comments are unchanged except necessary `export` keywords.
+2. `wc -l` returns ≤400 for both paths (P=168, R=384 after the explicitly accounted terminal-separator cleanup); actual parent-relative source churn ≤500, or stop for parent re-plan.
+3. The original 11 exports remain importable with identical signatures; `checkProxyHealth` and `HealthCheck` are not added to the original export surface.
+4. Original consumer paths and the two test imports are unchanged; method G finds no cycle involving either changed module.
+5. Probe timers remain per-call, cleanup stays in `finally`, recorded-port choice and both snapshots stay in the same gatherer; negative controls go red and restored focused checks/typecheck/privacy pass.
+6. Remote full suite and exact-head CI are green for this layer independently. Only the two source files, named existing test, planned SoT row and unit documents enter its PR; no upper-layer implementation or merge.
+
+## PR
+
+Title: `refactor(cli): isolate status health and stale-process probes (split S14 L1/3)`
+
+Branch: `codex/split-cli-status`. Base: `codex/fix-port-probe-peer-disposal` (PR #3640); retarget existing PR #3633 only in its allocated CI slot. Closes: none.
+
+Use every section of `.github/PULL_REQUEST_TEMPLATE.md` (Summary, Verification, Checklist); paste actual checks only. This table is the DEV-STACK-03 map; replace PR-number placeholders when created:
+
+| # | PR | Layer / branch | Base | Review focus |
+|---|---|---|---|---|
+| 3 | #<S14-L3> | hub transport / codex/split-client-hub-client | dev | transport and error identity |
+| 2 | #<S14-L2> | provider readers / codex/split-cli-provider | dev | read handlers and argument parsing |
+| 1 | #3633 | status probes / codex/split-cli-status — this PR | codex/fix-port-probe-peer-disposal | diagnostic probes and old exports |
+
+Base is the separately verified maintenance prerequisite #3640. Other S14 layers remain independent; do not add their code. Preserve the parent branch while this child targets it, and recheck the child before a later retarget. No merge is authorized by this train.
+
+Review only this layer's diff. Other layers are not needed for its correctness; merges remain prohibited by the train's scope.
+
+## Initial P stale check and continuity (historical)
+
+Previous D: WP400 closed at `bbf8d3cd` with ready PR #3611, current-head CI and a clean remote receipt. Its remaining facade work belongs to WP410. WP450 is independent and uses pinned dev commit `9fe986d84a598aa08eeef7731b9a50fa0ff6ab07`.
+
+`git diff 1362b1a38 9fe986d84 -- src/cli/status.ts` is empty; all original ranges remain valid. Main read the complete source, direct doctor/test consumers, sibling status-oauth/version-skew conventions and Runtime SOT. `cxc map src/cli` confirms the listed declarations. No existing status-probes module was present.
+
+The isolated parent baseline on lidge passed typecheck, the three named focused files (49 pass / 0 fail), privacy, and final HEAD/clean-tree checks. Full suite was not run for this baseline and remains a final layer gate. Complete output: `.codexclaw/evidence/01a06e97-b9d8-7250-8204-bb788338c288/wp450-baseline.log`. The recipe passed Bash syntax checking. No local suite ran; resulting-head verification remains pending.
+
+## Initial A audit outcome (historical)
+
+Hooke independently verified all 15 declaration ranges, 164 moved lines, virtual 169/384-line files, complete/minimal leaf imports, exact residual wiring and all 11 public names. The candidate graph has no facade/leaf return cycle (363 modules / 44 inline-import edges). Held-port and mid-probe snapshot negative controls discriminate by inspection, and the recorded-port integration scenario remains intact. Verdict: PASS.
+
+Wegener's independent operational review passed the verifier and all 29 documented dependency edges. Comparing the archived proposal with the goalplan confirmed all 78 work-phase objects are deeply unchanged by ID; only pending WP580 moved before WP590. No runtime result is inferred from these static reviews.
+
+## Initial B implementation record (historical)
+
+Carver implemented the two source paths and existing test only. Main added the planned Runtime SOT row. `status.ts` now has384lines and `status-probes.ts`168; both are below400. The new test adds four forwarding-identity assertions and excludes the private health helper from the facade; all original test lines remain.
+
+The initially preserved terminal separator produced a new-file whitespace-check failure. Main removed only that blank EOF line and amended the accounting above before proceeding:163relocated lines, one non-move separator deletion, source churn341lines and total non-move wiring/test churn25lines. Declaration signatures, bodies and comments are unchanged apart from the required export modifier. Worker static AST checks verified all15owners,11facadeexports, bindings and absence of return cycles. Main reviewed the source/test diff and ran `git diff --check` with the new file included; it passed. No local tests, typecheck or installs ran.
+
+Changes by file: `src/cli/status-probes.ts` owns the existing probes; `src/cli/status.ts` retains assembly and forwards the old API; `tests/cli/cli-status-json.test.ts` adds the identity regression; `structure/01_runtime.md` names the two owners. Resulting-head runtime checks, mutation controls and independent C review remain to be completed.
+
+## Resumed P after prerequisite completion
+
+WP445 closed through D at d2b4a81c61294c3c9ae7a2d58a01397167b120d0, with
+ready PR #3640, current-head hosted CI and a clean remote full-suite receipt.
+This is a verified prerequisite, not a modularization-row completion. Detailed
+investigation remains outside public devlog.
+
+The same a2c0 checkout now resumes WP450. The old4a71894f implementation and
+remote PR #3633 head are preserved. Local restack onto the verified parent
+produced ae6ef3d64eb03b864d98ed07b2d02a46858fe400 before this plan amendment.
+Only two documentation conflicts occurred: retain the updated000 verification
+row and both Runtime ownership rows. The source and status-test files are
+byte-identical to the previous4a71894f implementation; parent-relative source
+scope and sizes remain341churn,384/168lines,15owners and11exports.
+
+The checkpoint branch retains4a71894f. A configured rebase update-refs option
+initially moved that newly created checkpoint alongside the working branch;
+Main restored only its own checkpoint ref with a compare-and-swap update.
+Future restacks explicitly disable update-refs to preserve unrelated refs.
+No source conflict or original implementation change was introduced.
+
+The initial base-source comparison remains valid: the status source and three
+focused-test files have no change between9fe986d84 and the new parent d2b4a81c.
+This does not replace a new dependency-graph audit or current-head execution.
+The verifier above now pins package Bun1.4.0 and builds the packaged dashboard
+before tests. It still preserves complete logs, exit codes, clean expected
+HEAD checks and the same session binding.
+
+Re-audit the resumed layer, preserve the existing implementation, and publish
+the restack only in its assigned CI slot. PR #3633 must target #3640's branch
+before new-head checks are accepted. Reconfirm the old remote4a71894f head
+before an explicit force-with-lease; do not overwrite another owner's push.
+Record fresh remote/CI proof for the restacked head, not the old successful
+remote result or failed hosted result. No local suites, merge or release.
+
+## Resumed A outcome
+
+Hooke verified51import/re-export bindings, all11public exports, and a fresh
+363-module/44-inline-edge graph with no return cycle through either changed
+status module. Original source/test blobs match4a71894f; sizes384/168 and
+source churn341 remain unchanged. Verdict: PASS.
+
+Wegener independently verified the parent ancestry, baseline and implementation
+blob identities, checkpoint restoration, identical document/script recipe,
+receipt-internal SHA/clean checks, Bun1.4.0 setup and serialized publication
+plan. WP445's genuine D close and WP450's active cursor were confirmed.
+Verdict: PASS. Neither review is runtime verification of the restacked head.
+
+## Resumed B integration
+
+The already-built layer is retained exactly rather than reimplemented. Main
+verified the rebased source/test blobs against4a71894f and the approved
+parent-relative five-path scope. Only the documented conflict resolutions
+and current plan/verification amendments changed during integration. No new
+behavior or test assertion was added. Fresh C evidence remains required;
+the branch is not published until the coordinator assigns its CI slot.
+
+## Phase-correct reconstruction
+
+SOURCE-DELTA-01 rejected C entry because the prior integration had carried
+already-built code into B rather than applying the move during that B. No
+source or verification state was fabricated. Main returned to P and preserved
+the complete audited candidate at `codex/status-restack-candidate-d8671a8c`
+(d8671a8cb3073286b790d43f1a760696add37be9), plus the original4a71894f checkpoint.
+The physical worktree was not moved or recreated.
+
+The working branch is reconstructed from the same verified parent d2b4a81c,
+initially carrying only this approved plan. Re-audit this execution change;
+then apply the already-reviewed three source/test file states and the single
+Runtime row during B using apply_patch. Match the preserved candidate's blobs
+exactly. This creates the intended real parent-relative source delta inside
+B without inventing a new behavior or a comment-only change. B→P is not a
+supported transition in this CLI, so the unfinished cycle was explicitly
+reset to IDLE and restarted at P with goal, work-phase and evidence retained.
+This reset is not completion; all P/A/B/C gates must run again. All current-head
+checks, lease protection, privacy constraints and CI scheduling remain intact.
