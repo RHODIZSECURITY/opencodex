@@ -21,11 +21,11 @@ Preserve the WP480 docs-only head `ddb7013ac0c58e513c651d54a96e07f52ac0efbe` and
 The original 68-file plan has17done/1in-progress/61pending work-phases; these counts are not file-resolution counts and are not rewritten as completed.
 An existing native host goal cannot be replaced by the exposed create/update tools. This separate goalplan records the user-directed scope replacement; it is not a claim that a new native host goal was created or the old objective achieved.
 
-## Publication decision — requires user confirmation
+## Publication decision — confirmed by user
 
-Recommended: preserve original PRs/branches, rebase new local staging refs, and deliver all reviewed contents through one standalone aggregate PR. After verified landing, close the originals as superseded, not individually merged.
-This is materially different from independently landing14PRs. Do not perform that disposition or assume aggregate publication authority until the user confirms. If individual PR landing is required, retain that topology and its corresponding verification; top-only CI cannot certify intermediate layers.
-No source rebase/implementation or external publication has occurred under this proposal.
+The user explicitly confirmed preserving original PRs/branches, rebasing new local staging refs, and delivering the reviewed contents through one standalone aggregate PR. After verified landing, close the originals as superseded, not individually merged. Do not ask for that choice again.
+The user additionally requires at least two complete main-to-dev regression PABCD cycles. Cycle1 follows810: local rebases, consolidation and first baseline/candidate regression proof, with no publication. Cycle2 follows820: an independent pinned-main export-contract guard, second regression pass and final-head-only publication/admin delivery. Two CHECK invocations or a docs-only cycle do not meet this requirement.
+No source rebase/implementation or external publication has occurred yet. Original unfinished debt remains deferred, not completed.
 
 ## Exact inventory
 
@@ -48,7 +48,7 @@ No source rebase/implementation or external publication has occurred under this 
 
 All local original heads matched the GitHub inventory. The13 existing associated temporary worktrees were clean; #3611 has no checked-out worktree. Recheck ownership before any write.
 
-## Build procedure after approval
+## Overall procedure and cycle boundary
 
 1. Preserve original refs with immutable checkpoint refs and a manifest. Keep original branches unchanged; use staging refs rather than rewriting originals checked out elsewhere. Stay in the existing a2c0 worktree for aggregate source, FSM and receipts.
 2. For each root, create its staging ref at the recorded original head in a task-owned checkout. Rebase locally with `git -c core.hooksPath=/dev/null -c rebase.updateRefs=false rebase --onto <pinned-dev> <recorded-replay-boundary> <staging-ref>`. No push.
@@ -58,7 +58,7 @@ All local original heads matched the GitHub inventory. The13 existing associated
 6. Merge the staged results into `codex/closeout-split-train` in a2c0, parent before child. This is the actual B source delta. Record old PR/head → staged head → included aggregate ancestry/content.
 7. Include reviewed public-safe accumulated devlog, including WP450 delivery/post-merge proof and the deferred WP480 plan. Do not copy .codexclaw, .tmp, secrets, or undisclosed security working material into tracked docs.
 8. Freeze candidate source and documentation before publication. Transfer unpublished commits to isolated remote checkouts with a Git bundle and exact SHA verification; do not push intermediate heads merely to test them.
-9. Repair only demonstrated regressions, rerun affected remote checks, then run final full gates and independent review at the final candidate. Re-check current dev before final publication and revalidate any changed integration input.
+9. Close cycle1 only after real first-pass regression evidence. In cycle2, add the independently sourced guard specified in820, repair only demonstrated regressions, and run second-pass/final full gates with independent review. Re-check current dev before final publication and revalidate changed integration input.
 10. Publish only the stabilized aggregate head, create the templated PR and observe its actual CI. Necessary corrective commits get fresh final-head checks; no workflow disabling, skip-ci camouflage, blind retries, or cancelled-check reuse.
 11. After actual success and valid review closure, use admin merge with explicit expected-head matching. Verify actual merge tree equals the tested integration tree and fetch dev to prove ancestry. Observe normal final merged-dev CI; the final-head policy does not suppress this automatic run.
 12. Only after delivery proof, reconcile original PRs using the confirmed disposition and record the cutoff result. Keep residual/unimplemented debt visible.

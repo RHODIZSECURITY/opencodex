@@ -1,7 +1,8 @@
 # 801 — Cutoff regression evidence matrix
 
-This is the verification sub-document of800, not another implementation phase.
-All rows are currently pending; no prior split CI certifies a rebased candidate.
+This is the shared verification matrix for the distinct810and820 work-phases.
+Each has a full P/A/B/C/D history and its own fresh evidence. All rows are
+currently pending; no prior split CI certifies a rebased candidate.
 
 | Comparison/surface | Required proof | Failure disposition |
 |---|---|---|
@@ -15,6 +16,7 @@ All rows are currently pending; no prior split CI certifies a rebased candidate.
 | Dashboard/package | Pinned build, existing component tests/lint, isolated served smoke where the main→dev UI delta requires runtime proof | No global service changes or real user account mutation |
 | Final exact head | Remote build/typecheck/full-suite and relevant focused gates, negative controls for changed guards, clean source-bound receipt; actual hosted CI | Failure/cancellation is not PASS; no intermediate publication to obtain evidence |
 | Actual merged dev | Expected-head admin merge, tested-tree equality, fetched ancestry, normal post-merge CI and final review disposition | Any new discrepancy remains work; do not announce completed regression closure |
+| Two-cycle requirement | Cycle1 baseline/current-dev/candidate comparison; cycle2 independent main-export guard plus adversarial second comparison and actual merged-dev proof | Repeating one CHECK or replaying old logs does not count |
 
 The main baseline uses its own package/lockfile and test runner, not a silently
 substituted dev harness. At the pinned main, Bun is1.4.0, `bunfig.toml` roots
