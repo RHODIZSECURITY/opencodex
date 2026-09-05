@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { initialModelSelection } from "../providers/initial-model-selection";
 import { extractAccountId } from "../oauth/chatgpt";
 import { formatErrorResponse } from "../bridge";
 import {
@@ -798,6 +799,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   models: "editor",
   liveModels: "editor",
   selectedModels: "editor",
+  initialModelSelection: "runtime",
   retainModels: "editor",
   newModelPolicy: "editor",
   modelPreset: "editor",
@@ -1002,6 +1004,8 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     if (name === "xai") {
       dto.xaiResponsesOptInState = xaiResponsesOptInState(provider);
     }
+    const selection = initialModelSelection(provider);
+    if (selection) dto.initialModelSelection = selection;
     providers[name] = dto;
   }
   return {
