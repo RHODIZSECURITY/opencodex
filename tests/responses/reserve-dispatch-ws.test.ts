@@ -92,7 +92,7 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
       const guard = createCodexReserveDispatchGuard(ctx, config, "gpt-reserve", { source: "loopback" }, true);
       expect(guard).toBeDefined();
       const fallback = Object.assign(async () => { fallbacks++; return new Response("unexpected fallback"); }, { preconnect() {} });
-      const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+      const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", undefined, guard);
       const observed = pending.then(
         response => ({ status: "fulfilled" as const, response }),
         (error: unknown) => ({ status: "rejected" as const, error }),
@@ -101,6 +101,9 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
       const socket = DelayedWebSocket.instances[0]!;
       config.codexDesktopAuthless = enabledAtOpen;
       socket.dispatchEvent(new Event("open"));
+      if (!enabledAtOpen) socket.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ type: "response.created", response: { id: "fixture-response" } }),
+      }));
       const outcome = await observed;
       if (enabledAtOpen) {
         expect(outcome.status).toBe("rejected");
@@ -132,7 +135,7 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     expect(guard).toBeDefined();
     let fallbacks = 0;
     const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
-    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", undefined, guard);
     const observed = pending.then(
       () => ({ status: "fulfilled" as const }),
       (error: unknown) => ({ status: "rejected" as const, error }),
@@ -157,9 +160,12 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     expect(guard).toBeDefined();
     let fallbacks = 0;
     const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
-    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", undefined, guard);
     const socket = DelayedWebSocket.instances[0]!;
     socket.dispatchEvent(new Event("open"));
+    socket.dispatchEvent(new MessageEvent("message", {
+      data: JSON.stringify({ type: "response.created", response: { id: "fixture-response" } }),
+    }));
     const response = await pending;
     expect(response.status).toBe(200);
     expect(socket.sent).toHaveLength(1);
@@ -172,7 +178,7 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     const refusal = new Error("local permission refused");
     let fallbacks = 0;
     const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
-    await expect(codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", () => { throw refusal; }))
+    await expect(codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", undefined, () => { throw refusal; }))
       .rejects.toBe(refusal);
     expect(DelayedWebSocket.instances).toHaveLength(0);
     expect(fallbacks).toBe(0);
@@ -186,7 +192,7 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     let checks = 0;
     let fallbacks = 0;
     const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
-    const pending = codexWsUpstreamFetch(URL, init(abort.signal), fallback, "1.4.0", headers => {
+    const pending = codexWsUpstreamFetch(URL, init(abort.signal), fallback, "1.4.0", undefined, headers => {
       expect(headers.get("authorization")).toBe("Bearer fixture-reserve");
       expect(headers.get("chatgpt-account-id")).toBe("fixture-workspace");
       if (++checks === 2) throw refusal;
@@ -212,18 +218,36 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     removeAbort.mockRestore();
   });
 
-  test("allowed handshake and create dispatch one frame using the actual handshake credential", async () => {
+  test("allowed dispatch preserves the handshake guard and separate live quota observer", async () => {
     install();
     const seen: string[] = [];
+    const quotaValues: string[] = [];
     let fallbacks = 0;
     const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
     const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", headers => {
+      quotaValues.push(headers.get("x-codex-primary-used-percent")!);
+    }, headers => {
       seen.push(headers.get("authorization")!);
     });
     const socket = DelayedWebSocket.instances[0]!;
     socket.dispatchEvent(new Event("open"));
+    expect(quotaValues).toEqual([]);
+    expect(seen).toEqual(["Bearer fixture-reserve", "Bearer fixture-reserve"]);
+    socket.dispatchEvent(new MessageEvent("message", {
+      data: JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 37 } } }),
+    }));
+    socket.dispatchEvent(new MessageEvent("message", {
+      data: JSON.stringify({ type: "response.created", response: { id: "fixture-response" } }),
+    }));
     const response = await pending;
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-codex-primary-used-percent")).toBe("37");
+    expect(quotaValues).toEqual(["37"]);
+    socket.dispatchEvent(new MessageEvent("message", {
+      data: JSON.stringify({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 49 } } }),
+    }));
+    expect(quotaValues).toEqual(["37", "49"]);
+    expect(response.headers.get("x-codex-primary-used-percent")).toBe("37");
     expect(seen).toEqual(["Bearer fixture-reserve", "Bearer fixture-reserve"]);
     expect(socket.sent).toHaveLength(1);
     expect(JSON.parse(socket.sent[0]!)).toMatchObject({ type: "response.create", model: "gpt-reserve" });
