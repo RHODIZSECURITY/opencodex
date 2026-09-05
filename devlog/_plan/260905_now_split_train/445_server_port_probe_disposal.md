@@ -167,3 +167,27 @@ Remote RED must be repeated at an allocated CI handoff before source changes.
 The wrapper also used unavailable remote `rg` after the run; its final marker
 check now uses grep. Neither the wrapper exit127 nor the two wrong-reason
 failures count as a valid regression result.
+
+The corrected fixture was then moved to a private module constant so the test
+callback stays15lines rather than embedding a long script in a function. The
+child reads only the two explicitly supplied argv entries. Existing11cases
+and all instrumentation/behavior assertions remain intact.
+
+RED2 is valid: explicit Bun1.4.0 ran both new cases in98ms; interception,
+rejection absence and close registration passed, then both cases failed at
+`probe must destroy both accepted peers`, actual `[false,false]` versus
+`[true,true]`. Test exit1 and wrapper exit0 with the expected-RED marker are
+recorded in `wp445-short-red2.log`. Original production source remained
+unchanged. Stage2 is now authorized to implement only the planned two-site
+disposal correction. Green verification still awaits an allocated slot.
+
+Stage2 implementation adds a six-line private `createProbeServer` and replaces
+the two existing factory calls: source +10/−2, now171lines. It attaches the
+socket-error disposal handler before immediate destroy and leaves success in
+the existing server-close callbacks. Worker static review preserves all nine
+exports/imports and bind-error/timeout/fallback/reserved-port logic. Main
+inspected the complete diff and whitespace checks pass. The existing test
+file now235lines (+100/−0 versus base), with all11original tests preserved and
+a15line regression callback. Main added the single Runtime ownership row.
+No local runtime tests ran. C must still establish restored GREEN, real-socket
+controls, full gates, current-head CI and independent review before completion.
