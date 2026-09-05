@@ -148,12 +148,12 @@ jobs:
           branch="codex/dev-version-${NEXT_VERSION}"
           if [ "${MODE}" = "repair" ]; then
             subject="fix(release): move dev to ${NEXT_VERSION} after ${TARGET_VERSION}"
-            reason="\`${TARGET_VERSION}\` has published, so \`dev\` is carrying a version at or behind a released one and \`tests/release-version-line.test.ts\` fails on \`dev\` and on every pull request opened against it. This is the post-publish repair."
-            freeness="\`bun test tests/release-version-line.test.ts\` proved the chosen development version is unused."
+            reason="\`${TARGET_VERSION}\` has published, so \`dev\` is carrying a version at or behind a released one and \`tests/ci-workflows/release-version-line.test.ts\` fails on \`dev\` and on every pull request opened against it. This is the post-publish repair."
+            freeness="\`bun test tests/ci-workflows/release-version-line.test.ts\` proved the chosen development version is unused."
           else
             subject="chore(release): open dev at ${NEXT_VERSION} before releasing ${TARGET_VERSION}"
             reason="\`${TARGET_VERSION}\` is about to be released. Merging this first means \`dev\` already outranks the new tag when it lands, so neither \`dev\` nor any open pull request ever inherits the version-line failure. \`release.yml\` refuses to publish until this has merged."
-            freeness="The workflow proved \`${TARGET_VERSION}\` has neither a Git tag nor an npm publication, and \`bun test tests/release-version-line.test.ts\` proved the chosen development version is unused."
+            freeness="The workflow proved \`${TARGET_VERSION}\` has neither a Git tag nor an npm publication, and \`bun test tests/ci-workflows/release-version-line.test.ts\` proved the chosen development version is unused."
           fi
 
           # Idempotent: a repeated dispatch, a re-run, or a manual repair must not turn

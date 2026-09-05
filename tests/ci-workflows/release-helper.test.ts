@@ -25,6 +25,8 @@ const sshTarget = `${"git"}@${"github.com"}:lidge-jun/opencodex.git`;
 interface ReleaseScenario {
   branch?: string;
   gitTags?: string[];
+  remoteGitTags?: string[];
+  remoteTagsExitCode?: number;
   npmLatest?: string;
   npmPreview?: string;
   headSha?: string;
@@ -136,6 +138,17 @@ if (args[0] === "tag" && args[1] === "--list" && args[2] === "v*") {
 }
 
 if (args[0] === "ls-remote") {
+  if (args[1] === "--tags" && args[2] === "--refs" && args[3] === "origin" && args[4] === "refs/tags/v*") {
+    const exitCode = Number(process.env.FAKE_GIT_REMOTE_TAGS_EXIT_CODE ?? "0");
+    if (exitCode !== 0) {
+      stderr("remote tag lookup failed");
+      process.exit(exitCode);
+    }
+    for (const tag of (process.env.FAKE_GIT_REMOTE_TAGS ?? "").split("\\n").filter(Boolean)) {
+      stdout(headSha + "\\trefs/tags/" + tag + "\\n");
+    }
+    process.exit(0);
+  }
   if (args.some(a => typeof a === "string" && a.startsWith("refs/heads/"))) {
     const branchRef = args.find(a => typeof a === "string" && a.startsWith("refs/heads/"));
     stdout(\`\${process.env.FAKE_GIT_REMOTE_HEAD_SHA ?? headSha}\t\${branchRef}\n\`);
@@ -286,6 +299,8 @@ async function runRelease(releaseArgs: string | string[], scenario: ReleaseScena
     FAKE_RELEASE_LOG: logPath,
     FAKE_GIT_BRANCH: scenario.branch ?? "main",
     FAKE_GIT_TAGS: (scenario.gitTags ?? []).join("\n"),
+    FAKE_GIT_REMOTE_TAGS: (scenario.remoteGitTags ?? scenario.gitTags ?? []).join("\n"),
+    FAKE_GIT_REMOTE_TAGS_EXIT_CODE: String(scenario.remoteTagsExitCode ?? 0),
     FAKE_GIT_HEAD_SHA: scenario.headSha ?? "abc123def456",
     ...(scenario.remoteHeadSha ? { FAKE_GIT_REMOTE_HEAD_SHA: scenario.remoteHeadSha } : {}),
     FAKE_BUN_TSC_EXIT_CODE: String(scenario.typecheckExitCode ?? 0),
@@ -392,10 +407,11 @@ describe("release helper", () => {
     expect(calls).toEqual([]);
   });
 
-  test("--bump consults stable tags as well as the latest channel", async () => {
+  test("--bump consults origin tags even when local tags and npm are stale", async () => {
     const { calls, result } = await runRelease(["--bump", "patch"], {
       npmLatest: "9.9.0",
-      gitTags: ["v9.9.5"],
+      gitTags: ["v9.9.0"],
+      remoteGitTags: ["v9.9.5"],
     });
 
     expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
@@ -416,11 +432,25 @@ describe("release helper", () => {
     expect(versionCall?.args[1]).toMatch(/^\d+\.\d+\.\d+-preview\.\d{8}(?:\.\d+)?$/);
   });
 
+  test("--bump fails before mutation when origin tags cannot be read", async () => {
+    const { calls, result } = await runRelease(["--bump", "patch"], {
+      npmLatest: "9.9.0",
+      gitTags: ["v9.9.0"],
+      remoteTagsExitCode: 128,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("remote tag lookup failed");
+    expect(findCallIndex(calls, "npm", call => call.args[0] === "version")).toBe(-1);
+    expect(findCallIndex(calls, "git", call => ["add", "commit", "push"].includes(call.args[0] ?? ""))).toBe(-1);
+    expect(findCallIndex(calls, "gh", call => call.args[0] === "workflow")).toBe(-1);
+  });
+
   test("a higher-core preview refusal reaches the operator before bump or commit", async () => {
     const blockingPreview = "v9.10.0-preview.1";
     const { calls, result } = await runRelease(["--bump", "patch"], {
       npmLatest: "9.9.0",
-      gitTags: [blockingPreview],
+      gitTags: ["v9.9.0"],
+      remoteGitTags: [blockingPreview],
     });
 
     expect(result.status).not.toBe(0);

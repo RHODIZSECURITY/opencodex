@@ -40,10 +40,15 @@ checks for an open PR and validates branch content before reuse;
 repository releases serially.
 
 **F4 — The dispatch ref guard is bypassable.** `030` §3's check runs inside the
-already-selected workflow body, so a branch could delete it. Tier E2, executing
-surface the job itself, known bypass "edit the step out on the dispatched branch",
-residual accepted because pushing such a branch needs repository write. Called an
-early warning, not enforcement.
+already-selected workflow body, so it is an early check, not an independent
+authorization boundary. Current `main` and `preview` rulesets require a reviewed
+pull request with code-owner review and block force-pushes and deletion: ordinary
+repository write permission does not allow directly rewriting those protected refs.
+Configured administrator/deploy-key bypasses remain a separate trust boundary.
+The mutable workflow remains a residual risk for an actor able to change the
+authorized workflow; a separately protected publish environment would be defense
+in depth, not a property supplied by this guard. This change neither configures an
+environment nor claims that the inline check is unbypassable.
 
 **F5 — The service-lifecycle gate depends on the release commit touching
 `package.json`.** `release.yml:268` includes `package.json` in its trigger regex and

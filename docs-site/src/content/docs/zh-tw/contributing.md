@@ -70,6 +70,13 @@ GitHub Actions 有意只保留必要步驟：
 
 釋出請使用 helper：
 
+
+執行 helper 前，先確定目標發佈版本，並從預設分支執行
+`.github/workflows/dev-version-bump.yml`，設定 `intended-version=<version>` 和
+`mode=pre-move`。審查產生的 PR 並合併到 `dev`，再提升到 `main` 或 `preview`，
+最後執行 helper。如果 `dev` 的版本已高於目標版本，工作流程會回傳
+`changed=false`，無需建立版本更新 PR。發佈仍要求對應發佈提交的 CI 全部通過。
+
 ```bash
 bun run release <version>           # commit/push 版本 bump；publish workflow 預設 dry-run
 bun run release --bump minor        # 依 tag 與 npm channel 推導下一個 patch、minor 或 major 版本

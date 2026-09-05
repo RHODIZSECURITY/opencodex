@@ -824,6 +824,7 @@
   "release-helper.test.ts": "ci-workflows",
   "release-notes.test.ts": "ci-workflows",
   "release-version-line.test.ts": "ci-workflows",
+  "version-line.test.ts": "ci-workflows",
   "remote-catalog.test.ts": "clients",
   "remove-tree-helper.test.ts": "lib",
   "repo-hygiene.test.ts": "ci-workflows",

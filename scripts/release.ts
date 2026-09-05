@@ -508,10 +508,13 @@ const packageName = await readPackageName();
 const distTags = await readNpmDistTags(packageName);
 let version = explicitVersion;
 if (version === null) {
-  const tags = (await capture(["git", "tag", "--list", "v*"]))
+  // Origin owns the release line; a local checkout may have stale or missing tags.
+  // capture fails closed before any version mutation if origin cannot be read.
+  const tags = (await capture(["git", "ls-remote", "--tags", "--refs", "origin", "refs/tags/v*"]))
     .split(/\r?\n/)
-    .map(value => value.trim())
-    .filter(Boolean);
+    .map(line => line.trim().split(/\s+/)[1] ?? "")
+    .filter(ref => ref.startsWith("refs/tags/v"))
+    .map(ref => ref.slice("refs/tags/".length));
   const stableTags: string[] = [];
   const previewTags: string[] = [];
   for (const candidate of tags) {

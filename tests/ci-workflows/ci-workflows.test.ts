@@ -781,7 +781,7 @@ describe("GitHub Actions hardening", () => {
     expect(targetFreeness?.env?.INTENDED).toBe("${{ steps.target.outputs.version }}");
     expect(targetFreeness?.run).toContain("git fetch --force --tags origin");
     expect(targetFreeness?.run).toContain('npm view "@bitkyc08/opencodex@${INTENDED#v}" version');
-    expect(chosenFreeness?.run).toBe("bun test tests/release-version-line.test.ts");
+    expect(chosenFreeness?.run).toBe("bun test tests/ci-workflows/release-version-line.test.ts");
     expect(openPr?.env).toMatchObject({
       MODE: "${{ steps.target.outputs.mode }}",
       TARGET_VERSION: "${{ steps.target.outputs.version }}",

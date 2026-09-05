@@ -6,7 +6,7 @@ import {
   nextPreviewRelease,
   nextStableRelease,
   parseVersion,
-} from "../scripts/version-line";
+} from "../../scripts/version-line";
 
 describe("version line algebra", () => {
   test("parses optional v, prerelease identifiers, and ignored build metadata", () => {

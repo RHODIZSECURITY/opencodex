@@ -74,6 +74,14 @@ GitHub Actions는 필요한 작업만 수행합니다.
 
 릴리즈에는 helper를 사용하세요.
 
+
+helper 실행 전에 릴리즈할 버전을 정하고, 기본 브랜치에서
+`.github/workflows/dev-version-bump.yml`을 `intended-version=<version>`,
+`mode=pre-move`로 실행하세요. 생성된 PR을 검토해 `dev`에 머지한 뒤
+`main` 또는 `preview`로 승격하고 helper를 실행하세요. `dev` 버전이 이미 더
+높으면 워크플로가 `changed=false`를 반환하므로 버전 이동 PR은 필요 없습니다.
+배포에는 정확한 릴리즈 커밋의 CI 통과가 여전히 필요합니다.
+
 ```bash
 bun run release <version>           # 버전 bump를 commit/push, publish workflow는 기본 dry-run
 bun run release --bump minor        # tag와 npm channel에서 다음 patch, minor, major 버전을 계산
