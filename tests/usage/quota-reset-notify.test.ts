@@ -496,6 +496,8 @@ describe("activation is the single switch", () => {
     // The end-to-end proof: config -> activation -> the production quota writer -> HTTP body.
     // Every earlier test exercises one link; this is the only one that shows the chain holds.
     const bodies: string[] = [];
+    const webhookUrl = "https://quota-webhook.example.test/hook";
+    const originalFetch = globalThis.fetch;
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -505,8 +507,6 @@ describe("activation is the single switch", () => {
       },
     });
 
-    const webhookUrl = "https://quota-reset-fixture.example.test/hook";
-    const realFetch = globalThis.fetch;
     const deliveredRequests: Array<{ url: string; method?: string; redirect?: RequestInit["redirect"] }> = [];
     const home = mkdtempSync(join(tmpdir(), "ocx-live-"));
     writeFileSync(join(home, "config.json"), JSON.stringify({
@@ -534,7 +534,7 @@ describe("activation is the single switch", () => {
         const url = input instanceof Request ? input.url : String(input);
         deliveredRequests.push({ url, method: init?.method, redirect: init?.redirect });
         if (url !== webhookUrl) throw new Error("Unexpected webhook fixture destination");
-        return realFetch(`http://127.0.0.1:${server.port}/hook`, init);
+        return originalFetch(`http://127.0.0.1:${server.port}/hook`, init);
       }) as typeof globalThis.fetch;
       resetQuotaResetNotifyCacheForTests();
       resetQuotaResetStoreForTests();
@@ -571,11 +571,11 @@ describe("activation is the single switch", () => {
       expect(payload).not.toHaveProperty("accountId");
       expect(payload).not.toHaveProperty("key");
     } finally {
+      globalThis.fetch = originalFetch;
       setQuotaResetSink(null);
       resetQuotaResetActivationForTests();
       resetQuotaResetNotifyCacheForTests();
       clearAccountQuota();
-      globalThis.fetch = realFetch;
       server.stop(true);
       if (previousHome === undefined) delete process.env["OPENCODEX_HOME"];
       else process.env["OPENCODEX_HOME"] = previousHome;

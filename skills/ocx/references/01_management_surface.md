@@ -74,7 +74,7 @@ JSON mode: `envelope`.
 
 ### `ocx provider resets`
 
-List recently detected quota-window resets and whether detection is enabled.
+Recently detected quota resets and whether reset notifications are enabled.
 
 | Method | Route |
 |---|---|
@@ -82,8 +82,8 @@ List recently detected quota-window resets and whether detection is enabled.
 
 | Flag | Value | Meaning |
 |---|---|---|
-| `--limit` | number | Maximum events to return (default 20, capped at 100; non-negative integer). |
-| `--json` | boolean | Emit the quota-reset payload as JSON. |
+| `--json` | boolean | Emit reset events as JSON. |
+| `--limit` | number | Limit returned events; defaults to 20, capped at 100. |
 
 JSON mode: `payload`.
 
