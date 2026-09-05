@@ -197,6 +197,14 @@ non-empty `messages` array. It translates system, user, assistant, and tool mess
 Responses items; translates function tools, tool choice, images, reasoning effort, and supported
 response formats; runs the normal Responses routing pipeline; then translates the result back.
 
+Image URLs and base64 data URLs use Chat `image_url` content parts. Translation preserves
+supported `detail` values (`auto`, `low`, `high`). On translated routes, OpenCodex also accepts
+image-bearing tool-result arrays as a compatibility extension: Responses routes retain structured
+output, while the `openai-chat` adapter sends tool images in a following user message because Chat
+tool content is text-only. Other downstream adapters own provider-specific placement. Plain text
+results remain strings. Native passthrough follows its upstream contract; image support still depends
+on the selected model and provider configuration.
+
 Reasoning is part of that translation. `reasoning_effort` (or `reasoning.effort`) becomes
 internal `reasoning.effort`. Because the Responses parser hides thinking unless
 `reasoning.summary` is set and is not `none`, Chat Completions requests that ask for an
