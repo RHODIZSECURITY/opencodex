@@ -256,6 +256,7 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 | `GET /api/models` · `PUT /api/disabled-models` | List native/routed model rows and update the shared disabled-model set. |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | Read provider allowlists and atomically change the final visibility of one model or provider group. |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | Read the API-key and OAuth provider catalogs. |
+| `GET /api/oauth/accounts?provider=...&quota=1` · `GET /api/providers/keys?name=...&quota=1` | Read each account or key's quota where supported, without changing the active credential. Add `refresh=1` to bypass settled quota cache; an in-flight same-credential read can be shared. Omit `quota=1` for a cheap local list with each row's `quotaMode`: `probe`, `passive`, or `unsupported`. Passive reads return existing observations without a network probe. No reading is not the same as 0% used, and quotas for multiple keys are not summed. |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | Start a provider OAuth flow and poll for completion. |
 | `GET /api/codex-auth/accounts?refresh=1` | List main and pool accounts, force quota refresh, and report main-account `hasCredential` / terminal `needsReauth` state. |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | Select the account for the next request and configure pool routing. |

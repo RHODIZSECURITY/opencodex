@@ -53,7 +53,19 @@ Static source checker and GUI build passed; existing chunk-size warning only. No
 Next work-phase: attribution. Open risk: unseen historical upstream model identity cannot be
 recovered; we qualify only saved fallback provenance instead of guessing or rewriting rows.
 
+Attribution D: `9a9ad98b8`, PR #3582, CI run33938837845 all four backend test shards,
+GUI gates (1371 pass / 0 fail), API usage succeeded; independent Volta PASS. Remaining macOS
+jobs are still mandatory at landing, not claimed green. Next quota-api P reverified 020 against
+the unchanged quota/management baseline; attribution changes do not alter its signatures.
+API layer branch `codex/provider-account-quota-api` starts at the verified attribution head.
+
 ## Delegation write map (locked before Build)
+
+User reiterated no local suites during quota-api A. No local test suite has been run;
+reported regression results came from GitHub Actions. From this point no further local
+typecheck/build/lint/scan commands either: command-based validation is remote CI only.
+Source inspection and browser observation remain scoped QA; receipts may only wrap remote
+CI result checks. This supersedes the earlier local-static/build verification allowance.
 
 - Attribution cycle: Harvey owns `src/usage`, `src/router.ts`, the identified Chat/Messages error catches, `src/server/management/shared.ts`, and corresponding existing backend regression files. Main owns the provider model annotation/share/caching UI, its GUI regressions, docs, commits and CI. No overlapping writes.
 - Quota API cycle: Euclid owns quota readers/key-cache/types and relevant provider regression files. Main owns management route joins, API-route regressions and docs; clarify exact exported signatures before either writes.

@@ -341,6 +341,18 @@ keeps the saved state and renders fixed `ocx sync` guidance without server/accou
 
 ## Usage accounting
 
+Account quota discovery is capability-based. Cheap OAuth and provider-key lists include
+`quotaMode` (`probe`, `passive`, or `unsupported`) without contacting upstream quota APIs.
+`GET /api/oauth/accounts?provider=...&quota=1` and
+`GET /api/providers/keys?name=...&quota=1` enrich each supported credential separately;
+`refresh=1` bypasses settled quota cache while joining a current same-identity read.
+OAuth readers use the named stored account; key readers use isolated per-key configuration,
+never active-key mutation or the provider-wide cache. Response projection rechecks key identity
+and exposes only quota/availability fields, not its internal identity guard. Passive observations
+retain their original timestamp and never trigger inference or token renewal. Unsupported,
+unobserved, failed and measured-zero readings remain distinct; multiple keys are not summed
+because they may share one upstream balance.
+
 `src/usage/log.ts` writes append-only JSONL to `~/.opencodex/usage.jsonl` with file mode `0o600`.
 An opt-in shadow-call rewrite persists the bounded, redacted original helper model as
 `shadowCallRewrittenFrom`, so helper traffic remains identifiable after restart without storing
