@@ -1661,7 +1661,10 @@ function writeRetainedCatalogSync({
     ? observedReserveCatalogSource([retainedReserve as RawEntry], [])
     : null;
   const observedReserveSource = observedReserveCatalogSource(
-    reserveObservations.filter(entry => entry.slug === NATIVE_RESERVE_MODEL), reserveMainSelectors,
+    // Cache invalidation carries historical bare observations alongside emitted models.
+    // Only unmarked observations are fresh enough to supersede the retained source.
+    reserveObservations.filter(entry => entry.slug === NATIVE_RESERVE_MODEL
+      && entry.opencodex_account_observed_native === undefined), reserveMainSelectors,
   ) ?? retainedReserveSource ?? observedReserveCatalogSource(reserveObservations, reserveMainSelectors);
   // This root is read only by OCX. Upstream ModelsResponse ignores unknown root fields.
   // Retain before final runtime clamping: an omitted row must not turn into Luna next sync.

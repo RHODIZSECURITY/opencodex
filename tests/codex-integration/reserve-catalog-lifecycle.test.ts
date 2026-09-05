@@ -172,6 +172,43 @@ describe("Reserve actual catalog finalization lifecycle", () => {
     expect(retained(result)[MARKER]).toBeUndefined();
   }, 40_000);
 
+  test("historical cached A cannot replace fresh active B on the following sync", () => {
+    const cachedA = {
+      ...reserveRow(false, ["medium"]),
+      display_name: "Historical A",
+      comp_hash: "historical-a-hash",
+      opencodex_account_observed_native: true,
+      opencodex_account_observed_selectors: ["personal"],
+    };
+    const activeB = {
+      ...reserveRow(false, ["high"]),
+      display_name: "Fresh B",
+      comp_hash: "fresh-b-hash",
+    };
+    const sandbox = makeSandbox([nativeRow(), activeB]);
+    writeRuntime(sandbox, ["medium", "high"]);
+    writeFileSync(sandbox.cachePath, JSON.stringify({ models: [cachedA] }));
+
+    const first = sync(sandbox);
+    expect(selected(first)).toMatchObject({
+      display_name: "personal / Fresh B", comp_hash: "fresh-b-hash",
+      supported_reasoning_levels: [{ effort: "high", description: "Genuine high" }],
+    });
+    expect(retained(first)).toMatchObject({ display_name: "Fresh B", comp_hash: "fresh-b-hash" });
+    const cacheAfterFirst = JSON.parse(readFileSync(sandbox.cachePath, "utf8")) as RawCatalog;
+    // Prove the obsolete carried observation actually survives cache invalidation and
+    // competes with retained B on the next real CLI-process sync.
+    expect(cacheAfterFirst.models?.find(row => row.slug === "gpt-reserve")).toMatchObject({
+      comp_hash: "historical-a-hash", opencodex_account_observed_native: true,
+    });
+    expect(first.models?.some(row => row.slug === "gpt-reserve")).toBe(false);
+
+    const second = sync(sandbox);
+    expect(retained(second)).toEqual(retained(first));
+    expect(selected(second)).toEqual(selected(first));
+    expect(second.models?.some(row => row.slug === "external/model")).toBe(true);
+  }, 70_000);
+
   test("qualified-only source survives omission, cache invalidation and effort recovery without Luna fallback", () => {
     const sandbox = makeSandbox([nativeRow(), reserveRow(true)]);
     const first = sync(sandbox);
