@@ -54,4 +54,10 @@ unit's stricter observation-time and HTTPS-transport/privacy assertions without 
 properties or fixtures. This conflict resolution, not unrelated base chasing, advances the
 frozen baseline. Cascade every child and require fresh exact-head CI.
 
+The Windows stabilization stack then landed #3610/#3613 at `dev`be81013fa, creating another
+concrete conflict in the same webhook fixture. Adopt its portable receiver-promise wait and
+fetch shim intact; keep only this unit's additional HTTPS-schema rejection and payload
+privacy assertions there. Preserve upstream eager-relay cancellation changes verbatim.
+Do not replace the new cross-platform fixture with the superseded polling fixture.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.

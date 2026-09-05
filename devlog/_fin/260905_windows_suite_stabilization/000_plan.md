@@ -1,5 +1,37 @@
 # 000 — Plan: stabilize the Windows suite
 
+## Post-merge continuation (2026-09-05)
+
+The original six PRs (#3548, #3549, #3550, #3555, #3558, #3572) are merged.
+Their two green runs on `293f3e675` do not prove newly merged `dev` tests pass.
+The current pinned integration baseline is `593978db0`; failures and competing
+hypotheses are in `009_1_postmerge_failures.md`.
+
+Current user steering supersedes the historical runner and acceptance text below:
+Windows runs **only through GitHub Actions**, not SSH; six shards retain the
+25-minute job ceiling. Do not run a repository-wide local suite. Focused checks
+and typecheck are allowed. macOS completion is explicitly excluded. All new
+subagents use `gpt-6-astra` with `high` effort. Task PRs may be pushed
+`--no-verify` and merged `--admin`; never alter unrelated work or chase a moving
+dev head by blindly restarting a Windows run.
+
+| Work phase | Deliverable | Proof |
+|---|---|---|
+| wp7 | Docs-only failure inventory and roadmap lock | Audited numbered docs; no implementation |
+| wp8 | `100_quota_test_boundaries.md`: quota tests and route/capability integration | Focused tests, insertion-prune mutant, typecheck; store and auth unchanged |
+| wp9 | `110_eager_caller_provenance.md`: eager cancellation | Deterministic red/green, original 499/502 pair, six green Windows shards and admin delivery |
+
+The fixes are separate review layers. wp9 consumes wp8's corrected integration
+baseline so a final six-shard result tests both. A failed or skipped shard is not
+green. Preserve the previous failure evidence even if a later run passes.
+
+Unattended scope: existing repository credentials for scoped git/Actions/PR
+operations only, no release or deployment; writes only to the named test/runtime
+owners and this unit, plus an existing corpus case if new evidence warrants it.
+One Windows workflow at a time; read-only agent analysis can overlap it. Bound
+each follow-up investigation to three hours before reassessing the plan; no
+user-specified token/cost budget. Main owns all writes and FSM transitions.
+
 Unit: get the Windows test suite to zero failures on the runtime this repository
 pins, and keep it there. Base `dev` at `00834d710`, 2026-09-05.
 
