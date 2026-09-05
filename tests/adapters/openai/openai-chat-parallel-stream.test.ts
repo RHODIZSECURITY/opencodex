@@ -313,6 +313,61 @@ describe("openai-chat parallel tool call stream assembly", () => {
     expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
   });
 
+  test("rejects distinct unsafe raw JSON indexes before they collapse into one call", async () => {
+    const budget = createTestTranslatorBudget();
+    // Keep both index literals on the wire: constructing JS numbers before JSON.stringify
+    // would already round 9007199254740993 to 9007199254740992. Without rejection,
+    // both whitespace fragments would silently join call_a's valid JSON despite call_b's ID/name.
+    const response = new Response(String.raw`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"read","arguments":"{}"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"arguments":""}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":9007199254740992,"id":"call_a","function":{"name":"read","arguments":" "}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":9007199254740993,"id":"call_b","function":{"name":"write","arguments":" "}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`);
+    const events: AdapterEvent[] = [];
+    let sawPendingReservation = false;
+    for await (const event of createOpenAIChatAdapter(provider).parseStream(response, budget)) {
+      events.push(event);
+      const snapshot = budget.snapshot();
+      sawPendingReservation ||= snapshot.activeCalls === 1 && snapshot.currentBytes === 2;
+      if (event.type === "error") {
+        expect(snapshot).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+      }
+    }
+    expect(sawPendingReservation).toBe(true);
+    // The first unsafe index terminates before either unsafe fragment emits a heartbeat,
+    // a tool call, or done; the buffered reservation is released at the error itself.
+    expect(events.map(event => event.type)).toEqual(["heartbeat", "heartbeat", "error"]);
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (invalid numeric index)",
+    });
+    expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+  });
+
+  test("retains a late MAX_SAFE_INTEGER alias for index-only continuation", async () => {
+    const budget = createTestTranslatorBudget();
+    const events = await collect(sse([
+      chunkOf([{ id: "call_boundary", function: { name: "read", arguments: '{"p":' } }]),
+      chunkOf([{ index: Number.MAX_SAFE_INTEGER, id: "call_boundary", function: { arguments: '"x"' } }]),
+      chunkOf([{ index: Number.MAX_SAFE_INTEGER, function: { arguments: "}" } }]),
+      chunkOf([], "tool_calls"),
+    ]), budget);
+    expect(assembled(events)).toEqual([{ id: "call_boundary", name: "read", args: '{"p":"x"}' }]);
+    expect(events.some(event => event.type === "error")).toBe(false);
+    expect(events.at(-1)?.type).toBe("done");
+    expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+  });
+
   test("an observed index wins over a conflicting ID without rebinding either call", async () => {
     const events = await collect(sse([
       chunkOf([{ id: "call_a", function: { name: "read", arguments: "{\"p\":" } }]),

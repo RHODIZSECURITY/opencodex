@@ -1504,9 +1504,11 @@ Native Composer/MCP behavior and text-only historical replay remain unchanged.
 
 ## Chat streamed tool-call identity
 
-`src/adapters/openai-chat.ts` retains a call's first observed non-negative integer
-index as an alias when the call started by ID. Numeric indexes that are negative
-or non-integer terminate the stream before any key, alias, ID or last-call matching.
+`src/adapters/openai-chat.ts` retains a call's first observed non-negative safe integer
+index as an alias when the call started by ID. Numeric indexes that are negative,
+non-integer or outside JavaScript's safe-integer range terminate the stream before
+any key, alias, ID or last-call matching. `Number.MAX_SAFE_INTEGER` is accepted;
+larger integers are rejected because distinct wire literals can parse to the same number.
 The invalid-index error releases all pending call reservations without emitting
 those calls or a successful completion; invalid indexes are never treated as absent.
 Missing and non-numeric index placeholders retain their existing tolerance.
@@ -1516,7 +1518,8 @@ ID fallback. The initial key continues to own all translator budget reservations
 and release; learning an alias creates no additional owner. Unassociated index-only
 fragments are not guessed onto pending ID-only calls.
 `tests/adapters/openai/openai-chat-parallel-stream.test.ts` covers late aliases,
-parallel/colliding identities, invalid numeric indexes and UTF-8 byte-limit boundaries.
+parallel/colliding identities, distinct unsafe raw JSON index literals, the maximum
+safe-integer boundary, invalid numeric indexes and UTF-8 byte-limit boundaries.
 
 ## Sidecars
 

@@ -1850,9 +1850,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               const idDelta = typeof rawId === "string" ? rawId : "";
               const rawIndex = rawToolCall.index;
               // Invalid numeric indexes must not fall through to ID or last-call matching.
+              // Unsafe integers can collapse distinct wire indexes onto the same JS number.
               // Reject before an alias can bind or any pending call can consume the fragment.
               if (typeof rawIndex === "number"
-                  && (!Number.isInteger(rawIndex) || rawIndex < 0)) {
+                  && (!Number.isSafeInteger(rawIndex) || rawIndex < 0)) {
                 return yield* terminateWithError({
                   ...invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage),
                   message: "upstream response contained invalid tool calls (invalid numeric index)",
