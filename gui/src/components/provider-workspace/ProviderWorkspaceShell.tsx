@@ -78,6 +78,7 @@ export default function ProviderWorkspaceShell({
   jsonEditor,
   jsonSaving = false,
   modelsRefreshToken = 0,
+  onModelsSettled,
   activeAccountNeedsReauth,
   /** Stable key of active OAuth account ids — refetch overview quotas after account switch. */
   quotaRefreshEpoch = 0,
@@ -99,6 +100,8 @@ export default function ProviderWorkspaceShell({
   jsonSaving?: boolean;
   /** Bump after login/config changes so /api/selected-models is refetched. */
   modelsRefreshToken?: number;
+  /** Registration feedback re-reads config only after this discovery actually settles. */
+  onModelsSettled?: (ok: boolean) => void;
   activeAccountNeedsReauth?: Record<string, boolean>;
   /**
    * Monotonic quota revision. It moves only when something actually invalidates the quota
@@ -176,6 +179,7 @@ export default function ProviderWorkspaceShell({
     const timeout = window.setTimeout(() => {
       setModelsLoading(true);
       void (async () => {
+        let succeeded = false;
         try {
           const res = await fetch(`${apiBase}/api/selected-models`);
           const data = await readJsonOrThrow(res);
@@ -185,11 +189,12 @@ export default function ProviderWorkspaceShell({
           setLiveModelCounts(parseLiveModelCounts(data));
           setSelectedModels(parseSelectedModels(data));
           setModelsLoadFailed(false);
+          succeeded = true;
         } catch {
           if (cancelled) return;
           setModelsLoadFailed(true);
         } finally {
-          if (!cancelled) setModelsLoading(false);
+          if (!cancelled) { setModelsLoading(false); onModelsSettled?.(succeeded); }
         }
       })();
     }, 0);
@@ -197,7 +202,7 @@ export default function ProviderWorkspaceShell({
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [apiBase, modelsRefreshToken, modelsLoadEpoch]);
+  }, [apiBase, modelsRefreshToken, modelsLoadEpoch, onModelsSettled]);
 
   useEffect(() => {
     let cancelled = false;
