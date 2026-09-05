@@ -129,3 +129,21 @@ repair as resolving another modularization ledger row.
 Keep parent open until its child is retargeted appropriately; no merge is
 authorized. WP450 needs fresh head-bound evidence after restacking. The old
 4a71894 receipt remains historical proof, not the new head's acceptance.
+
+## A closure and CI scheduling
+
+Hooke passed the two-site disposal design, nine original exports, and isolated
+regression plan. Both reviewers found a verifier error-propagation issue:
+inline `test -z` around Git-status substitution could conceal Git failure.
+All five sites now assign status in a standalone command before checking
+emptiness. Hooke and Wegener independently closed that blocker with PASS;
+the script passes Bash syntax checking. No runtime result is inferred.
+
+The user's latest instruction requires cross-task CI coordination: leave the
+Windows task alone, message other owners, and schedule non-Windows CI one at
+a time. Main has contacted the provider, registration, image, and Reserve
+owners and will hold this repair's push/full verification until its slot.
+Implementation and static review may proceed while that queue drains. Never
+cancel another task's run without confirming ownership and communicating the
+chosen order. Existing successful job evidence must be preserved where the
+CI platform supports rerunning only failed/cancelled jobs.
