@@ -7,7 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import * as fsModule from "node:fs";
 import * as accountStoreModule from "../../src/codex/account-store";
+import * as websocketRegistryModule from "../../src/codex/websocket-registry";
+import * as quotaAutoRefreshStateModule from "../../src/codex/quota-auto-refresh-state";
 import {
   getCodexAccountCredential,
   saveCodexAccountCredential,
@@ -139,18 +142,22 @@ describe("Codex account delete persistence ordering", () => {
   test("a concurrent external edit remains byte-identical after uncertain failure", () => {
     const config = seededConfig();
     const before = structuredClone(config);
+    let replacementBytes: Buffer | undefined;
     const realSave = configModule.saveConfigPreservingClaudeCode;
     const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode")
       .mockImplementation(candidate => {
         realSave(candidate);
         const external = loadConfig();
         external.port = 12345;
-        writeFileSync(getConfigPath(), JSON.stringify(external, null, 2) + "\n");
+        replacementBytes = Buffer.from(JSON.stringify(external, null, 2) + "\n", "utf8");
+        writeFileSync(getConfigPath(), replacementBytes);
         throw new Error("forced concurrent failure");
       });
 
     try {
       expect(() => deleteCodexAccount(config, ACCOUNT_ID)).toThrow(CodexAccountDeleteRollbackError);
+      expect(replacementBytes).toBeDefined();
+      expect(readFileSync(getConfigPath())).toEqual(replacementBytes);
       const persisted = loadConfig();
       expect(persisted.port).toBe(12345);
       expect(persisted.codexAccounts?.some(account => account.id === ACCOUNT_ID)).toBe(false);
@@ -213,6 +220,88 @@ describe("Codex account delete persistence ordering", () => {
       expect(getAccountQuota(ACCOUNT_ID)).not.toBeNull();
     } finally {
       saveSpy.mockRestore();
+    }
+  });
+
+  test("an unreadable config after uncertain failure preserves state and sanitizes errors", () => {
+    const config = seededConfig();
+    const before = structuredClone(config);
+    const configPath = getConfigPath();
+    const beforeBytes = readFileSync(configPath);
+    const readSpy = spyOn(fsModule, "readFileSync");
+    const removeSpy = spyOn(accountStoreModule, "removeCodexAccountCredential");
+    const invalidateSpy = spyOn(websocketRegistryModule, "invalidateCodexWebSocketsForAccount");
+    const forgetSpy = spyOn(quotaAutoRefreshStateModule, "forgetCodexQuotaAutoRefreshAccount");
+    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode")
+      .mockImplementation(() => {
+        readSpy.mockImplementationOnce(() => {
+          throw new Error("EACCES /private/config.json Bearer read-secret-token");
+        });
+        throw new Error("write failed /private/config.json Bearer write-secret-token");
+      });
+
+    try {
+      let thrown: unknown;
+      try {
+        deleteCodexAccount(config, ACCOUNT_ID);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(readSpy).toHaveBeenLastCalledWith(configPath);
+      expect(thrown).toBeInstanceOf(CodexAccountDeleteRollbackError);
+      expect((thrown as Error).message).toBe(
+        "Account deletion failed and the previous config could not be restored. Restart before retrying.",
+      );
+      expect(String(thrown)).not.toContain("/private/config.json");
+      expect(String(thrown)).not.toContain("secret-token");
+      expect((thrown as Error).cause).toBeUndefined();
+      expect(config).toEqual(before);
+      expect(readFileSync(configPath)).toEqual(beforeBytes);
+      expect(getCodexAccountCredential(ACCOUNT_ID)).not.toBeNull();
+      expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(true);
+      expect(getAccountQuota(ACCOUNT_ID)).not.toBeNull();
+      expect(removeSpy).not.toHaveBeenCalled();
+      expect(invalidateSpy).not.toHaveBeenCalled();
+      expect(forgetSpy).not.toHaveBeenCalled();
+    } finally {
+      readSpy.mockRestore();
+      saveSpy.mockRestore();
+      removeSpy.mockRestore();
+      invalidateSpy.mockRestore();
+      forgetSpy.mockRestore();
+    }
+  });
+
+  test("a transient config skips persistence but still removes credentials and runtime state", () => {
+    const config = seededConfig();
+    const configPath = getConfigPath();
+    unlinkSync(configPath);
+    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode");
+    const removeSpy = spyOn(accountStoreModule, "removeCodexAccountCredential");
+    const invalidateSpy = spyOn(websocketRegistryModule, "invalidateCodexWebSocketsForAccount");
+    const forgetSpy = spyOn(quotaAutoRefreshStateModule, "forgetCodexQuotaAutoRefreshAccount");
+
+    try {
+      expect(deleteCodexAccount(config, ACCOUNT_ID)).toBe(true);
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(existsSync(configPath)).toBe(false);
+      expect(config.codexAccounts).toEqual([]);
+      expect(config.codexAccountNamespaces).toEqual({ stable: ACCOUNT_ID });
+      expect(config.pausedCodexAccountIds).toBeUndefined();
+      expect(config.codexAccountPriorities).toBeUndefined();
+      expect(config.activeCodexAccountPinned).toBeUndefined();
+      expect(config.activeCodexAccountId).toBeUndefined();
+      expect(getCodexAccountCredential(ACCOUNT_ID)).toBeNull();
+      expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(false);
+      expect(getAccountQuota(ACCOUNT_ID)).toBeNull();
+      expect(removeSpy).toHaveBeenCalledWith(ACCOUNT_ID);
+      expect(invalidateSpy).toHaveBeenCalledWith(ACCOUNT_ID);
+      expect(forgetSpy).toHaveBeenCalledWith(ACCOUNT_ID);
+    } finally {
+      saveSpy.mockRestore();
+      removeSpy.mockRestore();
+      invalidateSpy.mockRestore();
+      forgetSpy.mockRestore();
     }
   });
 
