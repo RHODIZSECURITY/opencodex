@@ -28,4 +28,23 @@ the bottom branch, cascade every upper branch before pushing, then require renew
 CI. Credential-reader redirect controls belong to the already implemented API layer, not to
 the attribution layer's executable scope.
 
+Freeze the integration baseline at fetched `dev`55395a9dc. It adds Antigravity weekly and
+Ollama Cloud quota support during this task. Preserve both implementations and the optional
+reset observer while merging the baseline into the stack. Resolve the quota dispatch conflict
+by retaining the shared key-reader selector and registering the incoming canonical Ollama
+reader there; add a per-key Ollama regression. All layers must receive the integrated baseline
+before publication and new exact-head CI. Do not chase unrelated later changes without a
+concrete integration conflict or verifier requirement.
+
+The integrated baseline's remote CI exposed three concrete quota-reset contract gaps:
+an undeclared management route/lazy dispatch guard, a strict expected quota shape missing
+`shortObservedAt`, and an HTTP webhook fixture rejected by the existing HTTPS schema.
+Repair these integration gates in the bottom layer and cascade both children. Register the
+existing `provider resets` command and route without an exemption, retain exact quota
+assertions, and bridge only the test's HTTPS transport to its local receiver. Do not relax
+HTTPS/SSRF protections or run local validation. Kant independently reviewed both the two-test
+delta and the four-file route/capability delta: PASS, including explicit security review
+of unchanged authentication, exact inner method/path guards and lazy imports. All three
+new heads still require remote CI.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.

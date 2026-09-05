@@ -306,6 +306,21 @@ describe("enablement", () => {
 });
 
 describe("config integration", () => {
+  test("private-network opt-in does not permit a cleartext webhook URL", () => {
+    const result = validateConfigCandidate({
+      port: 10100,
+      defaultProvider: "openai",
+      providers: { openai: { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
+      quotaResetNotify: {
+        enabled: true,
+        webhookUrl: "http://127.0.0.1:9999/hook",
+        allowPrivateNetwork: true,
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("webhookUrl");
+  });
+
   test("an invalid notify section is rejected by the write path", () => {
     // Live writes stay strict, so an operator is told rather than silently ignored.
     const result = validateConfigCandidate({
@@ -490,6 +505,9 @@ describe("activation is the single switch", () => {
       },
     });
 
+    const webhookUrl = "https://quota-reset-fixture.example.test/hook";
+    const realFetch = globalThis.fetch;
+    const deliveredRequests: Array<{ url: string; method?: string; redirect?: RequestInit["redirect"] }> = [];
     const home = mkdtempSync(join(tmpdir(), "ocx-live-"));
     writeFileSync(join(home, "config.json"), JSON.stringify({
       port: 10100,
@@ -499,7 +517,7 @@ describe("activation is the single switch", () => {
       },
       quotaResetNotify: {
         enabled: true,
-        webhookUrl: `http://127.0.0.1:${server.port}/hook`,
+        webhookUrl,
         allowPrivateNetwork: true,
         // Passive-only: this asserts the live request path fires without any timer involved.
         pollSeconds: 0,
@@ -509,6 +527,15 @@ describe("activation is the single switch", () => {
     const previousHome = process.env["OPENCODEX_HOME"];
     process.env["OPENCODEX_HOME"] = home;
     try {
+      // Config validation still sees HTTPS. Bridge only the transport to the local
+      // receiver; activation, observation, reset detection and payload encoding stay real.
+      // Never fall through to the network for an unexpected destination.
+      globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        deliveredRequests.push({ url, method: init?.method, redirect: init?.redirect });
+        if (url !== webhookUrl) throw new Error("Unexpected webhook fixture destination");
+        return realFetch(`http://127.0.0.1:${server.port}/hook`, init);
+      }) as typeof globalThis.fetch;
       resetQuotaResetNotifyCacheForTests();
       resetQuotaResetStoreForTests();
       resetQuotaResetActivationForTests();
@@ -531,6 +558,7 @@ describe("activation is the single switch", () => {
       }
 
       expect(bodies).toHaveLength(1);
+      expect(deliveredRequests).toEqual([{ url: webhookUrl, method: "POST", redirect: "manual" }]);
       const payload = JSON.parse(bodies[0] ?? "{}") as Record<string, unknown>;
       expect(payload["type"]).toBe("quota_reset");
       expect(payload["kind"]).toBe("scheduled");
@@ -538,11 +566,16 @@ describe("activation is the single switch", () => {
       expect(payload["percentBefore"]).toBe(96);
       expect(payload["percentAfter"]).toBe(2);
       expect(bodies[0]).not.toContain("operator@example.com");
+      expect(bodies[0]).not.toContain("@");
+      expect(bodies[0]).not.toContain("/Users/");
+      expect(payload).not.toHaveProperty("accountId");
+      expect(payload).not.toHaveProperty("key");
     } finally {
       setQuotaResetSink(null);
       resetQuotaResetActivationForTests();
       resetQuotaResetNotifyCacheForTests();
       clearAccountQuota();
+      globalThis.fetch = realFetch;
       server.stop(true);
       if (previousHome === undefined) delete process.env["OPENCODEX_HOME"];
       else process.env["OPENCODEX_HOME"] = previousHome;
