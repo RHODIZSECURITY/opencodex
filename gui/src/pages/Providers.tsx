@@ -20,6 +20,8 @@ import { useProvidersFetch } from "./use-providers-fetch";
 import { ProvidersPageModals } from "./providers-page-modals";
 import { buildAccountLoginStatus, buildAddModalAccountRows } from "./providers-page-utils";
 import type { CodexAccountMutationCompletion } from "../codex-account-mutation";
+import { useProviderModelsNotice } from "./use-provider-models-notice";
+import { navigateHash } from "../hash-routing";
 
 /** The page's real refresh tickets: only the captured report epoch and account read can settle them. */
 // oxlint-disable-next-line react/only-export-components -- keep the page-owned coordinator and its direct race tests in the authorized owner.
@@ -191,11 +193,18 @@ export default function Providers({ apiBase }: { apiBase: string }) {
    * is silent while every real mutation path still forces a re-read.
    */
   const { quotaRefresh, invalidateProviderQuotas, settleQuotaRefresh, beginQuotaRefresh } = useQuotaRefreshCoordinator(apiBase);
-  const { fetchConfig, fetchOauth, fetchProviderQuotas } = useProvidersFetch({
+  const { fetchConfig: refreshConfigResult, fetchOauth, fetchProviderQuotas } = useProvidersFetch({
     apiBase, t, setConfig, setOauthProviders, setOauthStatus, notify,
     invalidateProviderQuotas,
     configCacheKey,
   });
+  const fetchConfig = useCallback(async () => { await refreshConfigResult(); }, [refreshConfigResult]);
+  const modelsNotice = useProviderModelsNotice(apiBase, refreshConfigResult);
+  const openModelsNotice = modelsNotice.open;
+  const onProviderLoginSettled = useCallback((provider: string) => {
+    revealProviderAccounts(provider);
+    openModelsNotice(provider, false);
+  }, [revealProviderAccounts, openModelsNotice]);
 
   // WP3: one Codex account controller for the whole Providers page, shared by the
   // Overview tab and the Accounts tab so a mutation on either is instantly visible on
@@ -240,7 +249,10 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const jsonEditor = useJsonConfigEditor({
     apiBase, config,
     notify,
-    fetchConfig, fetchProviderQuotas, onSaved: () => setModelsRefreshToken(n => n + 1),
+    fetchConfig, fetchProviderQuotas, onSaved: added => {
+      if (added.length) modelsNotice.open(added, true);
+      setModelsRefreshToken(n => n + 1);
+    },
     t: t as unknown as Parameters<typeof useJsonConfigEditor>[0]["t"],
   });
   const {
@@ -305,7 +317,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     apiBase, t, aliveRef, accountSets, setAccountSets,
     setBusy, setStatus, setLoginInfo, setOauthStatus, notify,
     fetchConfig, fetchOauth, fetchAccountSets, fetchProviderQuotas, bumpModelsRefresh,
-    onLoginSettled: revealProviderAccounts,
+    onLoginSettled: onProviderLoginSettled,
   });
 
   const { removeProvider, confirmRemoveProvider, setProviderDisabled, setDefaultProvider, updateProvider } = useProvidersCrud({
@@ -429,6 +441,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         }}
         jsonSaving={jsonSaving}
         modelsRefreshToken={modelsRefreshToken}
+        onModelsSettled={modelsNotice.modelsSettled}
         activeAccountNeedsReauth={activeAccountNeedsReauth}
         quotaRefreshEpoch={quotaRefresh.epoch}
         quotaForceRefresh={quotaRefresh.force}
@@ -490,6 +503,25 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         apiBase={apiBase}
         config={config}
         adding={adding}
+        modelsNotice={modelsNotice.notice ? {
+          provider: modelsNotice.notice.context.provider,
+          initialRegistration: modelsNotice.notice.context.initialRegistration,
+          catalogRefreshPending: modelsNotice.notice.context.catalogRefreshPending,
+          loading: modelsNotice.notice.loading,
+          failed: modelsNotice.notice.failed,
+          providerKnown: modelsNotice.notice.context.providers.every(name => !!config.providers[name]),
+          selection: modelsNotice.notice.context.providers.length === 1
+            ? config.providers[modelsNotice.notice.context.provider]?.initialModelSelection
+            : modelsNotice.notice.context.providers.some(name => config.providers[name]?.initialModelSelection?.status === "pending")
+              ? { status: "pending" } : undefined,
+          onClose: modelsNotice.close,
+          onOpenModels: () => { modelsNotice.close(); navigateHash("models"); },
+          onRetry: () => {
+            const current = modelsNotice.notice!.context;
+            modelsNotice.open(current.providers, current.initialRegistration, current.catalogRefreshPending);
+            bumpModelsRefresh();
+          },
+        } : null}
         addIntent={addIntent}
         busy={busy}
         addModalAccountRows={addModalAccountRows}
@@ -511,7 +543,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         onAdded={(name) => {
           setAdding(false);
           setAddIntent(null);
-          notify(t("prov.added", { name, cmd: "ocx sync" }), true);
+          clearStatus();
+          modelsNotice.open(name, !config.providers[name]);
           fetchConfig();
           fetchOauth();
           fetchProviderQuotas(true);
@@ -526,6 +559,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         onCodexAdded={(completion) => {
           setCodexLoginOpen(false);
           notifyCodexCompletion(completion);
+          modelsNotice.open("openai", !config.providers.openai, completion.catalogRefreshPending);
           void fetchConfig();
           void fetchOauth();
           void fetchProviderQuotas(true);
