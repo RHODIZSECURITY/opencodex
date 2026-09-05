@@ -39,28 +39,32 @@ afterEach(async () => {
   removeTreeWithRetry(home);
 });
 
-function fixture(state: "pending" | "ready" | "legacy"): OcxConfig {
+function fixture(state: "pending" | "ready" | "legacy", name = "openrouter"): OcxConfig {
   const provider: OcxProviderConfig = {
     adapter: "openai-chat", baseUrl: "https://models.example.test/v1", authMode: "key",
     apiKey: "fixture-key", liveModels: false, models: [...ids],
-    selectedModels: [ids[0]], modelPreset: { mode: "preset", appliedVersion: 1 },
+    selectedModels: [ids[0]], modelPreset: { mode: name === "openrouter" ? "preset" : "custom", appliedVersion: 1 },
   };
-  const config: OcxConfig = { port: 0, defaultProvider: "openrouter", providers: { openrouter: provider }, clientIntegrations: { codex: false } };
-  if (state !== "legacy") initializeProviderModelSelection("openrouter", provider);
-  if (state === "ready") reconcileInitialModelSelections(config, ids.map(id => ({ provider: "openrouter", id })), ["openrouter"]);
+  const config: OcxConfig = { port: 0, defaultProvider: name, providers: { [name]: provider }, clientIntegrations: { codex: false } };
+  if (state !== "legacy") initializeProviderModelSelection(name, provider);
+  if (state === "ready") reconcileInitialModelSelections(config, ids.map(id => ({ provider: name, id })), [name]);
   saveConfig(config);
   return config;
 }
 
-async function put(config: OcxConfig, operation: typeof operations[number]): Promise<Response> {
-  const url = new URL(`http://localhost${operation.path}`);
+async function request(config: OcxConfig, path: string, body: string): Promise<Response> {
+  const url = new URL(`http://localhost${path}`);
   const request = new ManagementRequest(url, {
     method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider: "openrouter", ...operation.input }),
+    body,
   });
   const response = await handleManagementAPI(request, url, config, { createManagementConvergeCodex: catalogConvergenceFactory() });
   if (!response) throw new Error("missing management route");
   return response;
+}
+
+function put(config: OcxConfig, operation: typeof operations[number]): Promise<Response> {
+  return request(config, operation.path, JSON.stringify({ provider: config.defaultProvider, ...operation.input }));
 }
 
 test.each([...operations])("pending selection write is rejected without mutation: %j", async operation => {
@@ -86,3 +90,36 @@ for (const state of ["ready", "legacy"] as const) {
     expect(config.providers.openrouter.initialModelSelection?.status).toBe(state === "ready" ? "ready" : undefined);
   });
 }
+
+for (const state of ["pending", "ready", "legacy"] as const) {
+  test("unsupported presets keep permanent validation for " + state, async () => {
+    const config = fixture(state, "no-preset-provider");
+    const before = structuredClone(config);
+    const disk = readFileSync(getConfigPath(), "utf8");
+    const response = await put(config, operations[2]);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "no model preset is shipped for provider 'no-preset-provider'" });
+    expect(config).toEqual(before);
+    expect(readFileSync(getConfigPath(), "utf8")).toBe(disk);
+  });
+}
+
+const validationCases = [
+  { path: "/api/model-presets", body: "{", status: 400, error: "invalid JSON body" },
+  { path: "/api/selected-models", body: "{", status: 400, error: "invalid JSON body" },
+  { path: "/api/model-presets", body: "{}", status: 400, error: "unknown provider" },
+  { path: "/api/selected-models", body: "{}", status: 400, error: "unknown provider" },
+  { path: "/api/model-presets", body: '{"provider":"missing","mode":"invalid"}', status: 404, error: "unknown provider" },
+  { path: "/api/selected-models", body: '{"provider":"missing","models":[]}', status: 404, error: "unknown provider" },
+  { path: "/api/model-presets", body: '{"provider":"openrouter","mode":"invalid"}', status: 400, error: "mode must be preset, all, or custom" },
+];
+test.each(validationCases)("permanent validation precedes pending state: %j", async entry => {
+  const config = fixture("pending");
+  const before = structuredClone(config);
+  const disk = readFileSync(getConfigPath(), "utf8");
+  const response = await request(config, entry.path, entry.body);
+  expect(response.status).toBe(entry.status);
+  expect(await response.json()).toEqual({ error: entry.error });
+  expect(config).toEqual(before);
+  expect(readFileSync(getConfigPath(), "utf8")).toBe(disk);
+});
