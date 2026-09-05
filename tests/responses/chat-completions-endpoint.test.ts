@@ -238,6 +238,73 @@ test("chatCompletionsToResponsesBody maps messages/tools/system", () => {
   expect(input.some(i => i.type === "function_call_output" && i.call_id === "call_1")).toBe(true);
 });
 
+describe("chatCompletionsToResponsesBody image parts", () => {
+  test.each(["auto", "low", "high"])("preserves user image detail %s", detail => {
+    const url = "https://example.com/screenshot.png";
+    const body = chatCompletionsToResponsesBody({
+      model: "mock/test-model",
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url, detail } }] }],
+    });
+    expect(body.input).toEqual([{ type: "message", role: "user", content: [
+      { type: "input_image", image_url: url, detail },
+    ] }]);
+  });
+
+  test("retains ordered tool screenshots and legacy text without forwarding video", () => {
+    const url = "data:image/png;base64,aGVsbG8=";
+    const body = chatCompletionsToResponsesBody({
+      model: "mock/test-model",
+      messages: [
+        { role: "assistant", tool_calls: [{ id: "call_image", type: "function", function: { name: "screenshot", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_image", content: [
+          { type: "text", text: "before" },
+          { type: "image_url", image_url: { url, detail: "high" } },
+          { type: "output_text", text: "after" },
+          { type: "video_url", video_url: "https://example.com/video.mp4" },
+          { type: "image_url", image_url: "https://example.com/second.png", detail: "low" },
+        ] },
+      ],
+    });
+    expect(body.input).toEqual([
+      { type: "function_call", call_id: "call_image", name: "screenshot", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_image", output: [
+        { type: "input_text", text: "before" },
+        { type: "input_image", image_url: url, detail: "high" },
+        { type: "input_text", text: "after" },
+        { type: "input_image", image_url: "https://example.com/second.png", detail: "low" },
+      ] },
+    ]);
+    expect(() => parseRequest(body)).not.toThrow();
+  });
+
+  test("keeps image-only tool results structured and ignores unsupported detail", () => {
+    const body = chatCompletionsToResponsesBody({
+      model: "mock/test-model",
+      messages: [{ role: "tool", tool_call_id: "call_image", content: [
+        { type: "image_url", image_url: { url: "https://example.com/first.png" } },
+        { type: "image_url", image_url: { url: "https://example.com/second.png", detail: "invalid" } },
+      ] }],
+    });
+    expect(body.input).toEqual([{ type: "function_call_output", call_id: "call_image", output: [
+      { type: "input_image", image_url: "https://example.com/first.png" },
+      { type: "input_image", image_url: "https://example.com/second.png" },
+    ] }]);
+  });
+
+  test.each([
+    { content: "plain", expected: "plain" },
+    { content: [{ type: "text", text: "one" }, { type: "output_text", text: "two" }], expected: "one\ntwo" },
+    { content: [{ type: "image_url", image_url: { url: "" } }, { type: "text", text: "kept" }], expected: "kept" },
+    { content: [], expected: "" },
+  ])("preserves image-free tool output as a string: %j", ({ content, expected }) => {
+    const body = chatCompletionsToResponsesBody({
+      model: "mock/test-model",
+      messages: [{ role: "tool", tool_call_id: "call_text", content }],
+    });
+    expect(body.input).toEqual([{ type: "function_call_output", call_id: "call_text", output: expected }]);
+  });
+});
+
 describe("chatCompletionsToResponsesBody service_tier", () => {
   test("preserves a caller-supplied service_tier", () => {
     const body = chatCompletionsToResponsesBody({
