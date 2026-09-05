@@ -37,3 +37,10 @@ the new current-account dispatch returned an asynchronous reader without awaitin
 catch boundary. Add the missing await so credential renewal rejection degrades to unavailable
 as before; retain the existing regression unchanged. This is a separate runtime cause from
 the type inference failure, not an assumed CI flake.
+
+Codex GitHub review3939190788 identified the inherited explicit-key-only Kimi guard as
+inconsistent with omitted authMode's documented key default. Accepted for this feature:
+the shared key selector's initial normalized auth guard already rejects OAuth/forward/local,
+so Kimi now uses that same default and its canonical URL check. Added an omitted-mode
+per-key regression plus forward-mode negative. This supersedes 020's preserve-stricter-Kimi
+note, without adding destinations or sending OAuth credentials down the key path.

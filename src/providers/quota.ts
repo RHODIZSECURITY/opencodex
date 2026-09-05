@@ -2520,7 +2520,7 @@ type KeyQuotaReader = (name: string, provider: OcxProviderConfig) => Promise<Pro
 /** Same selector drives cheap capabilities and uncached reads; never resolves credentials. */
 function keyQuotaReaderForProvider(name: string, provider: OcxProviderConfig): KeyQuotaReader | null {
   if (provider.disabled === true || (provider.authMode ?? "key") !== "key") return null;
-  if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
+  if (isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
     return async (id, config) => {
       const bearer = await resolveKimiQuotaBearer(config);
       return bearer ? fetchKimiQuota(id, config, bearer) : null;

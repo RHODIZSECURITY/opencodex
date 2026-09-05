@@ -154,6 +154,24 @@ function keyQuotaResponse(percent: number): Response {
 }
 
 describe("credential-scoped key quota", () => {
+  test("canonical Kimi keys retain the default key auth mode when authMode is omitted", async () => {
+    const provider = { adapter: "openai-chat", baseUrl: "https://api.kimi.com/coding/v1", apiKey: "fixture-kimi-key" };
+    const config: OcxConfig = { port: 0, defaultProvider: "coding-alias", providers: { "coding-alias": provider } };
+    expect(providerApiKeyQuotaMode("coding-alias", provider)).toBe("probe");
+    let calls = 0;
+    globalThis.fetch = (async (input, init) => {
+      calls++;
+      expect(String(input)).toBe("https://api.kimi.com/coding/v1/usages");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-kimi-key");
+      return Response.json({ usage: { limit: 100, used: 25 } });
+    }) as typeof globalThis.fetch;
+    const [row] = await fetchProviderApiKeyQuotas(config, "coding-alias");
+    expect(row?.quota?.weeklyPercent).toBe(25);
+    expect(row?.isCurrent()).toBe(true);
+    expect(calls).toBe(1);
+    expect(providerApiKeyQuotaMode("coding-alias", { ...provider, authMode: "forward" })).toBe("unsupported");
+  });
+
   test("key probe failure drops last-good quota that expires during the upstream await", async () => {
     const config = quotaKeyConfig(1);
     const realDateNow = Date.now;
