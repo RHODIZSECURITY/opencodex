@@ -1,4 +1,14 @@
 import type { OcxConfig } from "../types";
+import type { DataPlaneAdmission } from "../server/auth-cors";
+
+/** Runtime authority comes from the receiving listener, not the catalog's injection target. */
+export function isCodexReserveRequestEligible(
+  config: Pick<OcxConfig, "codexDesktopAuthless" | "runtimeRole">,
+  admission: Pick<DataPlaneAdmission, "source"> | undefined,
+): boolean {
+  return config.codexDesktopAuthless === true && config.runtimeRole !== "client"
+    && admission?.source === "loopback";
+}
 
 /** Bind scope, not the dial address: wildcard listeners are never loopback-only. */
 export function isLoopbackHostname(hostname: string | undefined): boolean {

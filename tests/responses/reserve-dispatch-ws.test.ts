@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { codexWsUpstreamFetch } from "../../src/server/responses/ws-upstream";
 import { providerFetch } from "../../src/server/responses/fetch-helpers";
+import { CodexReserveUnavailableError, createCodexReserveDispatchGuard } from "../../src/codex/auth-context";
+import { clearAccountNeedsReauth } from "../../src/codex/account-runtime-state";
+import { clearCodexUpstreamHealthForAccount } from "../../src/codex/routing";
 import type { OcxProviderConfig } from "../../src/types";
 
 const URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -53,6 +56,50 @@ afterEach(() => {
 });
 
 describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
+  test("off-to-on during delayed WS open refuses the unproved create frame without fallback", async () => {
+    install();
+    clearAccountNeedsReauth("__main__");
+    clearCodexUpstreamHealthForAccount("__main__");
+    const config = { codexDesktopAuthless: false };
+    const guard = createCodexReserveDispatchGuard({ kind: "main", accountId: null }, config, "gpt-reserve", { source: "loopback" });
+    expect(guard).toBeDefined();
+    let fallbacks = 0;
+    const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
+    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    const socket = DelayedWebSocket.instances[0]!;
+    config.codexDesktopAuthless = true;
+    socket.dispatchEvent(new Event("open"));
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected dispatch refusal");
+    expect(outcome.error).toBeInstanceOf(CodexReserveUnavailableError);
+    expect(socket.sent).toEqual([]);
+    expect(socket.closed).toBe(true);
+    expect(socket.listeners.size).toBe(0);
+    expect(fallbacks).toBe(0);
+  });
+
+  test("a still-disabled delayed WS open retains ordinary create behavior with an installed guard", async () => {
+    install();
+    const config = { codexDesktopAuthless: false };
+    const guard = createCodexReserveDispatchGuard({ kind: "main", accountId: null }, config, "gpt-reserve", { source: "loopback" });
+    expect(guard).toBeDefined();
+    let fallbacks = 0;
+    const fallback = Object.assign(async () => { fallbacks += 1; return new Response("unexpected"); }, { preconnect() {} });
+    const pending = codexWsUpstreamFetch(URL, init(), fallback, "1.4.0", guard);
+    const socket = DelayedWebSocket.instances[0]!;
+    socket.dispatchEvent(new Event("open"));
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(socket.sent).toHaveLength(1);
+    expect(fallbacks).toBe(0);
+    await response.body?.cancel();
+  });
+
   test("handshake refusal rejects the original error without dialing or HTTP fallback", async () => {
     install();
     const refusal = new Error("local permission refused");
@@ -77,10 +124,16 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
       expect(headers.get("chatgpt-account-id")).toBe("fixture-workspace");
       if (++checks === 2) throw refusal;
     });
-    const rejected = expect(pending).rejects.toBe(refusal);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
     const socket = DelayedWebSocket.instances[0]!;
     socket.dispatchEvent(new Event("open"));
-    await rejected;
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected dispatch refusal");
+    expect(outcome.error).toBe(refusal);
     expect(checks).toBe(2);
     expect(socket.sent).toEqual([]);
     expect(socket.closed).toBe(true);
@@ -125,11 +178,17 @@ describe("synchronous Reserve dispatch callbacks on WebSocket", () => {
     };
     const executor = providerFetch(provider, "1.4.0", { beforeDispatch: () => { if (!permitted) throw refusal; } });
     const pending = executor(URL, init());
-    const rejected = expect(pending).rejects.toBe(refusal);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
     const socket = await created;
     permitted = false;
     socket.close();
-    await rejected;
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected dispatch refusal");
+    expect(outcome.error).toBe(refusal);
     expect(socket.sent).toEqual([]);
     expect(httpSends).toBe(0);
   });

@@ -7,6 +7,7 @@ import * as sidecarAuth from "../../src/sidecar/auth";
 import { parseRequest } from "../../src/responses/parser";
 import { handleSearch } from "../../src/server/search";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
+import type { DataPlaneAdmission } from "../../src/server/auth-cors";
 
 const forward: OcxProviderConfig = {
   adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -15,6 +16,7 @@ const routed: OcxProviderConfig = {
   adapter: "openai-chat", baseUrl: "https://fixture.example.test/v1", noVisionModels: ["blind"],
 };
 const headers = new Headers({ authorization: "Bearer fixture-helper-token" });
+const loopbackAdmission = { kind: "loopback", source: "loopback" } as const;
 const sidecar = { providerName: "openai" as const, provider: forward, accountMode: "direct" as const,
   authContext: { kind: "main" as const, accountId: null }, headers };
 function config(): OcxConfig {
@@ -48,28 +50,33 @@ describe("Reserve native helper boundary", () => {
     expect(result.error).toContain("503");
   });
 
-  test.each(["enabled", "disabled", "remote", "wildcard"] as const)("%s native plan carries only effective compatibility", mode => {
+  test.each(["enabled", "disabled", "remote", "missing", "dedicated", "bearer", "x-api-key", "secondary-loopback"] as const)("%s native plan carries only ingress-bound compatibility", mode => {
     spyOn(sidecarAuth, "resolveSidecarAuth").mockReturnValue({ isCodexAuth: true, isAnthropicAuth: false });
     const cfg = config();
     if (mode === "disabled") cfg.codexDesktopAuthless = false;
     if (mode === "remote") cfg.runtimeRole = "client";
-    if (mode === "wildcard") cfg.hostname = "0.0.0.0";
+    cfg.hostname = "0.0.0.0";
+    cfg.unauthenticatedLoopbackListener = { enabled: true, port: 15142 };
+    const source: DataPlaneAdmission["source"] = mode === "dedicated" || mode === "bearer" || mode === "x-api-key"
+      ? mode : "loopback";
+    const options = { admission: mode === "missing" ? undefined : { source } };
     const parsed = parseRequest({ model: "external/blind", tools: [{ type: "web_search" }], input: [{
       role: "user", content: [{ type: "input_text", text: "fixture" }, { type: "input_image", image_url: "data:image/png;base64,AA==" }],
     }] });
-    const vision = planVisionSidecar(cfg, routed, "blind", parsed, sidecar);
-    const search = planWebSearch(cfg, parsed, false, routed, "blind", sidecar);
+    const vision = planVisionSidecar(cfg, routed, "blind", parsed, sidecar, options);
+    const search = planWebSearch(cfg, parsed, false, routed, "blind", sidecar, options);
     expect(vision?.settings.model).toBe("gpt-reserve");
     expect(search?.settings.model).toBe("gpt-reserve");
-    expect(vision?.settings.reserveCompatibility).toBe(mode === "enabled" ? true : undefined);
-    expect(search?.settings.reserveCompatibility).toBe(mode === "enabled" ? true : undefined);
+    const expected = mode === "enabled" || mode === "secondary-loopback" ? true : undefined;
+    expect(vision?.settings.reserveCompatibility).toBe(expected);
+    expect(search?.settings.reserveCompatibility).toBe(expected);
   });
 
   test.each(["gpt-reserve", "personal/gpt-reserve"])("standalone %s refuses before native credential resolution", async model => {
     const fetchSpy = spyOn(globalThis, "fetch");
     const result = await handleSearch(new Request("http://localhost/v1/alpha/search", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, query: "fixture" }),
-    }), config(), { model: "", provider: "" });
+    }), config(), { model: "", provider: "" }, undefined, loopbackAdmission);
     expect(result.status).toBe(400);
     expect(await result.text()).toContain("not the standalone search relay");
     expect(fetchSpy).not.toHaveBeenCalled();

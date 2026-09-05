@@ -21,6 +21,7 @@ import { handleResponses } from "../../src/server/responses/core";
 import { handleResponsesCompact } from "../../src/server/responses/compact";
 import { setAsyncIcaclsRunnerForTests, setIcaclsRunnerForTests } from "../../src/lib/windows-secret-acl";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
+import type { DataPlaneAdmission } from "../../src/server/auth-cors";
 import type { WhamUsageResponse } from "../../src/codex/quota-types";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -76,7 +77,8 @@ function quota(percent: number): void {
 }
 
 const selection = () => ({ mainProfileDraining: false, claimMainProfile: () => true, release() {} });
-const reserveOptions = { modelId: NATIVE_RESERVE_MODEL, beginCodexAccountSelection: selection };
+const loopbackAdmission = { kind: "loopback", source: "loopback" } as const;
+const reserveOptions = { modelId: NATIVE_RESERVE_MODEL, beginCodexAccountSelection: selection, admission: loopbackAdmission };
 
 function prohibitPhysicalReads(): void {
   const fail = () => { throw new Error("unexpected physical-main credential read"); };
@@ -165,7 +167,7 @@ describe("Reserve owned auth admission", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]!.headers.get("x-openai-codex-luna-reserve")).toBe("1");
     expect(requests[0]!.headers.get("authorization")).toBe(`Bearer ${accessToken}`);
-    expect(headersForCodexAuthContext(new Headers(), ctx, cfg, NATIVE_RESERVE_MODEL).get("chatgpt-account-id")).toBe(accountId);
+    expect(headersForCodexAuthContext(new Headers(), ctx, cfg, NATIVE_RESERVE_MODEL, loopbackAdmission).get("chatgpt-account-id")).toBe(accountId);
     expect(cfg.activeCodexAccountId).toBe("unused-pool");
   });
 
@@ -186,7 +188,7 @@ describe("Reserve owned auth admission", () => {
       ...reserveOptions, requestScopedMainCredential: true,
     });
     expect(ctx.kind).toBe("main");
-    expect(headersForCodexAuthContext(caller(), ctx, config(), NATIVE_RESERVE_MODEL).get("authorization"))
+    expect(headersForCodexAuthContext(caller(), ctx, config(), NATIVE_RESERVE_MODEL, loopbackAdmission).get("authorization"))
       .toBe(`Bearer ${accessToken}`);
     expect(requests).toHaveLength(1);
   });
@@ -196,6 +198,26 @@ describe("Reserve owned auth admission", () => {
     cfg.runtimeRole = "client";
     await expect(resolveCodexAuthContext(caller("opaque-client"), cfg, "direct", reserveOptions))
       .resolves.toEqual({ kind: "main", accountId: null });
+    expect(requests).toHaveLength(0);
+  });
+
+  test("a configured secondary listener cannot enable compatibility on public or unattributed ingress", async () => {
+    const cfg = config();
+    cfg.hostname = "0.0.0.0";
+    cfg.unauthenticatedLoopbackListener = { enabled: true, port: 10101 };
+    const admissions: Array<Pick<DataPlaneAdmission, "source"> | undefined> = [
+      undefined, { source: "dedicated" }, { source: "bearer" }, { source: "x-api-key" },
+    ];
+    prohibitPhysicalReads();
+    for (const admission of admissions) {
+      const ctx = await resolveCodexAuthContext(caller(), cfg, "direct", { modelId: NATIVE_RESERVE_MODEL, admission });
+      expect(ctx).toEqual({ kind: "main", accountId: null });
+      const selected = await materializeCodexUpstreamAuthAsync(caller(), ctx, {
+        config: cfg, modelId: NATIVE_RESERVE_MODEL, admission,
+      });
+      expect(headersForCodexAuthContext(selected, ctx, cfg, NATIVE_RESERVE_MODEL, admission).get("authorization"))
+        .toBe(`Bearer ${accessToken}`);
+    }
     expect(requests).toHaveLength(0);
   });
 
@@ -243,11 +265,11 @@ describe("Reserve owned auth admission", () => {
 
   test("final sync materialization refuses a synthetic or revoked proof", async () => {
     const cfg = config();
-    expect(() => headersForCodexAuthContext(caller(), { kind: "main", accountId: null }, cfg, NATIVE_RESERVE_MODEL))
+    expect(() => headersForCodexAuthContext(caller(), { kind: "main", accountId: null }, cfg, NATIVE_RESERVE_MODEL, loopbackAdmission))
       .toThrow(CodexReserveUnavailableError);
     const ctx = await resolveCodexAuthContext(caller(), cfg, "direct", reserveOptions);
     observeMainReserveRevocation({ rate_limit: { allowed: true } }, captureMainQuotaWriter(accountId));
-    expect(() => headersForCodexAuthContext(caller(), ctx, cfg, NATIVE_RESERVE_MODEL)).toThrow(CodexReserveUnavailableError);
+    expect(() => headersForCodexAuthContext(caller(), ctx, cfg, NATIVE_RESERVE_MODEL, loopbackAdmission)).toThrow(CodexReserveUnavailableError);
   });
 
   test("refreshed token cannot inherit spread authorization and must obtain its own permission", async () => {
@@ -256,11 +278,13 @@ describe("Reserve owned auth admission", () => {
     if (ctx.kind !== "main-pool") throw new Error("expected owned main context");
     const refreshed: CodexAuthContext = { ...ctx, accessToken: token("reserve-user-b") };
     expect(isMainReserveAuthorizationLive(ctx.reserveAuthorization, refreshed)).toBe(false);
-    expect(() => headersForCodexAuthContext(new Headers(), refreshed, cfg, NATIVE_RESERVE_MODEL))
+    expect(() => headersForCodexAuthContext(new Headers(), refreshed, cfg, NATIVE_RESERVE_MODEL, loopbackAdmission))
       .toThrow(CodexReserveUnavailableError);
     usage.user_id = "reserve-user-b";
     usage.additional_rate_limits![0]!.rate_limit!.allowed = false;
-    await expect(materializeCodexUpstreamAuthAsync(new Headers(), refreshed, { config: cfg, modelId: NATIVE_RESERVE_MODEL }))
+    await expect(materializeCodexUpstreamAuthAsync(new Headers(), refreshed, {
+      config: cfg, modelId: NATIVE_RESERVE_MODEL, admission: loopbackAdmission,
+    }))
       .rejects.toBeInstanceOf(CodexReserveUnavailableError);
     expect(requests).toHaveLength(2);
     expect(requests[1]!.headers.get("authorization")).toBe(`Bearer ${refreshed.accessToken}`);
@@ -273,7 +297,7 @@ describe("Reserve owned auth admission", () => {
     const post = (model: string) => handleResponses(new Request("http://localhost/v1/responses", {
       method: "POST", headers: { ...Object.fromEntries(caller()), "content-type": "application/json" },
       body: JSON.stringify({ model, input: "ping", stream: false }),
-    }), cfg, { model: "", provider: "" });
+    }), cfg, { model: "", provider: "" }, { admission: loopbackAdmission });
     const refused = await post("custom-native/gpt-reserve");
     expect(refused.status).toBe(429);
     expect(await refused.text()).toContain("Reserve is unavailable");
@@ -290,7 +314,7 @@ describe("Reserve owned auth admission", () => {
     const result = await handleResponses(new Request("http://localhost/v1/responses", {
       method: "POST", headers: { ...Object.fromEntries(caller()), "content-type": "application/json" },
       body: JSON.stringify({ model: "custom-native/gpt-reserve", input: "ping", stream: false }),
-    }), config(), { model: "", provider: "" });
+    }), config(), { model: "", provider: "" }, { admission: loopbackAdmission });
     expect(result.status).toBe(200);
     await result.text();
     expect(requests.map(request => new URL(request.url).pathname))
@@ -303,7 +327,7 @@ describe("Reserve owned auth admission", () => {
     const result = await handleResponsesCompact(new Request("http://localhost/v1/responses/compact", {
       method: "POST", headers: { ...Object.fromEntries(caller()), "content-type": "application/json" },
       body: JSON.stringify({ model: "custom-native/gpt-reserve", input: [{ role: "user", content: "ping" }] }),
-    }), config(), { model: "", provider: "" });
+    }), config(), { model: "", provider: "" }, undefined, loopbackAdmission);
     expect(result.status).toBe(429);
     await result.text();
     expect(requests.map(request => new URL(request.url).pathname)).toEqual(["/backend-api/wham/usage"]);

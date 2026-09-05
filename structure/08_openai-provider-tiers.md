@@ -90,6 +90,10 @@ Effective Desktop authless compatibility adds only configured main-selector Rese
 never global/native/API-key or added-account discovery. Prefer observed Reserve metadata; a
 Luna-derived fallback is explicitly marked and never becomes an observed native source on resync.
 Loopback injection and catalog eligibility share the pure `loopback-target` predicates.
+Runtime eligibility is separate: only trusted receiving-listener admission with source loopback,
+the opt-in flag and non-client role activates compatibility. A secondary listener's existence does
+not affect public ingress. Admission flows through Responses, compact, WS handshake/turns,
+translated replay and helper planning; missing admission is not inferred from a URL or Host header.
 
 Reserve availability belongs to `reserve-availability`, not the catalog. An already-owned main
 token/writer makes a capability-aware fixed WHAM GET, bounded to8s/64KiB. Ordinary disallowed,

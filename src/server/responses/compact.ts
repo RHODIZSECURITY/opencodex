@@ -96,7 +96,7 @@ import type { DataPlaneAdmission } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
 import { NATIVE_RESERVE_MODEL } from "../../codex/catalog/native-models";
-import { isEffectiveCodexDesktopAuthless } from "../../codex/loopback-target";
+import { isCodexReserveRequestEligible } from "../../codex/loopback-target";
 import { slugsEquivalent } from "../../providers/slug-codec";
 import { decideTier, tierValueAfterDecision } from "../../providers/fastwire";
 import { fastPolicyForModel } from "../../providers/service-tier";
@@ -228,6 +228,7 @@ async function refreshNativeMainCompactContext(args: {
   req: Request;
   config: OcxConfig;
   modelId?: string;
+  admission?: DataPlaneAdmission;
   authCtx: CodexAuthContext;
   provider: OcxProviderConfig;
   codexAccountMode?: CodexAccountMode;
@@ -261,6 +262,7 @@ async function refreshNativeMainCompactContext(args: {
     );
     const headers = new Headers({ "content-type": "application/json" });
     const selected = await materializeCodexUpstreamAuthAsync(req.headers, refreshedAuthCtx, {
+      admission: args.admission,
       config,
       modelId: args.modelId,
       substituteMainCredential,
@@ -301,6 +303,7 @@ async function refreshPoolCompactContext(args: {
   req: Request;
   config: OcxConfig;
   modelId?: string;
+  admission?: DataPlaneAdmission;
   authCtx: CodexAuthContext & { kind: "pool" };
   provider: OcxProviderConfig;
   codexAccountMode?: CodexAccountMode;
@@ -343,6 +346,7 @@ async function refreshPoolCompactContext(args: {
     );
     const headers = new Headers({ "content-type": "application/json" });
     const selected = await materializeCodexUpstreamAuthAsync(req.headers, refreshedAuthCtx, {
+      admission: args.admission,
       config,
       modelId: args.modelId,
       substituteMainCredential,
@@ -392,11 +396,13 @@ async function resolveAlternateCompactContext(args: {
   selectedModelId: string | undefined;
   excludeAccountId: string | null;
   turnAdmissionLease?: AdmissionLease;
+  admission?: DataPlaneAdmission;
 }): Promise<{ authCtx: CodexAuthContext; provider: OcxProviderConfig; headers: Headers } | null> {
   const { req, config, route, selectedModelId, excludeAccountId, turnAdmissionLease } = args;
   if (!route.codexAccountMode || !excludeAccountId) return null;
   try {
     const authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+      admission: args.admission,
       ...(selectedModelId ? { modelId: selectedModelId } : {}),
       excludeAccountId,
       requestScopedMainCredential: hasForwardableCodexBearer(req.headers, config),
@@ -408,7 +414,7 @@ async function resolveAlternateCompactContext(args: {
     if (authCtx.accountId === excludeAccountId) return null;
     const provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
     const headers = new Headers({ "content-type": "application/json" });
-    const selected = headersForCodexAuthContext(req.headers, authCtx, config, selectedModelId);
+    const selected = headersForCodexAuthContext(req.headers, authCtx, config, selectedModelId, args.admission);
     for (const name of FORWARD_HEADERS) {
       const value = selected.get(name);
       if (value) headers.set(name, value);
@@ -601,7 +607,7 @@ export async function handleResponsesCompact(
   // #2132: and only when the route is a native Codex one, which is the only route that can
   // consume that credential. See the longer note in core.ts resolveResponsesCodexAuth.
   const customReserveForward = selectedModelId === NATIVE_RESERVE_MODEL
-    && isEffectiveCodexDesktopAuthless(config)
+    && isCodexReserveRequestEligible(config, admission)
     && isCanonicalOpenAiForwardProvider(route.provider);
   const substituteMainCredential = admission?.source === "bearer"
     && (route.codexAccountMode !== undefined || customReserveForward);
@@ -654,6 +660,7 @@ export async function handleResponsesCompact(
     try {
       if (route.codexAccountMode || customReserveForward) {
         if (route.codexAccountMode) authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
+          admission,
           accountId: route.codexAccountId,
           modelId: selectedModelId,
           substituteMainCredentialForDirect: substituteMainCredential,
@@ -664,6 +671,7 @@ export async function handleResponsesCompact(
         });
         logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
         const selected = await materializeCodexUpstreamAuthAsync(req.headers, authCtx, {
+          admission,
           config: isCanonicalOpenAiForwardProvider(route.provider) ? config : undefined,
           modelId: selectedModelId,
           beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
@@ -799,7 +807,7 @@ export async function handleResponsesCompact(
           providerName: route.providerName,
           modelId: route.modelId,
           beforeDispatch: isCanonicalOpenAiForwardProvider(sendProvider)
-            ? createCodexReserveDispatchGuard(sendAuthCtx, config, selectedModelId) : undefined,
+            ? createCodexReserveDispatchGuard(sendAuthCtx, config, selectedModelId, admission) : undefined,
         }),
         // Every credential-bearing forward send gets manual redirects, not only
         // pool sends: direct mode carries the caller's credential too (#914).
@@ -874,6 +882,7 @@ export async function handleResponsesCompact(
       const poolReplay = poolAuthCtx
         ? await refreshPoolCompactContext({
           req,
+          admission,
           config,
           modelId: selectedModelId,
           authCtx: poolAuthCtx,
@@ -886,6 +895,7 @@ export async function handleResponsesCompact(
       const replay = poolReplay
         ?? await refreshNativeMainCompactContext({
           req,
+          admission,
           config,
           modelId: selectedModelId,
           authCtx,
@@ -953,6 +963,7 @@ export async function handleResponsesCompact(
       // throws, the first rejection is still intact and can be returned to the client.
       const alternate = await resolveAlternateCompactContext({
         req,
+        admission,
         config,
         route,
         selectedModelId,

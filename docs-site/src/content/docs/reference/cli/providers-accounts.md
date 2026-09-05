@@ -129,6 +129,9 @@ and configure a public selector for the stored main account. With effective loop
 enabled, `ocx sync` includes `<main-selector>/gpt-reserve` alongside routed provider models. A bare
 `gpt-reserve`, an added-account selector, and API-key model discovery are not added to the catalog.
 The authless setting is ignored for remote-client routing or a listener that needs an admission header.
+When public and local listeners run together, Reserve compatibility applies only to requests admitted
+by the local listener. An authenticated public request stays on the normal path even if it originates
+from the same machine; request headers cannot select the local policy.
 
 Each compatibility request checks a credential-bound server authorization, cached for at most
 60 seconds. OpenCodex sends the Reserve capability header on an owned main-account usage read and

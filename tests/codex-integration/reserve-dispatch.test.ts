@@ -18,12 +18,14 @@ import { handleResponsesCompact } from "../../src/server/responses/compact";
 import { UpstreamRetryEvidenceError } from "../../src/lib/upstream-retry";
 import { setAsyncIcaclsRunnerForTests, setIcaclsRunnerForTests } from "../../src/lib/windows-secret-acl";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
+import type { DataPlaneAdmission } from "../../src/server/auth-cors";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const accountId = "reserve-dispatch-workspace";
 const accessToken = "reserve-dispatch-owned-fixture";
 const URL = "https://chatgpt.com/backend-api/codex/responses";
+const loopbackAdmission = { kind: "loopback", source: "loopback" } as const;
 let home: string;
 let oldHome: string | undefined;
 let oldCodexHome: string | undefined;
@@ -51,9 +53,9 @@ function revoke(): void {
 
 async function authorize() {
   const cfg = config();
-  const ctx = await resolveCodexAuthContext(headers(), cfg, "direct", { modelId: "gpt-reserve" });
+  const ctx = await resolveCodexAuthContext(headers(), cfg, "direct", { modelId: "gpt-reserve", admission: loopbackAdmission });
   if (ctx.kind !== "main" || !ctx.reserveAuthorization) throw new Error("fixture expected an owned private grant");
-  const guard = createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve");
+  const guard = createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve", loopbackAdmission);
   if (!guard) throw new Error("fixture expected a dispatch guard");
   return { ctx, cfg, guard };
 }
@@ -122,6 +124,72 @@ afterEach(async () => {
 });
 
 describe("Reserve dispatch-time permission", () => {
+  test("off-to-on during pacing activates the installed guard without obtaining a new grant", async () => {
+    const cfg = config();
+    cfg.codexDesktopAuthless = false;
+    const guard = createCodexReserveDispatchGuard({ kind: "main", accountId: null }, cfg, "gpt-reserve", loopbackAdmission);
+    expect(guard).toBeDefined();
+    const executor = providerFetch(cfg.providers.custom!, "1.3.14", { beforeDispatch: guard });
+    let release!: () => void;
+    const paced = new Promise<void>(resolve => { release = resolve; });
+    executor.waitForPacing = () => paced;
+    const pending = fetchWithHeaderTimeout(URL, { method: "POST", headers: headers(), body: "{}" },
+      new AbortController().signal, 1000, false, executor);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    cfg.codexDesktopAuthless = true;
+    release();
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected dispatch refusal");
+    expect(outcome.error).toBeInstanceOf(CodexReserveUnavailableError);
+    expect(inferenceSends).toBe(0);
+    expect(usageReads).toBe(0);
+  });
+
+  test("an installed guard leaves a still-disabled request on its original unproved path", async () => {
+    const cfg = config();
+    cfg.codexDesktopAuthless = false;
+    const guard = createCodexReserveDispatchGuard({ kind: "main", accountId: null }, cfg, "gpt-reserve", loopbackAdmission);
+    expect(guard).toBeDefined();
+    const response = await providerFetch(cfg.providers.custom!, "1.3.14", { beforeDispatch: guard })(URL, {
+      method: "POST", headers: headers(), body: "{}",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(inferenceSends).toBe(1);
+    expect(usageReads).toBe(0);
+  });
+
+  test("dispatch freezes admission source while keeping policy config live", async () => {
+    const { ctx, cfg } = await authorize();
+    const admission: Pick<DataPlaneAdmission, "source"> = { source: "loopback" };
+    const guard = createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve", admission);
+    expect(guard).toBeDefined();
+    admission.source = "dedicated";
+    revoke();
+    expect(() => guard!(headers())).toThrow(CodexReserveUnavailableError);
+    cfg.codexDesktopAuthless = false;
+    expect(() => guard!(headers())).not.toThrow();
+    expect(usageReads).toBe(1);
+    expect(inferenceSends).toBe(0);
+  });
+
+  test("public or missing admission never creates a compatibility guard despite a secondary listener", async () => {
+    const { ctx, cfg } = await authorize();
+    cfg.hostname = "0.0.0.0";
+    cfg.unauthenticatedLoopbackListener = { enabled: true, port: 10101 };
+    const admissions: Array<Pick<DataPlaneAdmission, "source"> | undefined> = [
+      undefined, { source: "dedicated" }, { source: "bearer" }, { source: "x-api-key" },
+    ];
+    for (const admission of admissions) {
+      expect(createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve", admission)).toBeUndefined();
+    }
+    expect(createCodexReserveDispatchGuard(ctx, cfg, "gpt-reserve", loopbackAdmission)).toBeDefined();
+  });
+
   test("cached proof expiring during pacing refuses before HTTP and never renews", async () => {
     const { ctx, cfg, guard } = await authorize();
     const executor = providerFetch(cfg.providers.custom!, "1.3.14", { beforeDispatch: guard });
@@ -130,10 +198,16 @@ describe("Reserve dispatch-time permission", () => {
     executor.waitForPacing = () => paced;
     const pending = fetchWithHeaderTimeout(URL, { method: "POST", headers: headers(), body: "{}" },
       new AbortController().signal, 1000, false, executor);
-    const rejected = expect(pending).rejects.toBeInstanceOf(CodexReserveUnavailableError);
+    const observed = pending.then(
+      () => ({ status: "fulfilled" as const }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
     now = ctx.reserveAuthorization!.expiresAt + 1;
     release();
-    await rejected;
+    const outcome = await observed;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status !== "rejected") throw new Error("Expected dispatch refusal");
+    expect(outcome.error).toBeInstanceOf(CodexReserveUnavailableError);
     expect(inferenceSends).toBe(0);
     expect(usageReads).toBe(1);
   });
@@ -156,7 +230,7 @@ describe("Reserve dispatch-time permission", () => {
 
   test("unguarded unrelated transport remains unchanged", async () => {
     const { ctx, cfg } = await authorize();
-    expect(createCodexReserveDispatchGuard(ctx, cfg, "gpt-5.6-luna")).toBeUndefined();
+    expect(createCodexReserveDispatchGuard(ctx, cfg, "gpt-5.6-luna", loopbackAdmission)).toBeUndefined();
     const provider: OcxProviderConfig & { fetch: typeof fetch } = {
       adapter: "openai-responses", authMode: "key", baseUrl: "https://independent.example.test/v1",
       fetch: Object.assign(async () => new Response("keyed-ok"), { preconnect() {} }),
@@ -188,8 +262,8 @@ describe("Reserve dispatch-time permission", () => {
           body: JSON.stringify({ model: "custom/gpt-reserve", input: [{ role: "user", content: "ping" }], stream: false }),
         });
         const response = endpoint === "compact"
-          ? await handleResponsesCompact(request, config(), { model: "", provider: "" })
-          : await handleResponses(request, config(), { model: "", provider: "" });
+          ? await handleResponsesCompact(request, config(), { model: "", provider: "" }, undefined, loopbackAdmission)
+          : await handleResponses(request, config(), { model: "", provider: "" }, { admission: loopbackAdmission });
         expect(response.status).toBe(429);
         expect(await response.text()).toContain("Reserve is unavailable");
         expect(inferenceSends).toBe(1);
@@ -211,7 +285,7 @@ describe("Reserve dispatch-time permission", () => {
     const response = await handleResponses(new Request("http://localhost/v1/responses", {
       method: "POST", headers: { ...Object.fromEntries(headers()), "content-type": "application/json" },
       body: JSON.stringify({ model: "custom/gpt-reserve", input: "ping", stream: false }),
-    }), cfg, { model: "", provider: "" });
+    }), cfg, { model: "", provider: "" }, { admission: loopbackAdmission });
     expect(response.status).toBe(429);
     expect(await response.text()).toContain("cooling down");
     expect(getCodexUpstreamHealth("__main__")).toEqual(recorded!);

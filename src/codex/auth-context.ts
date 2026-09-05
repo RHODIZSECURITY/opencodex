@@ -61,7 +61,8 @@ import {
   observeMainQuotaCredential,
   type MainQuotaWriter,
 } from "./main-account-cache";
-import { isEffectiveCodexDesktopAuthless } from "./loopback-target";
+import { isCodexReserveRequestEligible } from "./loopback-target";
+import type { DataPlaneAdmission } from "../server/auth-cors";
 import { getMainReserveAuthorization, isMainReserveAuthorizationLive, type MainReserveAuthorization } from "./reserve-availability";
 import { UpstreamRetryEvidenceError } from "../lib/upstream-retry";
 
@@ -330,13 +331,19 @@ interface CodexAuthMaterializationOptions {
   substituteMainCredential?: boolean;
   config?: CodexAuthPolicyConfig;
   modelId?: string;
+  /** Trusted receiving-listener admission; never inferred from request headers or config. */
+  admission?: Pick<DataPlaneAdmission, "source">;
   signal?: AbortSignal;
   nativeMainRefreshDependencies?: NativeMainRefreshDependencies;
   beginCodexAccountSelection?: () => CodexAccountSelectionAdmission | undefined;
 }
 
-function requiresReserveAuthorization(config: CodexAuthPolicyConfig | undefined, modelId: string | undefined): boolean {
-  return modelId === NATIVE_RESERVE_MODEL && !!config && isEffectiveCodexDesktopAuthless(config);
+function requiresReserveAuthorization(
+  config: CodexAuthPolicyConfig | undefined,
+  modelId: string | undefined,
+  admission: Pick<DataPlaneAdmission, "source"> | undefined,
+): boolean {
+  return modelId === NATIVE_RESERVE_MODEL && !!config && isCodexReserveRequestEligible(config, admission);
 }
 
 function assertReserveAdmission(config: CodexAuthPolicyConfig): void {
@@ -386,7 +393,7 @@ function selectedCodexToken(headers: Headers): { accessToken: string; chatgptAcc
 }
 
 function assertMaterializedReserve(headers: Headers, ctx: CodexAuthContext, options: CodexAuthMaterializationOptions): void {
-  if (!requiresReserveAuthorization(options.config, options.modelId)) return;
+  if (!requiresReserveAuthorization(options.config, options.modelId, options.admission)) return;
   assertReserveAdmission(options.config!);
   if (ctx.kind === "pool" || !isMainReserveAuthorizationLive(ctx.reserveAuthorization, selectedCodexToken(headers))) {
     throw new CodexReserveUnavailableError();
@@ -398,9 +405,16 @@ export function createCodexReserveDispatchGuard(
   ctx: CodexAuthContext,
   config: CodexAuthPolicyConfig,
   modelId: string,
+  admission?: Pick<DataPlaneAdmission, "source">,
 ): ((headers: Headers) => void) | undefined {
-  if (!requiresReserveAuthorization(config, modelId)) return undefined;
-  return headers => assertMaterializedReserve(headers, ctx, { config, modelId });
+  // Snapshot the resolved source value, not the caller's mutable admission object. Config stays
+  // live so policy changes remain visible after pacing and retry backoff.
+  const source = admission?.source;
+  if (modelId !== NATIVE_RESERVE_MODEL || source !== "loopback") return undefined;
+  // Only immutable request facts decide whether to install the callback. Flag/role eligibility
+  // is checked inside it, including an opt-in enabled while a send waits for pacing or WS open.
+  const ingress = Object.freeze({ source });
+  return headers => assertMaterializedReserve(headers, ctx, { config, modelId, admission: ingress });
 }
 
 /** Retry history must not turn a later local admission refusal into a network failure. */
@@ -522,6 +536,7 @@ export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown):
 }
 
 export interface ResolveCodexAuthContextOptions {
+  admission?: Pick<DataPlaneAdmission, "source">;
   excludeAccountId?: string;
   /** Resolve exactly this account without consulting or mutating Pool selection. */
   accountId?: string;
@@ -561,7 +576,7 @@ export async function resolveCodexAuthContext(
   const writerGeneration = captureConfigGeneration();
   const requestScopedMainCredential = options.requestScopedMainCredential === true
     && hasCallerCodexBearer(headers);
-  const reserve = requiresReserveAuthorization(config, options.modelId);
+  const reserve = requiresReserveAuthorization(config, options.modelId, options.admission);
   if (reserve && (options.excludeAccountId !== undefined
     || (options.accountId !== undefined && options.accountId !== MAIN_CODEX_ACCOUNT_ID))) {
     throw new CodexReserveUnavailableError();
@@ -1070,7 +1085,7 @@ export async function materializeCodexUpstreamAuthAsync(
   ctx: CodexAuthContext,
   options: CodexAuthMaterializationOptions = {},
 ): Promise<Headers> {
-  if (requiresReserveAuthorization(options.config, options.modelId)) {
+  if (requiresReserveAuthorization(options.config, options.modelId, options.admission)) {
     return materializeReserveUpstreamAuth(headers, ctx, options);
   }
   if (ctx.kind !== "main" || options.substituteMainCredential !== true) {
@@ -1103,8 +1118,9 @@ export function headersForCodexAuthContext(
   ctx: CodexAuthContext,
   config?: CodexAuthPolicyConfig,
   modelId?: string,
+  admission?: Pick<DataPlaneAdmission, "source">,
 ): Headers {
-  return materializeCodexUpstreamAuth(headers, ctx, { config, modelId });
+  return materializeCodexUpstreamAuth(headers, ctx, { config, modelId, admission });
 }
 
 export function isCodexAuthContextUsable(ctx: CodexAuthContext, config: OcxConfig): boolean {
