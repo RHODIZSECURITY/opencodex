@@ -16,8 +16,8 @@ regressions. No unsupported provider-specific file resolver is being invented.
 | Claude source:file | Native reference valid; translated mapper drops it | 030: explicit translated error, no cross-provider resolution |
 | Responses/Azure | Native raw inputs and repairable orphan images retained | No additional loss found |
 | Chat/Mimo | User-image carrier after pending tool batch | No additional loss found |
-| Anthropic | Paired image result works; orphan JSON-inlines image data | 040: native image sibling with provenance |
-| Command Code | Paired image carrier works; orphan skips it | 040: reuse wireImagePart on orphan carrier |
+| Anthropic | Paired image result works; orphan baseline JSON-inlines image data | 040: native image sibling with provenance; baseline standalone exit1 confirmed |
+| Command Code | Paired image carrier works; orphan baseline skips it | 040: reuse wireImagePart on orphan carrier; baseline standalone exit1 confirmed |
 | Google/Vertex/Antigravity | Data -> inline_data, tool image siblings | Remote-URL marker remains existing limitation |
 | Kiro | Data images on user carrier; orphan pairing rejected | Remote URL remains existing limitation |
 | Ollama native | Data/raw base64 images; unsupported URL/pairing rejected | Existing explicit contract |
