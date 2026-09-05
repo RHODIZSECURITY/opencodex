@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { captureInitialSelectionBaseline, finalizeInitialModelSelection } from "../../providers/initial-model-selection-runtime";
+import { initialModelSelectionPending } from "../../providers/initial-model-selection";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
 import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
@@ -179,13 +181,24 @@ export function requestLogDto(entry: RequestLogEntry): Record<string, unknown> {
  */
 export async function fetchAllModels(config: OcxConfig): Promise<CatalogModel[]> {
   const { gatherRoutedModels } = await import("../../codex/catalog");
-  return gatherRoutedModels(config);
+  const baseline = captureInitialSelectionBaseline(config);
+  if (!baseline) return gatherRoutedModels(config);
+  const outcomes: Array<{ provider: string; state: "authoritative" | "degraded" }> = [];
+  const models = await gatherRoutedModels(config, { providerModelOutcomes: outcomes });
+  finalizeInitialModelSelection(config, baseline, uniqueCatalogModelsForPublicList(models),
+    outcomes.filter(outcome => outcome.state === "authoritative").map(outcome => outcome.provider));
+  return models;
 }
 
 export interface GrokCandidateModel {
   id: string;
   contextWindow?: number;
   native: boolean;
+}
+
+/** Configuration pickers may retain disabled choices, but never offer provisional models. */
+export async function fetchInitializedModels(config: OcxConfig): Promise<CatalogModel[]> {
+  return (await fetchAllModels(config)).filter(model => !initialModelSelectionPending(config.providers[model.provider]));
 }
 
 /**

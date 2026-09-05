@@ -525,6 +525,12 @@ const providerConfigSchema = z.object({
   modelAliases: z.record(z.string(), z.string()).optional(),
   modelDisplayNames: modelDisplayNamesSchema.optional(),
   defaultAliases: z.boolean().optional(),
+  initialModelSelection: z.object({
+    version: z.literal(1),
+    registrationId: z.uuid(),
+    status: z.enum(["pending", "ready", "all-off"]),
+    modelCount: z.number().int().nonnegative().optional(),
+  }).optional().catch(undefined),
   requestPacing: requestPacingSchema.optional().catch(undefined),
   mcpMaxTools: z.number().int().positive().optional(),
   mcpMaxSchemaBytes: z.number().int().positive().optional(),

@@ -1,5 +1,61 @@
 # Verified bottom-up stack landing
 
+## Final integration pass
+
+The user ended cross-task CI coordination and instructed the remaining tasks to proceed
+independently. Continue this stack without waiting for another task's START or sending it
+messages. No local tests, typecheck, build, lint or scan; the previously authorized
+no-verify pushes and CI-gated admin merges remain in effect.
+
+Class C4 integration verification, satisfy-spec loop. Consume the earlier verified quota
+layers without redesigning them. Current published baseline is
+`45f3bed84be10a7e045a20aae1db46ab822bf7d0`; this incorporates provider registration and
+pending-selection contracts plus the upstream port-probe repair. Preserve those public
+changes verbatim. The source delta in this pass is their actual merge into the bottom
+branch, cascaded through API and UI, not a synthetic no-op edit.
+
+Exact change map: MODIFY this landing record; MERGE the published baseline into
+`codex/provider-usage-attribution`; MERGE each new lower tip into
+`codex/provider-account-quota-api` then `codex/provider-quota-parity`; MERGE the new UI tip
+into `codex/provider-ci-isolation-followup`. The follow-up already contains reviewed
+commit `b37841448816107c856171277dff0464032d282e`, limited to the update-recovery fixture
+and its numbered record. Retain it as a fourth test-only stack layer. No new production
+behavior is planned. Any semantic conflict requires a concrete plan amendment and review.
+
+The UI cascade has one textual conflict in `gui/src/pages/Providers.tsx`: retain this
+unit's `useQuotaRefreshCoordinator(apiBase)` and upstream's `fetchConfig:
+refreshConfigResult` binding together. Keep the upstream void-returning `fetchConfig`
+adapter and result-aware `useProviderModelsNotice` caller unchanged. Existing quota epoch
+and registration-notice tests must both execute in the new CI. This composes the two
+existing contracts; it does not restore superseded unbounded refresh waiters.
+
+Preserve all original commits; use normal merge commits and fast-forward no-verify pushes,
+not rebases or force-pushes. Inspect each integration diff, check that inherited quota,
+registration and pricing semantics survive, and obtain independent review before publication.
+Every layer needs its own new full applicable GitHub CI, including the follow-up's actual
+negative-inheritance and recovery scenarios. Old green trees are context, not final proof.
+
+Repository auto-deletion requires retargeting the direct child to dev BEFORE admin merging
+its parent. Verify unchanged child head, then merge only the parent with
+`--admin --merge --match-head-commit <verified-head>`. Fetch dev and prove both the merge
+commit's ancestry and its tree match with the tested integration. Before each later merge,
+refresh head/base/tree/reviews/checks; a changed integration tree needs fresh CI rather than
+an old workflow rerun. Do not alter repository settings, other tasks' CI, live services or
+user history. The final documentation record and archive must be published with their own
+appropriate remote checks; no completion until all four layers and closure are on dev.
+
+Verifier: GitHub run/job output at the exact head and checkout tree (all required jobs
+completed successfully), review-thread reads, `git diff`/`git merge-tree` for static
+integration inspection only, and fetched `git merge-base --is-ancestor` for delivery.
+No local executable verifier runs. Source/layout unchanged by a merge does not require
+another render; any actual quota layout change requires a fresh observed isolated render.
+The user-visible quota matrix and screenshots already recorded in031 remain required.
+Terminal success is all original requirements plus follow-up and closure delivered, not
+merely a clean textual merge. Preserve unknown historical usage and do not claim a fixed
+historical stall without evidence. Active integration work is bounded to90minutes before
+reassessment; queued remote CI time is excluded, and no new credential or spending authority
+is introduced.
+
 ## Authorized continuation
 
 The user explicitly extended this goal to the CI-blocking launcher, shim and process
@@ -30,8 +86,8 @@ Inherit resource/scope limits from 000. User explicitly authorizes no-verify pus
 1. Inspect `git status --short`, `git worktree list`, each branch tip and `gh pr view --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,mergeStateStatus`.
 2. Inspect exact-head CI via `gh run list --commit <sha>` and failed job logs when necessary. An empty required-check list is not proof. Resolve correct review findings without suppressing tests.
 3. Ensure every PR includes Summary, Verification and Checklist, a linked stack map, explicit no-local-suite note, and UI screenshot for UI changes. Record admin bypass authorization in the PR description.
-4. Merge the bottom PR only when its exact head has successful full CI; prefer `gh pr merge --admin --merge --match-head-commit <sha>` to preserve stack ancestry. Do not delete lower branches.
-5. Retarget the next child to `dev`; refresh checks at its exact head/base. If ancestry reconstruction is necessary, use only session-owned branches with clean working state, record parent and child commits, cascade all upper layers and use `--force-with-lease --no-verify`; no destructive worktree operations.
+4. After exact-head/integration-tree full CI, retarget the direct child to `dev` before its parent merges, because this repository automatically deletes merged remote heads. Preserve local lower refs.
+5. Merge only the bottom PR with `gh pr merge --admin --merge --match-head-commit <sha>`; refresh the child's head/base/tree and checks. Reconstruct only session-owned branches with normal merges and no-verify fast-forward pushes; no destructive worktree operations.
 6. After each merge, `git fetch origin dev` then `git merge-base --is-ancestor <merge-sha> FETCH_HEAD`. Record PR, CI head, merge SHA and ancestry outcome in `041_delivery.md`.
 7. Archive the completed unit from `_plan` to `_fin` only as an explicit final documented source change with its own remote checks if it alters a pending PR. Otherwise retain a terminal closure record without inventing extra unverified commits.
 
