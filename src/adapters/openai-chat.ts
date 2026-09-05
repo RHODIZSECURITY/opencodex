@@ -1849,8 +1849,17 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               const rawId = rawToolCall.id;
               const idDelta = typeof rawId === "string" ? rawId : "";
               const rawIndex = rawToolCall.index;
+              // Invalid numeric indexes must not fall through to ID or last-call matching.
+              // Reject before an alias can bind or any pending call can consume the fragment.
+              if (typeof rawIndex === "number"
+                  && (!Number.isInteger(rawIndex) || rawIndex < 0)) {
+                return yield* terminateWithError({
+                  ...invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage),
+                  message: "upstream response contained invalid tool calls (invalid numeric index)",
+                });
+              }
 
-              // Resolve the pending call BEFORE judging the fields. Some OpenAI-compatible
+              // Resolve the pending call BEFORE judging repeated string fields. Some OpenAI-compatible
               // streamers repeat an already-sent field as a non-string placeholder on a
               // continuation delta; judging first meant the whole stream died with a 502 even
               // though the value being repeated was already held in canonical form.

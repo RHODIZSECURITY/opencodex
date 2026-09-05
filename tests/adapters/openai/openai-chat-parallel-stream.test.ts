@@ -268,6 +268,51 @@ describe("openai-chat parallel tool call stream assembly", () => {
     expect(events.some(event => event.type === "done")).toBe(false);
   });
 
+  test.each([
+    [-1, undefined],
+    [-1, "call_a"],
+    [0.5, undefined],
+    [0.5, "call_a"],
+  ] as const)("invalid numeric index %s with ID %s aborts without reassigning pending calls", async (index, id) => {
+    const budget = createTestTranslatorBudget();
+    const response = new Response(sse([
+      chunkOf([
+        { id: "call_a", function: { name: "read", arguments: '{"p":"a"}' } },
+        { id: "call_b", function: { name: "write", arguments: '{"p":"b"}' } },
+      ]),
+      chunkOf([{ index: 0, id: "call_a", function: { arguments: "" } }]),
+      // Whitespace keeps either complete JSON argument valid if the invalid index is
+      // mistakenly ignored and this fragment falls back to its ID or the last call.
+      chunkOf([{ index, id, function: { arguments: " " } }]),
+      chunkOf([{ index: 0, function: { arguments: " " } }]),
+      chunkOf([], "tool_calls"),
+    ]));
+    const events: AdapterEvent[] = [];
+    let sawBothPendingReservations = false;
+    for await (const event of createOpenAIChatAdapter(provider).parseStream(response, budget)) {
+      events.push(event);
+      const snapshot = budget.snapshot();
+      // Each ASCII JSON argument is nine bytes; the valid alias heartbeat observes
+      // both retained reservations before the malformed continuation arrives.
+      sawBothPendingReservations ||= snapshot.activeCalls === 2 && snapshot.currentBytes === 18;
+      if (event.type === "error") {
+        expect(snapshot).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+      }
+    }
+    expect(sawBothPendingReservations).toBe(true);
+    expect(events.filter(event => event.type === "error")).toEqual([expect.objectContaining({
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (invalid numeric index)",
+    })]);
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(event => event.type === "done")).toBe(false);
+    expect(events.some(event => event.type === "tool_call_start"
+      || event.type === "tool_call_delta" || event.type === "tool_call_end")).toBe(false);
+    expect(budget.snapshot()).toMatchObject({ activeCalls: 0, currentBytes: 0, overflows: 0 });
+  });
+
   test("an observed index wins over a conflicting ID without rebinding either call", async () => {
     const events = await collect(sse([
       chunkOf([{ id: "call_a", function: { name: "read", arguments: "{\"p\":" } }]),
