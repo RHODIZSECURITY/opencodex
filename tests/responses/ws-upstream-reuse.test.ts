@@ -158,6 +158,27 @@ test("busy identity gets an independent one-shot; old abort cannot kill successo
   expect(Socket.all[1]!.readyState).toBe(3);
 });
 
+test("overlapping A to changed-header B to A keeps retired busy sockets tracked until release", async () => {
+  Socket.onSend = () => {};
+  const changed = init("B");
+  const headers = new Headers(changed.headers);
+  headers.set("x-custom-policy", "B");
+  const pending = [request(init("A")), request({ ...changed, headers }), request(init("A-again"))];
+  await Promise.resolve();
+  expect(Socket.all).toHaveLength(3);
+  expect(codexWsPool.snapshot()).toEqual({ size: 2, active: 2, timer: false });
+  expect(Socket.all.map(socket => socket.frames.map(frame => frame.input)))
+    .toEqual([["A"], ["B"], ["A-again"]]);
+  Socket.all[0]!.complete();
+  await (await pending[0]!).text();
+  expect(Socket.all[0]!.readyState).toBe(3);
+  expect(codexWsPool.snapshot()).toEqual({ size: 1, active: 1, timer: false });
+  Socket.all[1]!.complete(); Socket.all[2]!.complete();
+  await Promise.all(pending.slice(1).map(async result => (await result).text()));
+  expect(Socket.all.every(socket => socket.readyState === 3)).toBe(true);
+  expect(codexWsPool.snapshot()).toEqual({ size: 0, active: 0, timer: false });
+});
+
 test.each(["abort", "error", "close", "shutdown", "stale-item", "stale-response", "named-lane"])(
   "warm %s fails its body without a resend", async reason => {
     await drain();

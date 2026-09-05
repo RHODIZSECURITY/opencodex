@@ -93,7 +93,7 @@ The initial implementation sends each complete HTTP request as a complete `respo
 
 - Hard cap: 32 retained canonical sessions; at most one active exchange per retained session. On a busy key, use a separately owned one-shot connection, not an unbounded waiter queue or concurrent send on that socket. Global turn admission remains authoritative.
 - Idle TTL: 30 seconds. Maximum connection age: 5 minutes. Named constants live in the pool owner; fake-clock tests cross exact boundaries.
-- Maximum successful exchanges per retained socket:32, bounding remembered response ids. Expired or superseded active exchanges may finish but are retired at release; age expiry does not kill an in-flight generation merely to free capacity. Correlation ids are bounded to4096 bytes and item tracking to10000 items; no prompt/output history is retained.
+- Maximum successful exchanges per retained socket: 32, bounding remembered response ids. Expired or superseded active exchanges may finish but are retired at release; age expiry does not kill an in-flight generation merely to free capacity. Correlation ids are bounded to 4096 bytes and item tracking to 10000 items; no prompt/output history is retained.
 - No timer before first activation. Expiry uses bounded owned timers with `unref` where available; every timer/listener is cleared on disposal. Register one shutdown hook on activation and detach when the pool is fully disposed.
 - Evict oldest idle entries before retaining a new one. Never evict/steal a live exchange merely to make room; use the existing one-shot bounded path.
 - Successful terminal closes the exchange stream and releases a reusable socket only after its bounded terminal frame is enqueued. Failed/incomplete/error outcomes are conservatively disposed, not reused.
@@ -138,7 +138,24 @@ Run the focused transport and integration suite, typecheck, privacy/secret check
 and exact-head CI. Main audits obey the user's no-other-task-communication boundary;
 do not represent them as independent security review. Publish with `--no-verify`
 as a draft PR targeting dev while verification or review remains outstanding.
-The latest user instruction explicitly prohibits merging this follow-up: leave the
-PR open and do not enable auto-merge, even after green checks. No production service
-restart or link occurs. The original goal's merge wording is superseded for this
-phase only; protocol's already-published outcome remains unchanged.
+The subsequent owner instruction authorizes real selected-account verification
+and merging after the remaining checks. Preserve the earlier PR-only publication
+record as history, not a current merge prohibition. Start live checks with at most
+24 creates, 512 requested output tokens each, concurrency at most two, and a
+60-minute diagnostic horizon. Use a separate local process and read-only selected
+credentials; no refresh, persisted credentials, secret logs or live proxy changes.
+Keep required CI/review evidence truthful and prove fetched merge ancestry.
+No production service restart or link occurs.
+
+The independent A-B-A review trace was disproven in an ignored exact-head probe:
+return-null cannot fall through to entry replacement. Add permanent facade
+coverage to guard that intended retirement behavior; do not change correct pool
+ownership merely to satisfy the proposed explanation.
+
+Live backend validation also exposed pretty-printed error frames: the existing
+relay prefixed only the first physical JSON line with SSE `data:`, so ordinary
+SSE readers could not parse the error. Normalize physical CR/LF JSON formatting
+inside the existing wire owner before SSE framing, preserving the parsed fields
+and all size limits. Cover both errors and completed responses; compact native
+frames remain byte-preserved. This is an observed wire fix, not an inferred
+quota-accounting change.

@@ -73,7 +73,11 @@ export function normalizeResponsesWsRelayEvent(text: string): ResponsesWsRelayEv
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const record = payload as Record<string, unknown>;
   if (typeof record.type !== "string") return null;
-  if (record.type !== "response.done") return { type: record.type, text, payload: record };
+  // A native error may be pretty-printed JSON. SSE prefixes one data line;
+  // embedded physical newlines would otherwise truncate the JSON for readers.
+  if (record.type !== "response.done") return {
+    type: record.type, text: /[\r\n]/.test(text) ? JSON.stringify(record) : text, payload: record,
+  };
 
   const response = record.response;
   const status = response && typeof response === "object" && !Array.isArray(response)
