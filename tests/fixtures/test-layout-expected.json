@@ -663,6 +663,7 @@
   "native-profile-store.test.ts": "codex-integration",
   "new-model-policy.test.ts": "providers",
   "initial-model-selection.test.ts": "providers",
+  "initial-selection-write-fence.test.ts": "providers",
   "model-selection-guidance.test.ts": "cli",
   "nous-oauth-live.test.ts": "providers",
   "nous-oauth.test.ts": "providers",

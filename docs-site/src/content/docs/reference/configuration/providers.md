@@ -19,7 +19,7 @@ ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
 
-After GUI registration or OAuth login, the confirmation dialog opens the Models page. CLI registration and login print model-management commands; JSON includes structured next steps. `--no-wait` reports pending login, not completion. Start the proxy with `ocx start` before using live model commands.
+After GUI registration or OAuth login, the confirmation dialog lets you open the Models page. CLI registration and login print model-management commands; JSON includes structured next steps. `--no-wait` reports pending login, not completion. Start the proxy with `ocx start` before using live model commands.
 
 ## Provider-related top-level fields
 
