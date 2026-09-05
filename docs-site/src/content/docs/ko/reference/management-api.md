@@ -147,11 +147,14 @@ Authorization: Bearer <admin-token>
 | `GET /api/models` | 대시보드/CLI model 행을 반환합니다 | 수집이 포화 상태이면 `catalog_busy` |
 | `GET /api/client-config?client=...` | 지원되는 파일 연동의 읽기 전용 client config를 만듭니다 | 400 지원되지 않는 client; 503 catalog 사용 불가 |
 | `PUT /api/disabled-models` | 공유 disabled-model 목록을 교체합니다 | 400 잘못된 JSON |
-| `PUT /api/model-visibility` | provider 또는 model 수준의 visibility를 원자적으로 변경합니다 | 400 잘못된 provider, scope, target, 또는 본문 |
+| `PUT /api/model-visibility` | provider 또는 model 수준의 visibility를 원자적으로 변경합니다 | 400 잘못된 provider, scope, target, 또는 본문; 409 `initial_model_selection_pending` (목록을 새로고침한 뒤 다시 시도하세요.) |
 | `GET, POST /api/custom-models` | custom model을 나열하거나 하나를 추가합니다 | 400 잘못된 필드; 404 provider 없음; 409 중복 model |
 | `PUT, DELETE /api/custom-models/{id}` | custom model 하나를 수정하거나 삭제합니다 | 400 잘못된 id/필드; 404 찾을 수 없음; 409 중복 model |
 | `GET, PUT /api/selected-models` | provider allowlist와 가용성을 읽거나 allowlist 하나를 교체합니다 | 400 provider/body 누락; 404 알 수 없는 provider; PUT 409 `initial_model_selection_pending` |
 | `GET, PUT /api/model-presets` | 프리셋 정보를 읽거나 preset/all/custom 모드를 선택합니다 | 400 잘못된 mode 또는 지원하지 않는 프리셋; 404 알 수 없는 provider; PUT 409 `initial_model_selection_pending` |
+
+수동 모델은 Models 대시보드에서 provider와 model ID가 같은 행을 대체합니다. OpenAI 수동 행은 `openai/<model>`을 유지하며 표시 여부를 바꿀 수 있습니다. 수동 행을 삭제하면 계정 한정자가 없는 네이티브 행이 다시 나타납니다. 계정 한정자가 있는 네이티브 행은 별도로 유지됩니다. 네이티브 경로나 계정 권한은 바뀌지 않습니다. OpenAI의 비네이티브 표시 대상은 설정된 수동 모델과 일치해야 합니다.
+
 
 신뢰할 수 있는 초기 모델 목록을 확보하기 전에는 유효한 `PUT /api/selected-models`와 `PUT /api/model-presets` 요청도 HTTP 409와 `initial_model_selection_pending` 코드를 반환합니다. `GET /api/models` 등으로 모델 목록을 정상적으로 갱신한 뒤 재시도하세요.
 

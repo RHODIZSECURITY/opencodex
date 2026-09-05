@@ -144,11 +144,14 @@ Authorization: Bearer <admin-token>
 | `GET /api/models` |ダッシュボード/CLI モデルの行を返す |収集が飽和したときの `catalog_busy` |
 | `GET /api/client-config?client=...` |サポートされているファイル連携の読み取り専用クライアント設定を作成する | 400 クライアントがサポートされていません。 503 カタログは利用できません |
 | `PUT /api/disabled-models` |共有の無効モデル リストを置き換える | 400 無効な JSON |
-| `PUT /api/model-visibility` |プロバイダーレベルまたはモデルレベルの可視性をアトミックに変更 | 400 プロバイダー、スコープ、ターゲット、または本文が無効です。
+| `PUT /api/model-visibility` |プロバイダーレベルまたはモデルレベルの可視性をアトミックに変更 | 400 プロバイダー、スコープ、ターゲット、または本文が無効です。; 409 `initial_model_selection_pending` (モデル一覧を更新してから再試行してください。) |
 | `GET, POST /api/custom-models` |カスタム モデルをリストするか追加する | 400 個の無効なフィールド。 404 プロバイダーがありません。 409 複製モデル |
 | `PUT, DELETE /api/custom-models/{id}` | 1 つのカスタム モデルを編集または削除する | 400 個の無効な ID/フィールド。 404 が見つかりません。 409 複製モデル |
 | `GET, PUT /api/selected-models` | プロバイダーの許可リストと可用性を読む、または許可リストを置き換える | 400 プロバイダー/本文の不足; 404 不明なプロバイダー; PUT 409 `initial_model_selection_pending` |
 | `GET, PUT /api/model-presets` | プリセット情報を読む、または preset/all/custom モードを選ぶ | 400 不正なモードまたは未提供のプリセット; 404 不明なプロバイダー; PUT 409 `initial_model_selection_pending` |
+
+手動モデルは、Models ダッシュボードで provider と model ID が一致する行を置き換えます。OpenAI の手動行は `openai/<model>` を維持し、表示状態を変更できます。削除すると、アカウント修飾子のないネイティブ行が復元されます。アカウント修飾付きのネイティブ行は別に保持されます。ネイティブルートやアカウントの権限は変更しません。OpenAI の非ネイティブ表示対象は、設定済みの手動モデルと一致する必要があります。
+
 
 信頼できる初回モデル一覧が確定するまで、有効な `PUT /api/selected-models` と `PUT /api/model-presets` も HTTP 409 とコード `initial_model_selection_pending` を返します。`GET /api/models` などでモデル一覧を更新し、取得に成功してから再試行してください。
 
