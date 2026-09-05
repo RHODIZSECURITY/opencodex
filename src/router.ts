@@ -9,7 +9,7 @@ import {
 } from "./combos";
 import type { NormalizedComboConfig } from "./combos/types";
 import { hasOwnProvider } from "./config/provider-name";
-import { resolveProviderApiKey } from "./providers/key-store";
+import { providerUsesKeyAuthOverride, resolveProviderApiKey } from "./providers/key-store";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
 import {
@@ -300,10 +300,7 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
   const repairLegacyMimoFreeAuth = providerName === "mimo-free"
     && staticModelCatalog
     && (provider.authMode === undefined || provider.authMode === "local");
-  const explicitKeyOverride = registryEntry.authKind === "oauth"
-    && registryEntry.allowKeyAuthOverride === true
-    && provider.authMode === "key"
-    && resolvedApiKey !== undefined;
+  const explicitKeyOverride = providerUsesKeyAuthOverride(registryEntry, provider, resolvedApiKey);
   const canonicalAuthMode = explicitKeyOverride
     ? "key"
     : repairLegacyMimoFreeAuth

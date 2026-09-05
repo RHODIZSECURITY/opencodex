@@ -19,14 +19,16 @@ function inventoryIdentity(config: OcxConfig): unknown {
   const validated = validateConfigCandidate(config);
   if (!validated.ok) return null;
   // Compare all inventory-producing configuration, including custom rows and combos.
-  // Normalize schema defaults and ignore only completed-selection state and switch values.
+  // Normalize schema defaults, ignoring completed-selection state and switch values.
+  // Listener binding intentionally differs between live and disk after a port/host edit;
+  // it cannot affect provider discovery and must not leave registration pending forever.
   // The incarnation remains: identical delete/re-add is NOT the same registration.
   const providers = Object.fromEntries(Object.entries(validated.config.providers).map(([name, provider]) => [name, {
     ...provider,
     initialModelSelection: initialModelSelection(provider)?.registrationId,
   }]));
   // Ephemeral only: never log this value, which may contain credentials.
-  return JSON.parse(JSON.stringify({ ...validated.config, providers, disabledModels: undefined }));
+  return JSON.parse(JSON.stringify({ ...validated.config, providers, disabledModels: undefined, port: undefined, hostname: undefined }));
 }
 
 export function captureInitialSelectionBaseline(config: OcxConfig): InitialSelectionBaseline | null {

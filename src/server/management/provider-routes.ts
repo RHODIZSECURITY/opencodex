@@ -288,6 +288,10 @@ function adoptProviderEditorCandidate(live: OcxConfig, persisted: OcxConfig): vo
   else live.customModels = structuredClone(persisted.customModels);
   if (persisted.providerContextCaps === undefined) delete live.providerContextCaps;
   else live.providerContextCaps = structuredClone(persisted.providerContextCaps);
+  if (persisted.disabledModels === undefined) delete live.disabledModels;
+  else live.disabledModels = [...persisted.disabledModels];
+  if (persisted.modelDiscovery === undefined) delete live.modelDiscovery;
+  else live.modelDiscovery = structuredClone(persisted.modelDiscovery);
 }
 
 /**
@@ -832,8 +836,15 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       const changed = !isDeepStrictEqual(providerEditorConfigDTO(persisted), nextResult.value);
       if (!changed) return { changed: false, value: candidate };
 
+      for (const [name, provider] of Object.entries(candidate.config.providers)) {
+        if (!Object.hasOwn(persisted.providers, name)) {
+          initializeProviderModelSelection(name, provider, undefined, candidate.config);
+        }
+      }
       persisted.defaultProvider = candidate.config.defaultProvider;
       persisted.providers = structuredClone(candidate.config.providers);
+      persisted.disabledModels = candidate.config.disabledModels;
+      persisted.modelDiscovery = candidate.config.modelDiscovery;
       for (const name of candidate.removedProviders) {
         dropProviderCustomModels(persisted, name);
         setProviderContextCap(persisted, name, false);

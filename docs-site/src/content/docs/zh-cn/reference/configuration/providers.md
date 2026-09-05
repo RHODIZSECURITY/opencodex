@@ -5,6 +5,19 @@ description: 提供者条目、身份验证、端点、模型目录、配额、�
 
 提供者用于告诉 opencodex 模型位于哪里、使用哪种线协议适配器，以及请求如何进行身份验证。
 
+## 首次注册时的模型选择
+
+新的非 OAuth 连接会等待可靠的模型列表，再公开模型。如果 Models 标签页中去重后的模型行达到20个，所有模型开关初始为 OFF，但提供者本身保持 ACTIVE。实际认证方式为 OAuth 或 ChatGPT 登录的连接保留默认设置。
+
+仅在首次注册提供者时应用；更新、重新登录和更换密钥不会重置已有选择。初始化后，可在 Models 或使用以下 CLI 命令启用所需模型。后续新增模型的独立策略不变。请将 `<model-id>` 替换为列表中的 ID。
+
+```sh
+ocx models live --provider openrouter
+ocx models enable 'openrouter/<model-id>'
+ocx models disable 'openrouter/<model-id>'
+ocx models provider openrouter on
+```
+
 ## 提供者相关顶级字段
 
 | 字段 | 类型 | 默认值 | 含义 |

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getProviderRegistryEntry, providerMatchesRegistryTransport } from "./registry";
 import { routedSlug, slugEquivalenceKey } from "./slug-codec";
 import { comboDisabledModelSelectors } from "../combos/types";
+import { providerUsesKeyAuthOverride, resolveProviderApiKey } from "./key-store";
 
 export const INITIAL_MODEL_SELECTION_THRESHOLD = 20;
 type Selection = NonNullable<OcxProviderConfig["initialModelSelection"]>;
@@ -30,7 +31,7 @@ function loginConnection(name: string, provider: OcxProviderConfig): boolean {
   if (entry && providerMatchesRegistryTransport(name, provider)) {
     if (entry.authKind === "forward") return true;
     if (entry.authKind === "oauth") {
-      return !(entry.allowKeyAuthOverride === true && provider.authMode === "key");
+      return !providerUsesKeyAuthOverride(entry, provider, resolveProviderApiKey(provider.apiKey));
     }
   }
   return provider.authMode === "oauth" || provider.authMode === "forward";

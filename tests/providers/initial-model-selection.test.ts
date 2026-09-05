@@ -129,6 +129,43 @@ describe("initial provider model switches", () => {
     expect(config.providers.xai.initialModelSelection).toBeUndefined();
   });
 
+  test("an unresolved mixed-auth key follows the router's OAuth exemption", () => {
+    const env = "OCX_INITIAL_SELECTION_KEY_FIXTURE";
+    const previous = process.env[env];
+    delete process.env[env];
+    try {
+      const provider = providerConfigSeed(getProviderRegistryEntry("xai")!);
+      provider.authMode = "key";
+      provider.apiKey = `\${${env}}`;
+      initializeProviderModelSelection("xai", provider);
+      expect(provider.initialModelSelection).toBeUndefined();
+      process.env[env] = "fixture-key";
+      initializeProviderModelSelection("xai", provider);
+      expect(provider.initialModelSelection?.status).toBe("pending");
+    } finally {
+      if (previous === undefined) delete process.env[env];
+      else process.env[env] = previous;
+    }
+  });
+
+  test("intentional live/disk listener differences do not fence initial selection forever", async () => {
+    const config = fixture();
+    configStore.saveConfig(config);
+    const baseline = configStore.loadConfig();
+    const edited = configStore.loadConfig();
+    edited.port = 23456;
+    edited.hostname = "127.0.0.2";
+    configStore.saveConfig(edited);
+    configStore.reconcileLiveConfigFromDisk(config, baseline);
+    expect(config.port).toBe(0);
+    await resolvePendingInitialModelSelection(config);
+    expect(config.providers.vendor.initialModelSelection?.status).toBe("all-off");
+    expect(config.port).toBe(0);
+    expect(configStore.loadConfig().port).toBe(23456);
+    expect(configStore.loadConfig().hostname).toBe("127.0.0.2");
+    expect(configStore.loadConfig().disabledModels).toHaveLength(20);
+  });
+
   test("management discovery finalizes and persists with Codex integration OFF", async () => {
     const config = fixture();
     configStore.saveConfig(config);
@@ -214,6 +251,28 @@ describe("initial provider model switches", () => {
     expect(saved.apiKey).toBe("fixture-second");
     expect(saved.selectedModels).toEqual(["chosen"]);
     expect(saved.initialModelSelection?.registrationId).toBe(first.initialModelSelection?.registrationId);
+  });
+
+  test("batch editor creates pending state server-side without resetting edited existing rows", async () => {
+    const config = fixture();
+    config.providers.vendor.baseUrl = "http://127.0.0.1:11434/v1";
+    config.providers.vendor.allowPrivateNetwork = true;
+    config.disabledModels = ["batch/model-0", "other/keep"];
+    configStore.saveConfig(config);
+    const registrationId = config.providers.vendor.initialModelSelection?.registrationId;
+    const baseline = providerEditorConfigDTO(config);
+    const next = structuredClone(baseline);
+    next.providers.vendor.selectedModels = ["model-1"];
+    next.providers.batch = { adapter: "openai-chat", baseUrl: "http://127.0.0.1:11435/v1", allowPrivateNetwork: true, liveModels: false, models: ["model-0"] };
+    const response = await api(config, "/api/providers", { baseline, next });
+    expect(response.status).toBe(200);
+    const saved = configStore.loadConfig();
+    expect(saved.providers.batch.initialModelSelection?.status).toBe("pending");
+    expect(saved.providers.batch.disabled).not.toBe(true);
+    expect(saved.providers.vendor.initialModelSelection?.registrationId).toBe(registrationId);
+    expect(saved.providers.vendor.selectedModels).toEqual(["model-1"]);
+    expect(saved.disabledModels).toEqual(["other/keep"]);
+    expect(config.disabledModels).toEqual(["other/keep"]);
   });
 
   test("degraded discovery does not complete initialization or expose models", () => {
