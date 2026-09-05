@@ -447,8 +447,13 @@ describe("Cursor live transport context estimate wiring (#373)", () => {
     if (action?.case !== "userMessageAction") throw new Error("expected active user action");
     const user = action.value.userMessage!;
     expect(user.text).toBe(`${prefix}\n\n${screenshotSources}`);
-    expect(user.text).not.toContain("n".repeat(121));
-    expect(user.text).not.toContain("c".repeat(123));
+    const labelPrefix = "1. tool result 1, image 1: ";
+    const label = user.text.split("\n").find(line => line.startsWith(labelPrefix));
+    expect(label).toBeDefined();
+    const source = JSON.parse(label!.slice(labelPrefix.length)) as { tool: string; call_id: string };
+    // JSON's escaped newline contributes a literal `n`; bounds apply before escaping.
+    expect(source.tool).toHaveLength(128);
+    expect(source.call_id).toHaveLength(128);
     expect(images[0]).not.toEqual(images[1]);
     const selected = user.selectedContext?.selectedImages ?? [];
     expect(selected).toHaveLength(2);
