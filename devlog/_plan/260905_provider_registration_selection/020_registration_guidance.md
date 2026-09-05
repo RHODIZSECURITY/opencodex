@@ -41,13 +41,39 @@ toast for new registration). Capture whether provider existed before add/login.
 Wire modal-local OAuth and catalog OAuth completion through the same notice owner;
 existing account management/relogin continues Accounts navigation and does not
 reset selections. For initial Codex provider creation, onCodexAdded also shows
-Models guidance; avoid showing it merely for every added pool account.
+Models guidance. Explicit account/login completion also receives generic guidance
+(including the pre-seeded OpenAI provider); it never resets model choices. Existing
+Accounts navigation remains underneath the notice. Historical all-OFF copy is
+shown only for a newly created provider, not as a claim that re-login reset switches.
+
+Implementation owners after source recheck: NEW
+gui/src/pages/use-provider-models-notice.ts owns the operation token and render-local
+notice lifecycle. ProviderWorkspaceShell's existing /api/selected-models completion
+invokes a stable onModelsSettled callback; only an active notice triggers a later
+config refresh. Reuse its existing refresh token for Retry, with no duplicate model
+fetch and no new poll timer. useProvidersFetch adds a latest-request guard so an
+earlier pending config response cannot overwrite the post-discovery snapshot.
+The refresh result is explicit (applied/failed/superseded), with one bounded retry
+for supersession. Failed config reads never become success guidance. API-base
+changes clear both the active operation and render state, including A→B→A.
 
 ### MODIFY gui/src/pages/use-providers-oauth.ts as needed
 
 Forward an existing new-provider boolean/name at completion through its callback,
 without touching credential polling, reauth identity rules or secrets. Code
 submission is not success; popup waits for existing login-settled signal.
+
+Embedded/standalone Codex account add/reauth is a separate completion owner.
+Reuse the same ProviderModelsNotice renderer directly in CodexAccountPool for
+generic forward-auth guidance, preserving its pool state and catalog-refresh
+warning. It does not need a model-count fetch or four callback-prop forwarding
+layers. Cover this path as well as Providers' top-level modal completion.
+
+The JSON editor reports newly added provider names to Providers after successful
+save; show one generic notice for a batch and the normal per-provider notice for
+a single new row. It also strips initialModelSelection from editor payloads; that
+two-line compatibility fix is carried in core c5ad48c19, already an ancestor of
+this branch. Core final CI must validate that updated head before merge.
 
 ### MODIFY gui/src/pages/providers-shared.ts
 
@@ -76,10 +102,13 @@ ocx models disable <provider/model-id>
 ocx models provider <provider> on
 ```
 
-Use a real ID from a trustworthy result where available; otherwise an explicitly
-labeled placeholder. Include `ocx start` prerequisite when the proxy is absent,
+Use the exact ID printed by `live` (native or namespaced), represented in examples
+by an explicitly labeled, quoted placeholder. Include `ocx start` prerequisite when the proxy is absent,
 and `ocx sync` retry guidance when discovery remains pending. No credentials in
 commands or messages. No shell execution from the builder.
+Rows marked native also receive explicit enable/disable --native command variants
+in both human and JSON output, so account-qualified native IDs containing a slash
+are not misparsed as routed provider/model selectors.
 
 ### MODIFY CLI completion owners
 
@@ -119,6 +148,11 @@ commands or messages. No shell execution from the builder.
   one valid JSON document, no-wait no false completion, names safely quoted.
 - NEW tests/cli/model-selection-guidance.test.ts with both layout manifests.
 - Preserve existing auth URL/credential tests; no network/API-key requirements.
+
+P recheck: core state shape is version1 + registrationId + status + modelCount;
+safeConfigDTO exposes it read-only. Public threshold docs already landed in the core
+layer, so this phase adds only registration-guidance text, not a second policy rewrite.
+Core exact-head CI33947171242 passed at2cc90b447 before this cycle began.
 
 Local checks: TypeScript, GUI lint/i18n, GUI build, docs build, whitespace. All
 test suites run remotely in GitHub CI, not locally. Runtime UI proof is a manual
