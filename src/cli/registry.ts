@@ -229,6 +229,19 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     summary: "Manage routing features; combo is currently the supported routing resource.",
   },
   {
+    name: "effort",
+    usage: "ocx effort [status|<level>|set|clear|model] [--main <level|->] [--subagent <level|->] [--injection <level|->] [--json]",
+    summary: "Inspect and configure reasoning effort caps and defaults.",
+    details: [
+      "With no arguments or `status`, displays effective effort caps, injection effort, and supported rungs.",
+      "`ocx effort <level>` (or `set --main <level>`) sets the global/main-agent reasoning ceiling.",
+      "`--subagent <level>` sets the hard ceiling for delegated sub-agent turns.",
+      "`ocx effort clear` (or `set --main - --subagent -`) removes main and subagent caps but preserves injection effort; use `ocx effort set --injection -` to clear it.",
+      "`ocx effort model <provider/model|model>` inspects a model's configured ladder, disabled status, and wire mappings.",
+      "Works both online (via live proxy API) and offline (modifies persisted config safely with atomic writes).",
+    ],
+  },
+  {
     name: "agent",
     usage: "ocx agent <status|injection|effort|subagents|fallback|sidecar> ...",
     summary: "Manage headless multi-agent, roster, effort, injection, and sidecar settings.",

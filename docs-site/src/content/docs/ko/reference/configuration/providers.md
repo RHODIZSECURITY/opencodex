@@ -94,8 +94,8 @@ managed map을 활성화하면 privacy-safe selector를 만들고, 이후 계정
 | `xaiResponsesXSearch?` | `boolean` | 기본적으로 비활성화됩니다. xAI Responses 대상에서는 최종 요청 정규화 후에도 실제 `web_search` 도구가 남아 있을 때만 공급자가 호스팅하는 `x_search` 선언을 추가합니다. 기존 선언은 중복하지 않고, 호출자의 `tool_choice`/`allowed_tools` 선택기 범위를 확장하지 않으며, 웹 검색 사이드카의 `search.xSearch` 옵션과는 별개입니다. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | hosted tool namespace를 예약하는 non-forward Responses gateway용 정확한 모델 ID opt-in입니다. 현재 `["image_generation"]`만 허용하며, 일치하는 모델은 `openai-responses` wire를 사용하고 해당 hosted tool을 지원해야 합니다. 충돌하는 클라이언트 `image_gen` 선언을 제거하고 호출자의 tool choice를 유지하도록 selector도 다시 씁니다. OpenAI API 가상 `-pro` 모델은 선택한 공개 ID를 먼저 일치시키고, 해석된 기본 wire-model ID를 대체값으로 사용합니다. `modelAdapters`는 공개 ID를 먼저, 그 다음 기본 ID를 해석하며, 두 번째 결과가 최종 wire를 결정합니다. 설정하지 않은 모델은 일반 alias 동작을 유지합니다. |
 | `annotateEmptyToolOutputs?` | `boolean` | 존재하지만 비어 있는 도구 결과가 모델에 도달하기 전에 짧은 표시로 바꿔, 빈 결과를 누락된 결과로 해석하지 않도록 합니다. 빈 문자열과 텍스트 전용 파트 배열에 적용되며, 이미지·파일·암호화된 파트는 절대 변경하지 않습니다. 기본 제공 레지스트리에 따라 DeepSeek의 기본값은 `true`이며, 그 외에는 설정되지 않습니다. 공급자를 이 동작에서 제외하려면 `false`로 설정합니다. 명시적인 `false`는 이후 해당 필드를 생략한 편집에서도 유지됩니다. `PATCH /api/providers?name=<provider>`는 `true`, `false`, 또는 `null`을 받아 재정의를 지우고 레지스트리 기본 동작으로 되돌릴 수 있습니다. |
-| `reasoningEffortMap?` | `Record<string, string>` | reasoning 레이블의 공급자 전반 와이어 별칭입니다. |
-| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | reasoning 레이블의 모델별 와이어 별칭입니다. |
+| `reasoningEffortMap?` | `Record<string, string>` | reasoning 레이블의 공급자 전반 와이어 별칭입니다. 레이블을 `"__omit__"`으로 매핑하면 업스트림 요청에서 추론 필드를 완전히 생략합니다(예: 딥 모드를 위해 `reasoning_effort` 생략이 필요한 Ollama 로컬 모델). |
+| `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | reasoning 레이블의 모델별 와이어 별칭입니다. 레이블을 `"__omit__"`으로 매핑하면 업스트림 요청에서 추론 필드를 완전히 생략합니다. |
 | `reasoningWireFormat?` | `"gateway-object"` | `reasoning_effort` 대신 `reasoning: { enabled, effort }`를 받는 OpenAI 호환 게이트웨이용입니다. ClinePass 프리셋이 자동 설정합니다. |
 | `noReasoningModels?` | `string[]` | reasoning/thinking 매개변수를 거부하는 모델입니다. |
 | `noTemperatureModels?` | `string[]` | 호출자가 지정한 `temperature`를 거부하는 모델입니다. |
@@ -133,6 +133,8 @@ API 키 공급자는 리터럴 키나 환경 참조를 둘 수 있습니다. OAu
 `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`가 적용되면 이 작업들은 Bun의 네이티브 fetch를 그대로 사용합니다. URL과 리터럴 주소 검사는 계속 실행되지만, 최종 경로, DNS 응답, 피어는 프록시가 고르므로 opencodex는 그 피어를 고정하거나 검증할 수 없습니다. 이는 명시적인 보안 한계입니다.
 
 사설/로컬 목적지는 `allowPrivateNetwork: true`가 필요하며, 아웃바운드 프록시가 활성화된 경우에는 일치하는 `NO_PROXY` 항목도 필요합니다. loopback은 자동으로 추가됩니다. CIDR 항목은 해석하지 않으므로 각 LAN 호스트는 따로 적어야 합니다. matcher는 정확한 호스트, 도메인 접미사, 선택적 포트, 괄호로 감싼 IPv6, `*`를 지원합니다. 예를 들면 `192.168.1.50`은 따로 적어야 합니다. 메타데이터와 link-local 목적지는 계속 차단됩니다. 진단 요청은 리디렉션을 거부하고, 자격 증명이 제거된 대상만 보고합니다. 일반적인 공급자 요청의 리디렉션 검토는 이 진단 가드와 별도로 유지됩니다.
+
+Clash / Surge / Mihomo 사용자를 위한 fake-IP DNS 예외는 두 가지이며, 둘 다 DNS *응답*에만 적용됩니다. URL에 적힌 리터럴 주소는 그대로 거부됩니다. IANA 벤치마크 대역 `198.18.0.0/15`(IPv4-mapped IPv6 표기 포함)은 해당 호스트에 아웃바운드 프록시가 적용될 때 허용됩니다. Mihomo 기본 IPv6 fake-IP 대역 `fdfe:dcba:9876::/48`은 더 엄격한 조건에서만 허용됩니다. URL 스킴에 맞는 프록시 변수(`https:`는 `HTTPS_PROXY`, `http:`는 `HTTP_PROXY`, `ALL_PROXY`는 해당 없음)가 설정되어 있어야 하고, 호스트가 `NO_PROXY`에 걸리지 않아야 하며, 그 경우 요청은 해당 프록시에 명시적으로 묶여 나갑니다. 그 밖의 ULA, 인접 프리픽스, 실제 사설 응답과 섞인 fake-IP 응답은 여전히 `allowPrivateNetwork: true`가 필요합니다. 프로바이더 저장 시점 검증에는 IPv6 예외가 적용되지 않습니다.
 
 ## Codex 계정 풀
 
