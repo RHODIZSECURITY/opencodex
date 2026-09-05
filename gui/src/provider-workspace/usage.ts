@@ -81,12 +81,21 @@ export interface ProviderUsageTotals {
   totalTokens?: number;
 }
 
+/** Ledger provider IDs are data, including legacy names that match Object properties. */
+export function buildProviderUsageTotals(
+  providers: readonly (ProviderUsageTotals & { provider: string })[],
+): Record<string, ProviderUsageTotals> {
+  const totals: Record<string, ProviderUsageTotals> = Object.create(null);
+  for (const row of providers) totals[row.provider] = { requests: row.requests, totalTokens: row.totalTokens };
+  return totals;
+}
+
 /** Keep serving-provider attribution while computing shares within each provider. */
 export function buildProviderModelUsage(
   models: readonly (ProviderModelUsageRow & { provider: string })[],
   totals: Record<string, ProviderUsageTotals>,
 ): Record<string, ProviderModelUsageRow[]> {
-  const result: Record<string, ProviderModelUsageRow[]> = {};
+  const result: Record<string, ProviderModelUsageRow[]> = Object.create(null);
   for (const row of models) {
     const providerTokens = totals[row.provider]?.totalTokens ?? 0;
     const { provider, ...model } = row;

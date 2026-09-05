@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import ProviderUsage from "../src/components/provider-workspace/ProviderUsage";
 import { LanguageProvider } from "../src/i18n/provider";
-import { buildProviderModelUsage } from "../src/provider-workspace/usage";
+import { buildProviderModelUsage, buildProviderUsageTotals } from "../src/provider-workspace/usage";
 import type { WorkspaceItem } from "../src/provider-workspace/catalog";
 
 const item: WorkspaceItem = {
@@ -10,6 +10,25 @@ const item: WorkspaceItem = {
   baseUrl: "https://api.kimi.com/coding/v1", tier: "accounts",
 };
 const base = { requests: 1, inputTokens: 70, outputTokens: 10, totalTokens: 80, shareRatio: 0.008 };
+
+test("prototype-shaped provider IDs remain ordinary data in totals and model groups", () => {
+  const totals = buildProviderUsageTotals([
+    { provider: "__proto__", requests: 2, totalTokens: 100 },
+    { provider: "constructor", requests: 3, totalTokens: 200 },
+  ]);
+  const models = buildProviderModelUsage([
+    { ...base, provider: "__proto__", model: "legacy-a" },
+    { ...base, provider: "constructor", model: "legacy-b" },
+  ], totals);
+  expect(Object.getPrototypeOf(totals)).toBeNull();
+  expect(Object.getPrototypeOf(models)).toBeNull();
+  expect(Object.keys(totals).sort()).toEqual(["__proto__", "constructor"]);
+  const expected: Array<[string, number, number]> = [["__proto__", 2, 0.8], ["constructor", 3, 0.4]];
+  for (const [provider, requests, share] of expected) {
+    expect(totals[provider]?.requests).toBe(requests);
+    expect(models[provider]?.[0]?.shareRatio).toBe(share);
+  }
+});
 
 test("model grouping preserves serving provider and uses provider-local shares", () => {
   const rows = buildProviderModelUsage([

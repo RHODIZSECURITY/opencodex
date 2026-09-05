@@ -19,4 +19,13 @@ All exact-head CI jobs passed, original symptom and quota state matrix observed,
 
 ## Verifier and terminal conditions
 
+Pre-merge review remediation: preserve the rejected selector in Chat/Messages early 404 logs
+(`src/server/{chat-completions,claude-messages}.ts` and the existing policy surface regression),
+and use null-prototype provider-keyed accumulators in the provider workspace with `__proto__`
+and `constructor` regression rows. Record final roadmap audit closure and clearly mark the
+superseded global-scheduler design in020. These remain the attribution layer's thesis; amend
+the bottom branch, cascade every upper branch before pushing, then require renewed exact-head
+CI. Credential-reader redirect controls belong to the already implemented API layer, not to
+the attribution layer's executable scope.
+
 CLI GitHub reads are bounded, at most one fresh rollup per meaningful head/state change. Capture C receipt using the exact-head CI verification command. DONE only with all ancestry proofs; wait for pending CI using bounded polling, never call pending CI a blocker.

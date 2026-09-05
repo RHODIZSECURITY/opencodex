@@ -24,7 +24,7 @@ import {
 import { providerKind } from "../../provider-workspace/kind";
 import { readJsonIfOk, readJsonOrThrow } from "../../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../../session-list-cache";
-import { buildProviderModelUsage, countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
+import { buildProviderModelUsage, buildProviderUsageTotals, countAvailableModels, parseAvailableModels, parseLiveModelCounts, parseSelectedModels, type ProviderAvailableModels, type ProviderLiveModelCounts, type ProviderModelCounts, type ProviderSelectedModels } from "../../provider-workspace/usage";
 import {
   freshQuotaReportRecord,
   freshQuotaReportsFromResponse,
@@ -209,8 +209,7 @@ export default function ProviderWorkspaceShell({
         if (usageResource.loading) setUsageLoading(!readSessionListCache(usageCacheKey));
         return;
       }
-      const byProvider: Record<string, ProviderUsageTotals> = {};
-      for (const row of data.providers ?? []) byProvider[row.provider] = { requests: row.requests, totalTokens: row.totalTokens };
+      const byProvider = buildProviderUsageTotals(data.providers ?? []);
       setUsageTotals(byProvider);
       const byProviderModels = buildProviderModelUsage(data.models ?? [], byProvider);
       setUsageModels(byProviderModels);

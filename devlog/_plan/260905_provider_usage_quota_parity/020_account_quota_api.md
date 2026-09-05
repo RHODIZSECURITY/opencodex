@@ -53,7 +53,7 @@ Anchors refer to source inspected on 2026-09-05; refresh line numbers before imp
 No-code options: doing nothing leaves missing required readers; deletion hides useful readings;
 configuration cannot change account binding; reuse is selected for readers, token resolution,
 normalizers, key resolution, report display and existing routes. A parallel HTTP client is not
-justified. A small quota-owned scheduler and isolated key-cache module are justified by scope:
+justified. A per-roster worker mapper and isolated key-cache module are justified by scope:
 `src/oauth/token-guardian.ts:115` has a private per-call worker loop, not a reusable global quota
 limiter. Do not import token-guardian lifecycle into the quota path.
 
@@ -421,7 +421,7 @@ validated configured provider name -> read-only pool/legacy snapshot
   existing `LAST_GOOD_MAX_AGE_MS` (30 minutes). Failure advances attempt TTL, not measurement
   `quota.updatedAt`. Null/terminal/authoritative-empty conversions follow section 4.
 - Cap key cache at 256 entries, evict expired then least-recently-used settled entries on access
-  or write. No new timer. Bound in-flight/queued entries separately. Do not persist key rows.
+  or write. No new timer or scheduler queue. Bound key in-flight entries separately. Do not persist key rows.
 - `clearProviderQuotaCache` invalidates key-flight commit authority as well as key settled rows.
   Use a module epoch; post-await commits check epoch and current entry ownership. A changed key,
   provider destination, removed row or replaced provider cannot publish stale enrichment even to
@@ -435,48 +435,32 @@ validated configured provider name -> read-only pool/legacy snapshot
   report with an inactive key, and never changes `activeId` or `provider.apiKey`. Current reports
   continue using the actual active credential; no key aggregation or account weighting is added.
 
-### 8.2 Bounded scheduling
+### 8.2 Bounded roster reads — final scope
 
-Add `src/providers/quota-probe-scheduler.ts`, lazy process-local state with no startup timer:
-four admitted quota transactions at once, at most 64 queued transactions; excess returns a
-typed unavailable outcome. Each account/key request uses at most four worker promises pulling
-the roster in input order, not one immediately executing promise per credential. All roster
-rows are represented; overflow is unavailable, never silently truncated or zero.
-
-Acquire admission **after cache/single-flight checks and once per reader transaction**, before
-token resolution/wire calls. Never acquire again inside a nested helper/dispatch: no deadlock.
-Provider-level reads of the same readers use the same admission boundary; cached and passive
-reads consume no permit. Existing A6API transaction performs two parallel requests, so four
-transactions bound quota HTTP fanout to at most eight for the current reader set; OAuth refresh
-requests remain governed by their existing refresh-flight owner. Do not claim four total network
-requests or introduce a second lock around the same token renewal.
-
-Queue entries time out after 30 seconds and cancel without starting; active transactions keep
-their permit until their bounded reader work actually settles. Preserve `REQUEST_TIMEOUT_MS=8000`
-and `QUOTA_RESPONSE_MAX_BYTES=512 KiB`, including response-body bounds and finite Cursor/Command
-Code fallback sequences. No retries beyond existing reader fallbacks. A UI timeout must not
-release a permit while its upstream work is still running. The endpoint's total latency can
-span multiple waves; do not claim it completes within one upstream timeout.
+Use `mapQuotaRoster` in the key-account quota owner for at most four workers per roster,
+preserving input order. This is not a process-wide HTTP concurrency guarantee. No global
+scheduler module, queue, admission timer, or changes to provider-report scheduling are required.
+Keep identity-keyed single-flight, bounded key-cache/in-flight maps, existing OAuth renewal
+locks, 8-second wire deadlines and bounded response bodies. A reader may issue sequential or
+parallel protocol calls; total roster latency can span multiple waves. These final requirements
+replace the rejected global-scheduler proposal, rather than coexisting with it.
 
 ### 8.3 Force versus in-flight requests
 
-Existing `fetchAccountQuota` unconditionally joins an in-flight read (`quota.ts:1710`). Replace
-the flight value with `{ promise, forced, operationEpoch, identity }` and enforce:
+Preserve the existing join semantics, with identity/clear guards for the new readers:
 
 | Request | Cache / flight behavior |
 | --- | --- |
-| Ordinary | Reuse matching fresh settled entry, else join matching current flight, else schedule |
-| Forced, no flight | Bypass positive and negative TTL and schedule one new probe |
-| Forced, forced flight exists | Join the same identity's forced flight; no duplicate spending |
-| Forced, ordinary flight exists | Elect one shared forced successor, wait for old flight settlement, then probe; do not report old cached/ordinary result as forced |
+| Ordinary | Reuse matching fresh settled entry, else join matching current flight, else read |
+| Forced, no flight | Bypass positive and negative TTL and start one new read |
+| Forced, any matching flight exists | Join that in-flight read and await settlement; no successor probe |
 | Clear/remove/identity change | Invalidate old operation authority; no late cache or response publication under the replacement |
-| Passive force | Cache read only, unchanged observation time, no token renewal, no admission slot |
-| Unsupported force | Return mode only, no token resolution, no admission slot |
+| Passive force | Cache read only, unchanged observation time, no token renewal |
+| Unsupported force | Return mode only, no token resolution |
 
-The elected forced successor supersedes older write authority, but does not race a second token
-renewal against the ordinary flight. `finally` removes only its own flight entry. Apply the same
-semantics to the new key cache. A current report cache hit is never evidence that all account
-rows refreshed. Forced quota refresh does not mean force-refreshing an otherwise valid token.
+`finally` removes only its own flight entry. Apply the same semantics to the new key cache.
+A current report cache hit is not evidence that all account rows refreshed. Forced quota
+refresh does not mean renewing an otherwise valid token or requiring an extra successor read.
 
 ## 9. 030 handoff: precise load and refresh settlement
 
@@ -522,13 +506,13 @@ negative tests land. Production edits listed below are planned, not made by this
 | Layer | Files and changes | Dependency / acceptance |
 | --- | --- | --- |
 | A — row contract + dispatch foundation | `src/providers/quota-types.ts`: mode/fields; `src/providers/quota.ts`: mode predicates, explicit unsupported branch, pure key reader selector; `src/server/management/oauth-account-routes.ts`: cheap row mode; `src/providers/api-keys.ts`: pure legacy projection and type-only quota fields | Existing supported modes only until B; cheap GET does no upstream/secret/config writes |
-| B — four OAuth readers | `src/providers/quota.ts`: exact signatures in section 6, paired context, active-report call sites, sentinel conversion, four allowlist additions, flight fences; `src/providers/quota-probe-scheduler.ts` (new): shared bounded admission | A; every dedicated reader is tested with at least two distinct accounts, no active switch |
-| C — all key rows | `src/providers/quota-key-accounts.ts` (new): isolated config/cache/fanout; `src/providers/quota.ts`: facade and uncached callback, cache invalidation integration; `src/server/management/oauth-account-routes.ts`: key opt-in enrichment | A+B scheduler; every existing supported key dispatch admitted; no provider cache contamination |
+| B — four OAuth readers | `src/providers/quota.ts`: exact signatures in section 6, paired context, active-report call sites, sentinel conversion, four allowlist additions and flight fences; reuse the per-roster mapper in the key-account owner | A; every dedicated reader is tested with at least two distinct accounts, no active switch |
+| C — all key rows | `src/providers/quota-key-accounts.ts` (new): isolated config/cache/per-roster mapper; `src/providers/quota.ts`: facade and uncached callback, cache invalidation integration; `src/server/management/oauth-account-routes.ts`: key opt-in enrichment | A+B reader contracts; all supported key dispatch retained; no provider cache contamination |
 | D — backend contract audit | Existing backend regression files below; `structure/05_gui-and-management-api.md`: row modes/query semantics/refresh outcome (parent scope); `scripts/test-layout/layout.json` and `tests/fixtures/test-layout-expected.json` if new backend regression files are added | A-C; DTO/privacy/race checks and parent exact-head CI before 030 consumption |
 | 030 — UI consumer, separately owned | `gui/src/hooks/useProviderAccountPools.ts`, `gui/src/components/provider-workspace/types.ts`, `gui/src/pages/Providers.tsx`, `ProviderDetails.tsx`, `ProviderAuthPanel.tsx`, `ProviderUsage.tsx`, `ProviderCapacityQuota.tsx`, `gui/src/provider-workspace/report.ts`, all affected i18n locales | Backend A-D; loading/refresh and current-vs-all rendering follows section 9 |
 
 Keep new modules focused and under the dev modularity limits. `quota.ts` is already large;
-do not append the independent key-cache/scheduler implementations to it or opportunistically
+do not append the independent key-cache implementation to it or opportunistically
 move every existing provider parser. No changes to `src/oauth/index.ts`/store persistence are
 required by this design. If paired context cannot be obtained with the existing account resolver,
 parent must explicitly amend scope before changing auth internals.
@@ -549,10 +533,9 @@ Use synthetic tokens and local mocked transports only; assertions must not print
 | `tests/providers/muse-passive-quota-cache.test.ts` | Mode passive while supportsPerAccountQuota remains false; hydration before persistence; account revision fence; observed roster only; no-observation omitted, not error; restart retains observation |
 | `tests/providers/muse-passive-quota-observation.test.ts` | Cheap list mode only; enriched passive row mode + original quota timestamp; forced read makes zero network/renewal calls; unobserved passive row has no unavailable flag; active/current selection remains distinct from stored-account observations |
 | `tests/providers/provider-quota-observed-marker.test.ts` | Preserve provider-report observed marker and freshness exemptions |
-| `tests/providers/kiro/kiro-account-quota.test.ts` | Existing Kiro context/CLI refresh, regional metadata and exhaustion-state commit remain intact after scheduler introduction |
+| `tests/providers/kiro/kiro-account-quota.test.ts` | Existing Kiro context/CLI refresh, regional metadata and exhaustion-state commit remain intact after bounded roster mapping |
 | `tests/providers/provider-account-quota-persistence.test.ts` | No API-key cache entries/digests in OAuth disk snapshot; OAuth/passive hydration unchanged; old persisted new-reader row cannot masquerade as a freshly verified identity |
-| `tests/providers/provider-key-account-quota.test.ts` (new) | Full supported key-reader matrix; cross-provider same id; key replacement same id; env/keychain reference resolves to new key; base/auth/adapter change; deletion/readdition; config freeze; no cache bleed to current report/OAuth; transient vs terminal vs authoritative-empty; force and negative TTL; cache cap/eviction |
-| `tests/providers/quota-probe-scheduler.test.ts` (new) | Four transaction ceiling across overlapping batches; A6API two-request accounting; queue cap/timeout; passive/unsupported/cache hit takes no permit; FIFO/no starvation within admitted queue; rejection/finally releases exactly once; no nested-lock deadlock; overflow rows unavailable; no abandoned task releases early |
+| Existing `tests/providers/provider-api-keys.test.ts` | Extend for supported key-reader matrix, replacement/clear, frozen config, no provider/OAuth cache bleed, failure/empty semantics, cache caps and four workers per roster; no separate scheduler test file |
 
 Additional reader fixtures within those files must force each existing protocol branch:
 
@@ -562,9 +545,8 @@ Additional reader fixtures within those files must force each existing protocol 
    each with distinct two-account tokens, date parsing, and redirect rejection.
 3. Kimi custom/standard window parsing, canonical configured base, explicitly invalid base,
    OAuth token versus isolated coding-plan key, missing/invalid payload.
-4. Force during an ordinary flight starts exactly one successor; concurrent forced requests join;
-   late ordinary result cannot overwrite forced result; remove/clear during either flight cannot
-   revive a row. Successful force bypasses both positive and negative ten-minute TTL.
+4. Force bypasses positive and negative ten-minute TTL but joins a matching in-flight read;
+   concurrent forced requests share it. Remove/clear during a flight cannot revive a row.
 5. One failed row does not drop healthy siblings; one malformed upstream body cannot serialize raw
    fields. Real 0%, empty/no windows, unsupported and unavailable remain four distinct cases.
 
@@ -584,7 +566,7 @@ exact-head CI and the audit cycle. Candidate focused CI invocations (not run her
 
 ```sh
 bun test tests/providers/provider-account-quota.test.ts tests/providers/provider-quota.test.ts tests/providers/command-code-quota.test.ts
-bun test tests/providers/provider-api-keys.test.ts tests/providers/provider-key-account-quota.test.ts tests/providers/quota-probe-scheduler.test.ts
+bun test tests/providers/provider-api-keys.test.ts
 bun test tests/oauth/oauth-accounts-api.test.ts tests/providers/muse-passive-quota-cache.test.ts tests/providers/muse-passive-quota-observation.test.ts
 bun test tests/providers/kiro/kiro-account-quota.test.ts tests/providers/provider-account-quota-persistence.test.ts tests/providers/provider-quota-observed-marker.test.ts tests/providers/opencode-go-quota.test.ts
 ```
