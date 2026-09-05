@@ -183,7 +183,7 @@ describe("initial provider model switches", () => {
   });
 
   test("POST creation stamps its own pending state and overwrite preserves selections", async () => {
-    const config: OcxConfig = { port: 0, defaultProvider: "openai", providers: {}, clientIntegrations: { codex: false } };
+    const config: OcxConfig = { ...configStore.getDefaultConfig(), port: 0, clientIntegrations: { codex: false } };
     configStore.saveConfig(config);
     const provider = {
       adapter: "openai-chat", baseUrl: "http://127.0.0.1:11434/v1", allowPrivateNetwork: true,
@@ -208,7 +208,7 @@ describe("initial provider model switches", () => {
 
   test("new registration clears orphaned OFF selectors without touching other providers", async () => {
     const config: OcxConfig = {
-      port: 0, defaultProvider: "openai", providers: {},
+      ...configStore.getDefaultConfig(), port: 0, clientIntegrations: { codex: false },
       disabledModels: ["vendor/model-0", "vendor/a/b", "vendor-old/keep", "other/keep"],
       modelDiscovery: {
         newModelPolicy: "off",
@@ -238,7 +238,7 @@ describe("initial provider model switches", () => {
   });
 
   test("key-login commit initializes new rows and preserves choices during key replacement", async () => {
-    const config: OcxConfig = { port: 0, defaultProvider: "vendor", providers: {} };
+    const config: OcxConfig = { ...configStore.getDefaultConfig(), port: 0, clientIntegrations: { codex: false } };
     configStore.saveConfig(config);
     const provider: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://models.example.test/v1", apiKey: "fixture-first" };
     await commitKeyLoginProvider(config, "vendor", provider);
