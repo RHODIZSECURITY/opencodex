@@ -75,10 +75,12 @@ the downstream recovery assertion. Recovery fixture cleanup is separate debt.
 - MODIFY `tests/server/ports.test.ts`: retain all original assertions. Add
   deterministic subprocess-isolated regression coverage of the real
   `isPortAvailable(port)` and `findAvailablePort(0)` implementations. Inside
-  each disposable test subprocess, a `node:net` server-factory double delivers
-  two accepted peers and only completes close after both are destroyed. Check
+  each disposable test subprocess, a `node:net` Server-prototype method double
+  delivers two accepted peers and only completes close after both are destroyed. Check
   socket error disposal, close-completion-before-result, and the independently
-  specified selected port. Never mock `node:net` in the parent test process.
+  specified selected port. Override listen/close/address only in the isolated
+  child, retaining the real createServer constructor and connection-listener
+  registration. Never replace network methods in the parent test process.
   Resolve source through `tests/helpers/repo-root.ts`; no new test file.
 - MODIFY `structure/01_runtime.md`: add one ownership row describing temporary
   port-probe socket disposal; no authentication or server-composition changes.
@@ -147,3 +149,21 @@ Implementation and static review may proceed while that queue drains. Never
 cancel another task's run without confirming ownership and communicating the
 chosen order. Existing successful job evidence must be preserved where the
 CI platform supports rerunning only failed/cancelled jobs.
+
+## B regression-harness correction
+
+The first two-case remote run completed in97ms and failed both cases, but
+those failures were not accepted as RED evidence: Bun1.4.0 did not route the
+native named createServer import through the child `mock.module` replacement.
+The double reported zero factory calls and the real probe completed before
+the controlled close flag. This tests the broken double, not peer disposal.
+Product source remains unchanged.
+
+The test-only repair uses child-local Server prototype method overrides so
+the real constructor retains connection-listener registration while the
+double controls listen events, address and close completion. This changes
+only instrumentation, not the intended behavioral assertions or public API.
+Remote RED must be repeated at an allocated CI handoff before source changes.
+The wrapper also used unavailable remote `rg` after the run; its final marker
+check now uses grep. Neither the wrapper exit127 nor the two wrong-reason
+failures count as a valid regression result.
