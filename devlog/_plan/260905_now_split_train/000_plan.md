@@ -55,7 +55,7 @@ the closeout tallies both and only the first counts as resolved.
 
 | WP | Deliverable | Depends on | Verifier |
 |---|---|---|---|
-| wp1 | 000–002 + every layer's decade doc (010…750) at diff level | — | docs checks (numbered only, every layer has a doc, every NOW file appears in exactly one stack); privacy scan |
+| wp1 | 000–003, including binding parent decisions, + every layer's decade doc (010…750) at diff level | — | docs checks (numbered only, every layer has a doc, every NOW file appears in exactly one stack, 003 amendments agree with 000/002 and the layer plans); privacy scan |
 | wp2… | one layer per work-phase, dependency-ordered by the base edges in 002; independent groups may be interleaved | its declared base layer, if any | the current decade document's Verification and Accept criteria sections |
 
 Total: 77 implementation layers across 21 stacks (002_layer_map.md; 105 and
