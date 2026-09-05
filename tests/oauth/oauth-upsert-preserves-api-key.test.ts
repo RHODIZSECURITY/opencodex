@@ -396,6 +396,31 @@ describe("upsertOAuthProvider credential preservation", () => {
     expect(existing).toEqual(before);
   });
 
+  test("clears the previous CCA project only after resolving the canonical login mode", () => {
+    const config = configWithKey("google-antigravity", "google", "https://stale.example.invalid");
+    const existing = config.providers["google-antigravity"]!;
+    existing.googleMode = "vertex";
+    existing.project = "previous-account-project";
+
+    upsertOAuthProvider(config, "google-antigravity");
+
+    expect(config.providers["google-antigravity"]!.googleMode).toBe("cloud-code-assist");
+    expect(config.providers["google-antigravity"]!.project).toBeUndefined();
+    expect(existing.project).toBe("previous-account-project");
+  });
+
+  test("preserves an operator project when the canonical login mode is not CCA", () => {
+    const config = configWithKey("xai", "openai-chat", "https://api.x.ai/v1");
+    const existing = config.providers.xai!;
+    existing.googleMode = "cloud-code-assist";
+    existing.project = "operator-project";
+
+    upsertOAuthProvider(config, "xai");
+
+    expect(config.providers.xai!.googleMode).toBeUndefined();
+    expect(config.providers.xai!.project).toBe("operator-project");
+  });
+
   test("isolates nested operator and unchanged catalog data from the previous row and registry", () => {
     const preset = OAUTH_PROVIDERS.anthropic!.providerConfig;
     const presetBefore = structuredClone(preset);

@@ -1449,6 +1449,9 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
     if (value === undefined) delete next[field];
     else next[field] = structuredClone(value) as never;
   }
+  // A login may activate a different account. CCA dispatch must take that account's
+  // project from its credential snapshot, never retain the previous account's project.
+  if (next.googleMode === "cloud-code-assist") delete next.project;
   // Login used to rebuild the whole row from the preset, so catalog data refreshed
   // immediately. Keep that timing without overwriting unrelated operator-owned fields.
   applyOAuthPresetCatalog(next, def.providerConfig);
