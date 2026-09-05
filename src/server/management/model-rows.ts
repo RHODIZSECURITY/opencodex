@@ -27,6 +27,7 @@ import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import type { OcxConfig } from "../../types";
 import { ensureCodexEntitlementFreshness } from "../../codex/model-entitlements";
 import { fetchAllModels } from "./shared";
+import { initialModelSelectionPending } from "../../providers/initial-model-selection";
 
 /**
  * One row of the `/api/models` list. Routed rows spread a `CatalogModel`, so the shape is
@@ -38,6 +39,7 @@ export type ManagementModelRow = Partial<CatalogModel> & {
   id: string;
   namespaced: string;
   disabled: boolean;
+  initialSelectionPending?: boolean;
   native?: boolean;
   custom?: boolean;
   customId?: string;
@@ -164,7 +166,10 @@ export async function listManagementModelRows(
       ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
     };
   }).filter((row): row is ManagementModelRow => row !== null);
-  return [...native, ...dedupedRouted, ...visibleCustomModels];
+  return [...native, ...dedupedRouted, ...visibleCustomModels].map(row =>
+    initialModelSelectionPending(config.providers[row.provider])
+      ? { ...row, disabled: true, initialSelectionPending: true }
+      : row);
 }
 
 /** `/api/models` row → the narrower input the client-config serializers accept. */

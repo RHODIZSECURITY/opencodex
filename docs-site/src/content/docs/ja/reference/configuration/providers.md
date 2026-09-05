@@ -5,6 +5,19 @@ description: プロバイダー エントリ、認証、エンドポイント、
 
 プロバイダーは、opencodex に、モデルが存在する場所、モデルが通信するワイヤー アダプター、およびリクエストの認証方法を伝えます。
 
+## 初回登録時のモデル選択
+
+新しい非 OAuth 接続では、信頼できるモデル一覧の取得が完了するまでモデルの公開を保留します。Models タブの重複しないモデル行が20個以上なら、モデルのスイッチをすべて OFF にします。プロバイダー自体は ACTIVE のままです。実際の認証方式が OAuth または ChatGPT ログインなら既定値を維持します。
+
+初回のプロバイダー登録にのみ適用され、更新、再ログイン、キー交換で既存の選択をリセットしません。初期設定後は Models または以下の CLI で必要なモデルを有効にできます。後から追加されるモデルのポリシーは変更しません。`<model-id>` を一覧の ID に置き換えてください。
+
+```sh
+ocx models live --provider openrouter
+ocx models enable 'openrouter/<model-id>'
+ocx models disable 'openrouter/<model-id>'
+ocx models provider openrouter on
+```
+
 ## プロバイダー関連のトップレベルフィールド
 
 |フィールド |タイプ |デフォルト |意味 |

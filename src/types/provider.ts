@@ -345,6 +345,13 @@ export interface OcxProviderConfig {
    * full set so the user can pick). See devlog issue_052_provider-model-allowlist.
    */
   selectedModels?: string[];
+  /** Registration-owned state. Absent means legacy or OAuth-exempt, not uninitialized. */
+  initialModelSelection?: {
+    version: 1;
+    registrationId: string;
+    status: "pending" | "ready" | "all-off";
+    modelCount?: number;
+  };
   /**
    * Per-provider retention allowlist for authoritative live discovery. When non-empty, any
    * model id in this list is preserved in the routed catalog even if the live `/models`

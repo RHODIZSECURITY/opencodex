@@ -5,6 +5,19 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 
 공급자는 opencodex에 모델의 위치, 사용하는 와이어 어댑터, 요청 인증 방식을 알려줍니다.
 
+## 처음 등록할 때의 모델 선택
+
+신규 비-OAuth 연결은 모델 목록 조회가 끝날 때까지 모델 노출을 보류합니다. Models 탭의 중복 없는 모델 행이 20개 이상이면 모델 스위치를 모두 OFF로 설정합니다. 프로바이더는 활성 상태를 유지합니다. 실제 인증 방식이 OAuth나 ChatGPT 로그인인 연결은 기존 기본값을 유지합니다.
+
+처음 등록할 때만 적용하며 업데이트, 재로그인, 키 교체로 기존 선택을 초기화하지 않습니다. 초기 설정이 끝나면 Models 탭이나 아래 CLI 명령으로 필요한 모델을 켤 수 있습니다. 이후 새 모델이 추가될 때의 정책은 별도입니다. `<model-id>`는 목록에 나온 ID로 바꾸세요.
+
+```sh
+ocx models live --provider openrouter
+ocx models enable 'openrouter/<model-id>'
+ocx models disable 'openrouter/<model-id>'
+ocx models provider openrouter on
+```
+
 ## 공급자 관련 최상위 필드
 
 | 필드 | 타입 | 기본값 | 의미 |

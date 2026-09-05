@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { injectCodexConfig } from "../codex/inject";
 import { classifyOpenAiTierBackup, getConfigPath, getDefaultConfig, isValidProviderName, preserveOpenAiTierRollbackSnapshot, saveConfig } from "../config";
@@ -160,6 +161,7 @@ export async function runInit(): Promise<void> {
     const portStr = await prompt.ask("\nProxy port [10100]: ");
     const port = parseInt(portStr, 10) || 10100;
 
+    initializeProviderModelSelection(providerName, providerConfig);
     const config: OcxConfig = {
       ...getDefaultConfig(),
       port,
