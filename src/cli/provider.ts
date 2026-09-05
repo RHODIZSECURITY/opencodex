@@ -18,6 +18,7 @@ import type { OcxProviderConfig } from "../types";
 import { findLiveProxy } from "../server/proxy-liveness";
 import { syncModelsToCodex } from "../codex/sync";
 import { codexAccountNamespaceProviderCollisionError } from "../codex/account-namespace-match";
+import { modelSelectionGuidance, modelSelectionNextSteps } from "./model-selection-guidance";
 
 // ---------------------------------------------------------------------------
 // Arg helpers
@@ -229,6 +230,7 @@ async function handleAdd(args: string[]): Promise<void> {
   if (wantsJson) {
     console.log(JSON.stringify({
       action: "added",
+      modelSelection: modelSelectionNextSteps(name),
       provider: name,
       adapter: provConfig.adapter,
       baseUrl: provConfig.baseUrl,
@@ -257,6 +259,7 @@ async function handleAdd(args: string[]): Promise<void> {
 
   const registryLabel = registryEntry ? ` (${registryEntry.label})` : "";
   console.log(`✅ Provider "${name}"${registryLabel} added.`);
+  for (const line of modelSelectionGuidance(name)) console.log(line);
   if (setDefault) console.log(`   Set as default provider.`);
   if (registryEntry?.authKind === "oauth") {
     console.log(`   Authenticate with: ocx login ${name}`);

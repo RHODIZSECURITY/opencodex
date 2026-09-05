@@ -14,10 +14,12 @@ description: Записи провайдеров, аутентификация, 
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+После регистрации или входа OAuth в интерфейсе диалог предлагает открыть Models. CLI выводит команды управления моделями; JSON содержит следующие шаги. `--no-wait` означает ожидание входа, а не завершение. Перед командами для актуального списка моделей запустите прокси через `ocx start`.
 
 ## Верхнеуровневые поля, связанные с провайдерами
 

@@ -14,10 +14,12 @@ This runs only for a new provider registration. Existing selections survive upda
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+After GUI registration or OAuth login, the confirmation dialog opens the Models page. CLI registration and login print model-management commands; JSON includes structured next steps. `--no-wait` reports pending login, not completion. Start the proxy with `ocx start` before using live model commands.
 
 ## Provider-related top-level fields
 

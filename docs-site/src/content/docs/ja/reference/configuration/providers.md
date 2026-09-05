@@ -13,10 +13,12 @@ description: プロバイダー エントリ、認証、エンドポイント、
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+GUI で登録または OAuth ログインが完了すると、Models ページへ移動できる案内が表示されます。CLI はモデル管理コマンドを出力し、JSON にも次の操作を含めます。`--no-wait` は完了ではなくログイン待機を示します。ライブモデルのコマンドを使う前に `ocx start` でプロキシを起動してください。
 
 ## プロバイダー関連のトップレベルフィールド
 

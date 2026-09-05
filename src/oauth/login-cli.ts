@@ -1,4 +1,5 @@
 import * as readline from "node:readline";
+import { modelSelectionGuidance } from "../cli/model-selection-guidance";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
 import { openUrl } from "../lib/open-url";
 import { loadConfig, saveConfig } from "../config";
@@ -94,6 +95,7 @@ async function handleOAuthLogin(name: string): Promise<void> {
   }
   const reload = await notifyRunningProxyAfterOAuthLogin(name);
   console.log(`\n✅ Logged in to ${name}. Try: ocx sync`);
+  for (const line of modelSelectionGuidance(name)) console.log(line);
   warnIfLiveReloadSkipped(reload);
 }
 
@@ -213,6 +215,7 @@ async function handleKeyLogin(name: string): Promise<void> {
   let reload: LocalProviderReloadResult | null = null;
   await commitKeyLoginProvider(config, name, provider, result => { reload = result; });
   console.log(`✅ ${def.label} added. Try: ocx sync`);
+  for (const line of modelSelectionGuidance(name)) console.log(line);
   warnIfLiveReloadSkipped(reload);
 }
 

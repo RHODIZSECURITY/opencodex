@@ -14,10 +14,12 @@ Bu kural yalnızca yeni sağlayıcı kaydında uygulanır. Güncellemeler, yenid
 
 ```sh
 ocx models live --provider openrouter
-ocx models enable 'openrouter/<model-id>'
-ocx models disable 'openrouter/<model-id>'
+ocx models enable '<model-id>'
+ocx models disable '<model-id>'
 ocx models provider openrouter on
 ```
+
+Arayüzde kayıt veya OAuth girişi tamamlanınca Models sayfasını açan bir bilgilendirme penceresi gösterilir. CLI model yönetimi komutlarını yazdırır; JSON sonraki adımları içerir. `--no-wait` tamamlanmış değil, bekleyen girişi bildirir. Canlı model komutlarından önce proxy’yi `ocx start` ile başlatın.
 
 ## Sağlayıcı ile ilgili üst düzey alanlar
 

@@ -58,6 +58,7 @@ describe("ocx provider", () => {
       const args = ["provider", "add", "model-fixture", "--adapter", "openai-chat", "--base-url", "https://models.example.test/v1", "--json"];
       const added = runCli(args, { OPENCODEX_HOME: dir });
       expect(added.status).toBe(0);
+      expect(JSON.parse(added.stdout).modelSelection.commands.list).toBe("ocx models live --provider model-fixture");
       const first = readConfig(dir);
       expect(first.providers["model-fixture"].initialModelSelection.status).toBe("pending");
       const registrationId = first.providers["model-fixture"].initialModelSelection.registrationId;
