@@ -180,9 +180,9 @@ describe("rate-limit reset credits", () => {
           tertiary_window: { used_percent: 50, reset_at: 1788000000 },
         },
       });
-      // No provenance flag on the Go/Free branch: the monthly window governs those plans
-      // regardless of which window produced the reading, so recovery never consults it.
-      expect(quota).toEqual({ monthlyPercent: 30, monthlyResetAt: 1787401330 });
+      // The same account can move from weekly to monthly. Preserve the observed primary
+      // provenance so policy storage can retire its obsolete weekly tuple on that transition.
+      expect(quota).toEqual({ monthlyPercent: 30, monthlyResetAt: 1787401330, monthlyIsPrimaryWindow: true });
     });
 
     it("keeps legacy tertiary monthly next to a duration-less weekly primary", () => {
@@ -501,8 +501,8 @@ describe("rate-limit reset credits", () => {
       });
       const observedAfter = Date.now();
       applyAccountQuotaFromUpstreamHeaders("burst-A", headers);
-      const quota = getAccountQuota("burst-A");
-      expect(quota).toEqual({
+      const stored = getAccountQuota("burst-A");
+      expect(stored).toEqual({
         shortPercent: 97,
         shortResetAt: 1787401330,
         shortObservedAt: expect.any(Number),
@@ -511,9 +511,9 @@ describe("rate-limit reset credits", () => {
         weeklyResetAt: 1788000000,
         updatedAt: expect.any(Number),
       });
-      expect(quota!.shortObservedAt).toBe(quota!.updatedAt);
-      expect(quota!.shortObservedAt).toBeGreaterThanOrEqual(observedAfter);
-      expect(quota!.shortObservedAt).toBeLessThanOrEqual(Date.now());
+      expect(stored?.shortObservedAt).toBe(stored?.updatedAt);
+      expect(stored?.shortObservedAt).toBeGreaterThanOrEqual(observedAfter);
+      expect(stored?.shortObservedAt).toBeLessThanOrEqual(Date.now());
     });
 
     it("an exhausted burst window does not poison the weekly reading", () => {
