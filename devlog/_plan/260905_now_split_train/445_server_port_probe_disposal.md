@@ -223,3 +223,11 @@ control against baseline, verify GREEN plus all three real-peer experiments,
 and toggle disposal off/on again. The focused wrapper must emit its captured
 failure tail before exiting, so an early test error cannot hide the evidence.
 Do not rerun during another owner's CI slot; #3636 currently owns it.
+
+Heisenberg independently approved the re-plan: explicit public registration
+reaches both native acceptance and synthetic emission, with no private-symbol
+dependency and no weakened assertion. B changed only the private factory
+(+3/−1 versus the constructor-callback candidate). It now has8lines; source
+has173lines and retains all9exports. Tests and docs were unchanged by the
+worker. Main reviewed the diff. Renewed runtime evidence is still pending;
+the prior static PASS does not substitute for this round's checks.

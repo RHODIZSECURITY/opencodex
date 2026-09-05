@@ -2,10 +2,12 @@ import { createServer } from "node:net";
 
 /** Temporary bind probes must not let accepted peers hold server.close() open. */
 function createProbeServer(): ReturnType<typeof createServer> {
-  return createServer(socket => {
+  const server = createServer();
+  server.on("connection", socket => {
     socket.on("error", () => socket.destroy());
     socket.destroy();
   });
+  return server;
 }
 
 /**
