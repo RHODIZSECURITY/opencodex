@@ -323,7 +323,7 @@ fresh review disposition, admin head-match merge, child safety and fetched
 dev ancestry under USER-ADMIN-LANDING-01. Previous4a/d2 results are not the
 new integrated head's verification. No release or live-service change.
 
-## Fixed integration input and start condition
+## Earlier integration input and start condition (superseded)
 
 The queued upstream review-closure candidate is PR #3645, commit
 3c4ff939735e02fe10910d05fad6c3a18571f663, tree
@@ -349,3 +349,16 @@ working450 branch. Preserve all existing refs and owned source/test blobs.
 Compare source/test/SOT content with the reviewed prospective tree (plan-record
 updates may differ); then commit and enter C. The resulting real commit—not
 the prospective tree—receives fresh remote gates, CI and admin landing proof.
+
+## Current planning hold
+
+The earlier #3645 input is superseded by a validated review correction, and
+the already-requested #3643 integration is using the otherwise idle CI slot.
+Main returned A→P; the previous audit is not authorization to consume either
+an unlanded or changed input. Owned450 source/test blobs remain untouched.
+
+Once these existing flows publish their verified final base, record the actual
+commit/tree, compare the incremental source/caller changes, and re-audit the
+normal B-stage merge. Retain the exact owned-blob and fresh-head verification
+requirements above. This is a dependency/scheduling wait, not completion or
+permission to weaken the gates. No intermediate source merge or new CI ran.
