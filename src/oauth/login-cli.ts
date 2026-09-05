@@ -157,7 +157,7 @@ export async function commitKeyLoginProvider(
   onLiveReload?: (result: LocalProviderReloadResult | null) => void,
 ): Promise<OcxProviderConfig> {
   const mergedProvider = mergeKeyLoginProviderRow(provider, config.providers[name]);
-  initializeProviderModelSelection(name, mergedProvider, config.providers[name]);
+  initializeProviderModelSelection(name, mergedProvider, config.providers[name], config);
   config.providers[name] = mergedProvider;
   saveConfig(config);
   // Evaluate the reload BEFORE the optional call: `onLiveReload?.(await ...)` short-circuits

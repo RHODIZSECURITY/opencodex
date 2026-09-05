@@ -2,6 +2,7 @@ import type { OcxConfig, OcxProviderConfig } from "../types";
 import { randomUUID } from "node:crypto";
 import { getProviderRegistryEntry, providerMatchesRegistryTransport } from "./registry";
 import { routedSlug, slugEquivalenceKey } from "./slug-codec";
+import { comboDisabledModelSelectors } from "../combos/types";
 
 export const INITIAL_MODEL_SELECTION_THRESHOLD = 20;
 type Selection = NonNullable<OcxProviderConfig["initialModelSelection"]>;
@@ -36,7 +37,12 @@ function loginConnection(name: string, provider: OcxProviderConfig): boolean {
 }
 
 /** Registration only: absence on an existing row is legacy/exempt, never a migration trigger. */
-export function initializeProviderModelSelection(name: string, next: OcxProviderConfig, existing?: OcxProviderConfig): void {
+export function initializeProviderModelSelection(
+  name: string,
+  next: OcxProviderConfig,
+  existing?: OcxProviderConfig,
+  config?: Pick<OcxConfig, "disabledModels" | "combos" | "modelDiscovery">,
+): void {
   delete next.initialModelSelection;
   if (existing) {
     for (const key of ["selectedModels", "modelPreset", "newModelPolicy"] as const) {
@@ -45,8 +51,19 @@ export function initializeProviderModelSelection(name: string, next: OcxProvider
       }
     }
     if (existing.initialModelSelection !== undefined) next.initialModelSelection = structuredClone(existing.initialModelSelection);
-  } else if (!loginConnection(name, next)) {
-    next.initialModelSelection = { version: 1, registrationId: randomUUID(), status: "pending" };
+  } else {
+    // A deleted provider's discovery history belongs to that old registration too.
+    if (config?.modelDiscovery?.knownModels) delete config.modelDiscovery.knownModels[name];
+    if (config?.modelDiscovery?.recentArrivals) delete config.modelDiscovery.recentArrivals[name];
+    if (config?.disabledModels) {
+      const comboSelectors = new Set(Object.entries(config.combos ?? {})
+        .flatMap(([id, combo]) => comboDisabledModelSelectors(id, combo)));
+      config.disabledModels = config.disabledModels.filter(selector =>
+        !selector.startsWith(`${name}/`) || comboSelectors.has(selector));
+    }
+    if (!loginConnection(name, next)) {
+      next.initialModelSelection = { version: 1, registrationId: randomUUID(), status: "pending" };
+    }
   }
 }
 

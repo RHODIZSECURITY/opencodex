@@ -995,7 +995,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // completed during that wait remains authoritative instead of being overwritten by the
     // older ownership snapshot used to admit this POST.
     restorePersistedAliasOverlays(prov, config.providers[name]);
-    initializeProviderModelSelection(name, prov, config.providers[name]);
+    initializeProviderModelSelection(name, prov, config.providers[name], config);
     config.providers[name] = stripRegistryOnlyStaticHeaders(name, prov);
     if (body.setDefault === true) config.defaultProvider = name;
     save(config);

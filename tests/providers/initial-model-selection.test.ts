@@ -75,10 +75,10 @@ describe("initial provider model switches", () => {
     reconcileInitialModelSelections(config, listed, ["vendor"]);
     expect(config.providers.vendor.initialModelSelection?.modelCount).toBe(19);
     expect(config.disabledModels).toBeUndefined();
-    const withAlias = fixture();
-    reconcileInitialModelSelections(withAlias, [...listed, { provider: "vendor", id: "displayed-alias" }], ["vendor"]);
-    expect(withAlias.providers.vendor.initialModelSelection?.status).toBe("all-off");
-    expect(withAlias.disabledModels).toContain("vendor/displayed-alias");
+    const withExtraRow = fixture();
+    reconcileInitialModelSelections(withExtraRow, [...listed, { provider: "vendor", id: "additional-catalog-id" }], ["vendor"]);
+    expect(withExtraRow.providers.vendor.initialModelSelection?.status).toBe("all-off");
+    expect(withExtraRow.disabledModels).toContain("vendor/additional-catalog-id");
   });
 
   test("OFF preserves unrelated exclusions, uses canonical IDs and never repeats", () => {
@@ -167,6 +167,37 @@ describe("initial provider model switches", () => {
     expect(saved.modelPreset).toEqual({ mode: "custom" });
     expect(saved.initialModelSelection?.registrationId).toBe(registrationId);
     expect(saved.disabled).not.toBe(true);
+  });
+
+  test("new registration clears orphaned OFF selectors without touching other providers", async () => {
+    const config: OcxConfig = {
+      port: 0, defaultProvider: "openai", providers: {},
+      disabledModels: ["vendor/model-0", "vendor/a/b", "vendor-old/keep", "other/keep"],
+      modelDiscovery: {
+        newModelPolicy: "off",
+        knownModels: { vendor: { ids: ["old"], removed: [], updatedAt: "old" }, other: { ids: ["keep"], removed: [], updatedAt: "old" } },
+        recentArrivals: { vendor: [{ id: "old", at: "old" }] },
+      },
+    };
+    configStore.saveConfig(config);
+    const provider = { adapter: "openai-chat", baseUrl: "http://127.0.0.1:11434/v1", allowPrivateNetwork: true, liveModels: false, models: ["model-0", "a/b"] };
+    expect((await api(config, "/api/providers", { name: "vendor", provider }, "POST")).status).toBe(200);
+    await api(config, "/api/models");
+    expect(configStore.loadConfig().disabledModels).toEqual(["vendor-old/keep", "other/keep"]);
+    expect(config.providers.vendor.initialModelSelection?.status).toBe("ready");
+    expect(config.providers.vendor.disabled).not.toBe(true);
+    expect(configStore.loadConfig().modelDiscovery?.knownModels?.vendor).toBeUndefined();
+    expect(configStore.loadConfig().modelDiscovery?.knownModels?.other?.ids).toEqual(["keep"]);
+    expect(configStore.loadConfig().modelDiscovery?.recentArrivals?.vendor).toBeUndefined();
+  });
+
+  test("new-registration cleanup preserves a current combo alias sharing the namespace", () => {
+    const config = fixture();
+    config.disabledModels = ["vendor/combo-alias", "vendor/orphan", "other/keep"];
+    config.combos = { retained: { alias: "vendor/combo-alias", targets: [{ provider: "other", model: "keep" }] } };
+    const provider: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://models.example.test/v1" };
+    initializeProviderModelSelection("vendor", provider, undefined, config);
+    expect(config.disabledModels).toEqual(["vendor/combo-alias", "other/keep"]);
   });
 
   test("key-login commit initializes new rows and preserves choices during key replacement", async () => {

@@ -213,7 +213,7 @@ async function handleAdd(args: string[]): Promise<void> {
 
   const existingProvider = config.providers[name];
   const { initializeProviderModelSelection } = await import("../providers/initial-model-selection");
-  initializeProviderModelSelection(name, provConfig, existingProvider);
+  initializeProviderModelSelection(name, provConfig, existingProvider, config);
   config.providers[name] = provConfig;
   // A --force overwrite rotates the key/endpoint but must not drop a
   // user-configured price overlay (same rule as the /api/providers path and

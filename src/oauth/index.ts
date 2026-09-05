@@ -1482,7 +1482,7 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
       if (previousModeAllowsKey) next.authMode = "key";
     }
   }
-  initializeProviderModelSelection(provider, next, existing);
+  initializeProviderModelSelection(provider, next, existing, config);
   config.providers[provider] = next;
 }
 
