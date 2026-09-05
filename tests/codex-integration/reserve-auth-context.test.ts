@@ -10,7 +10,7 @@ import {
 } from "../../src/codex/auth-context";
 import { NATIVE_RESERVE_MODEL } from "../../src/codex/catalog/native-models";
 import { reconcileMainCodexAccountRuntimeState, resetMainCodexAccountIdentityTrackingForTests } from "../../src/codex/account-lifecycle";
-import { captureMainQuotaWriter, observeMainQuotaCredential } from "../../src/codex/main-account-cache";
+import { captureMainQuotaWriter, clearMainAccountInfoCache, observeMainQuotaCredential } from "../../src/codex/main-account-cache";
 import { clearAccountQuota, getMainPolicyQuota, setAccountQuotaFromParsed } from "../../src/codex/quota";
 import { clearAccountNeedsReauth, isAccountNeedsReauth } from "../../src/codex/account-runtime-state";
 import { clearCodexUpstreamHealth, clearThreadAccountMap, getCodexUpstreamHealth, recordCodexUpstreamOutcome } from "../../src/codex/routing";
@@ -96,6 +96,7 @@ beforeEach(() => {
   setIcaclsRunnerForTests(() => aclOk);
   setAsyncIcaclsRunnerForTests(async () => aclOk);
   clearAccountQuota();
+  clearMainAccountInfoCache();
   clearCodexUpstreamHealth();
   clearThreadAccountMap();
   clearAccountNeedsReauth(MAIN);
@@ -135,6 +136,7 @@ beforeEach(() => {
 afterEach(async () => {
   mock.restore();
   clearAccountQuota(); // Cancels this fixture's pending persistence timer before deleting its home.
+  clearMainAccountInfoCache();
   clearCodexUpstreamHealth();
   clearThreadAccountMap();
   clearAccountNeedsReauth(MAIN);
