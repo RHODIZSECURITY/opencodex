@@ -28,6 +28,7 @@ import {
 } from "../../src/codex/account-store";
 import * as accountStoreModule from "../../src/codex/account-store";
 import * as reserveAvailabilityModule from "../../src/codex/reserve-availability";
+import { getMainAccountInfoCache, observeMainQuotaCredential } from "../../src/codex/main-account-cache";
 import {
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
@@ -257,10 +258,12 @@ function seedPoolAccount(
 }
 
 describe("main quota refresh diagnostics", () => {
-  function writeMain(): void {
+  function writeMain(accountId = "fixture-account"): string {
+    const accessToken = jwtWithExp(Math.floor(Date.now() / 1000) + 3600);
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
-      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "fixture-account" },
+      tokens: { access_token: accessToken, account_id: accountId },
     }));
+    return accessToken;
   }
 
   test.each([401, 403, 429, 503])("HTTP %s is diagnostic, not proof of sign-out", async status => {
@@ -363,16 +366,116 @@ describe("main quota refresh diagnostics", () => {
     } finally { observer.mockRestore(); timeout.mockRestore(); }
   });
 
-  test("decoded invalid usage is distinct from a response body failure", async () => {
-    writeMain();
-    const observer = spyOn(reserveAvailabilityModule, "observeMainReserveRevocation")
-      .mockImplementation(() => {});
-    globalThis.fetch = (async () => Response.json(null)) as typeof fetch;
-    try {
+  test.each([false, true])("decoded null is invalid with a matching Reserve slot=%s", async matchingSlot => {
+    const accessToken = writeMain();
+    reconcileMainCodexAccountRuntimeState();
+    const token = { accessToken, chatgptAccountId: "fixture-account" };
+    const writer = observeMainQuotaCredential(accessToken, token.chatgptAccountId);
+    let capabilityReads = 0;
+    let passiveReads = 0;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (new Headers(init?.headers).get("x-openai-codex-luna-reserve") === "1") {
+        capabilityReads++;
+        return Response.json({
+          rate_limit: { allowed: false },
+          rate_limit_upsell: { banner_type: "luna_reserve" },
+          additional_rate_limits: [{ limit_name: "gpt-reserve", rate_limit: { allowed: true } }],
+        });
+      }
+      passiveReads++;
+      return Response.json(null);
+    }) as typeof fetch;
+    const authorization = matchingSlot
+      ? await reserveAvailabilityModule.getMainReserveAuthorization({ token, writer, observeOrdinaryQuota: () => {} })
+      : undefined;
+    if (matchingSlot) {
+      expect(authorization).toBeDefined();
+      expect(reserveAvailabilityModule.isMainReserveAuthorizationLive(authorization, token)).toBe(true);
+    }
+    const result = await fetchMainAccountInfoSnapshot(true);
+    expect(result.quotaRefresh).toEqual({ status: "invalid_response" });
+    expect(result.info.quota).toBeNull();
+    expect(capabilityReads).toBe(matchingSlot ? 1 : 0);
+    expect(passiveReads).toBe(1);
+    if (matchingSlot) {
+      expect(reserveAvailabilityModule.isMainReserveAuthorizationLive(authorization, token)).toBe(true);
+    }
+  });
+
+  test.each([{ value: [] }, { value: "invalid-usage" }, { value: 7 }, { value: false }])(
+    "decoded non-object usage is invalid: %j", async ({ value }) => {
+      writeMain();
+      globalThis.fetch = (async () => Response.json(value)) as typeof fetch;
       const result = await fetchMainAccountInfoSnapshot(true);
       expect(result.quotaRefresh).toEqual({ status: "invalid_response" });
       expect(result.info.quota).toBeNull();
-    } finally { observer.mockRestore(); }
+    },
+  );
+
+  test.each(
+    (["snapshot", "accounts"] as const).flatMap(surface =>
+      (["none", "same_id", "round_trip"] as const).flatMap(invalidation =>
+        (["http", "terminal_http", "body", "ok"] as const).map(outcome => ({ surface, invalidation, outcome })),
+      ),
+    ),
+  )("diagnostic dispatch fence: %j", async ({ surface, invalidation, outcome }) => {
+    writeMain();
+    let started!: () => void;
+    const dispatched = new Promise<void>(resolve => { started = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    globalThis.fetch = (async () => {
+      reads++;
+      started();
+      await gate;
+      if (outcome === "http") return new Response("private-http-canary", { status: 503 });
+      if (outcome === "terminal_http") {
+        return Response.json({ detail: { code: "invalid_workspace_selected" } }, { status: 403 });
+      }
+      if (outcome === "body") return new Response(new ReadableStream({
+        start(controller) { controller.error(new TypeError("private-body-canary")); },
+      }));
+      return Response.json({ rate_limit: { primary_window: { used_percent: 37 } } });
+    }) as typeof fetch;
+    const pending = surface === "snapshot"
+      ? fetchMainAccountInfoSnapshot(true)
+      : listCodexAuthAccounts(makeConfig(), true).then(rows => rows.find(row => row.isMain)!);
+    try {
+      await Promise.race([dispatched, pending.then(() => { throw new Error("Main WHAM never dispatched"); })]);
+      if (invalidation === "same_id") {
+        clearMainAccountInfoCache();
+      } else if (invalidation === "round_trip") {
+        writeMain("other-account");
+        reconcileMainCodexAccountRuntimeState();
+        writeMain();
+        reconcileMainCodexAccountRuntimeState();
+      }
+      release();
+      const result = await pending;
+      expect(reads).toBe(1);
+      if (invalidation === "none") {
+        const expected = outcome === "http" ? { status: "http_error", httpStatus: 503 }
+          : outcome === "terminal_http" ? { status: "http_error", httpStatus: 403 }
+          : { status: outcome === "body" ? "network_error" : "ok" };
+        expect(result.quotaRefresh).toEqual(expected);
+      } else {
+        expect(result).not.toHaveProperty("quotaRefresh");
+      }
+      // The existing terminal-auth decision still applies, independently of diagnostic freshness.
+      if (outcome === "terminal_http") expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+      expect(result).not.toHaveProperty("quotaRefreshGeneration");
+      expect(JSON.stringify(result)).not.toContain("quotaRefreshGeneration");
+      expect(JSON.stringify(result)).not.toContain("canary");
+      const cached = getMainAccountInfoCache();
+      if (cached) {
+        expect(cached).not.toHaveProperty("quotaRefreshGeneration");
+        expect(cached).not.toHaveProperty("quotaRefresh");
+      }
+    } finally {
+      release();
+      await pending;
+    }
   });
 
   test("missing credentials omit diagnostics without issuing a request", async () => {

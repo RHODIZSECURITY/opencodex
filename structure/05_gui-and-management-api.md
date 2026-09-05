@@ -365,6 +365,9 @@ completed check, and provider-report waiters are bound to the exact refresh epoc
 Main-account WHAM refresh diagnostics are an ephemeral `quotaRefresh` outcome carried
 from `fetchMainAccountInfoWhileOwned` to the generation-checked account DTO and the
 opt-in CLI quota JSON. They are not persisted or consumed by admission/rotation.
+A private per-dispatch identity generation fences the diagnostic independently of ordinary
+quota metadata. Both snapshot and account DTO publication omit externally invalidated
+attempts; the generation itself is never serialized or stored in the quota cache.
 The CLI reconstructs the object using a fixed vocabulary and bounded numeric HTTP
 status, so an unexpected management response cannot add raw upstream material.
 

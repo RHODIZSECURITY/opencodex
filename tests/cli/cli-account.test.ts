@@ -621,16 +621,22 @@ describe("ocx account CLI (issue #180 matrix)", () => {
   );
 
   test.each([
-    undefined, null, [], "private-diagnostic-canary", 0, true, {},
-    { status: "private-status-canary" },
-    { status: "http_error" },
-    { status: "http_error", httpStatus: NaN },
-    { status: "http_error", httpStatus: Infinity },
-    { status: "http_error", httpStatus: 99 },
-    { status: "http_error", httpStatus: 600 },
-    { status: "http_error", httpStatus: 403.5 },
-    { status: "http_error", httpStatus: "403" },
-  ])("diagnostic projector rejects invalid values: %j", value => {
+    { value: undefined },
+    { value: null },
+    { value: [] },
+    { value: "private-diagnostic-canary" },
+    { value: 0 },
+    { value: true },
+    { value: {} },
+    { value: { status: "private-status-canary" } },
+    { value: { status: "http_error" } },
+    { value: { status: "http_error", httpStatus: NaN } },
+    { value: { status: "http_error", httpStatus: Infinity } },
+    { value: { status: "http_error", httpStatus: 99 } },
+    { value: { status: "http_error", httpStatus: 600 } },
+    { value: { status: "http_error", httpStatus: 403.5 } },
+    { value: { status: "http_error", httpStatus: "403" } },
+  ])("diagnostic projector rejects invalid values: %j", ({ value }) => {
     expect(projectCodexQuotaRefreshOutcome(value)).toBeUndefined();
   });
 
