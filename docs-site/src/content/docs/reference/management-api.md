@@ -204,7 +204,6 @@ account-qualified native rows stay separate. This does not rename bare native ro
 change account entitlements. Non-native OpenAI visibility targets must match a configured
 manual model.
 
-
 Valid PUT requests to `/api/selected-models` and `/api/model-presets` return HTTP 409 with code `initial_model_selection_pending` until a reliable initial model list is available. Refresh model discovery (for example, `GET /api/models`) and retry after it succeeds.
 
 ### OAuth accounts, provider keys, and data-plane keys

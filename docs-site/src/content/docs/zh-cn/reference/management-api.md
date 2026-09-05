@@ -144,11 +144,14 @@ Authorization: Bearer <admin-token>
 | `GET /api/models` | 返回仪表板/CLI 模型行 | 收集饱和时返回 `catalog_busy` |
 | `GET /api/client-config?client=...` | 为任意支持的文件集成构建只读客户端配置 | 400 不支持的客户端；503 目录不可用 |
 | `PUT /api/disabled-models` | 替换共享的禁用模型列表 | 400 无效 JSON |
-| `PUT /api/model-visibility` | 原子性地更改 provider 级或 model 级可见性 | 400 provider、scope、target 或请求体无效 |
+| `PUT /api/model-visibility` | 原子性地更改 provider 级或 model 级可见性 | 400 provider、scope、target 或请求体无效; 409 `initial_model_selection_pending` (刷新模型列表后重试。) |
 | `GET, POST /api/custom-models` | 列出自定义模型或添加一个 | 400 字段无效；404 provider 缺失；409 模型重复 |
 | `PUT, DELETE /api/custom-models/{id}` | 编辑或删除一个自定义模型 | 400 id/字段无效；404 未找到；409 模型重复 |
 | `GET, PUT /api/selected-models` | 读取 provider 允许列表和可用性，或替换一个允许列表 | 400 缺少 provider/请求体；404 未知 provider; PUT 409 `initial_model_selection_pending` |
 | `GET, PUT /api/model-presets` | 读取预设信息或选择 preset/all/custom 模式 | 400 模式无效或不支持该预设；404 未知提供者; PUT 409 `initial_model_selection_pending` |
+
+手动模型会替换 Models 仪表板中 provider 和 model ID 相同的行。OpenAI 手动行保留 `openai/<model>`，并支持可见性控制。删除手动行后，不带账户限定符的原生行会恢复。带账户限定符的原生行仍单独保留。原生路由和账户权限不会改变。非原生 OpenAI 可见性目标必须匹配已配置的手动模型。
+
 
 可靠的初始模型列表尚未确认时，有效的 `PUT /api/selected-models` 和 `PUT /api/model-presets` 请求也会返回 HTTP 409 和代码 `initial_model_selection_pending`。请使用 `GET /api/models` 等方式刷新模型列表，成功后再重试。
 
