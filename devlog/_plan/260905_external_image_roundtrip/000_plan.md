@@ -9,7 +9,7 @@
   release, image synthesis, or unrelated adapter refactor.
 - Verifier: standalone converter/parser/adapter body inspection, TypeScript, exact-head
   GitHub CI. ALL local test suites are forbidden by the user, including focused suites.
-- Stop: reviewed two-layer stack merged bottom-up to dev with green CI and ancestry.
+- Stop: reviewed image-repair stack merged bottom-up to dev with green CI and ancestry.
 - Memory: this unit and the session-bound goalplan/ledger.
 - Outcomes: DONE only with proof; external dependencies may be BLOCKED/NEEDS_HUMAN;
   unsafe expansion is UNSAFE. No implementation-success claim from docs-only work.
@@ -46,8 +46,13 @@ serialization. Do not add a generic image helper or patch correct Responses code
 
 1. wp0: docs-only roadmap and independent audit (this cycle).
 2. wp1 / 010: preserve Chat image detail and structured tool output; lower PR to dev.
-3. wp2 / 020: cross-protocol wire regressions and public contract; child PR to lower
-   branch, then CI/review/admin-merge bottom-up, retarget child and verify again.
+3. wp2 / 020: cross-protocol wire regressions and public contract; child PR to lower.
+4. User-expanded wp3 / 030: file references and explicit unsupported computer-output
+   boundary. 003 records full format coverage and rejected hypotheses.
+5. wp4 / 040: orphan tool image carriers on Anthropic and Command Code.
+6. wp5 / 050: active external Cursor tool screenshot attachments.
+7. wp6 / 060: all-format finding disposition, CI/review/admin-merge bottom-up, retarget
+   children and verify exact heads/ancestry. Original completion criteria are unchanged.
 
 Existing placement is reused: src/chat/, tests/responses/, public reference/proxy-formats,
 structure/04_transports-and-sidecars.md. No new package, runtime module, or config.
