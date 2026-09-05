@@ -2335,6 +2335,7 @@ export const ja: Record<TKey, string> = {
   "models.tipDisabled": "Disabled",
   "pws.estimatedCost": "Estimated cost",
   "pws.costDisclaimer": "API list-price estimate, not an actual charge.",
+  "pws.unresolvedRequestedModel": "要求モデルを特定せず既定プロバイダーで処理した使用量を含む",
   "pws.modelBreakdown": "Model breakdown",
   "pws.col.model": "Model",
   "pws.col.cost": "Est. cost",

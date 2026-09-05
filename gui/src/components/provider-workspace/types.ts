@@ -29,6 +29,7 @@ export interface ProviderUsageTotals {
 export interface ProviderModelUsageRow {
   model: string;
   resolvedModel?: string;
+  hasUnresolvedRequestedModel?: true;
   requests: number;
   totalTokens: number;
   inputTokens: number;

@@ -1909,6 +1909,7 @@ export const de: Record<TKey, string> = {
   "pws.usageLast30d": "Nutzung (letzte 30 Tage)",
   "pws.estimatedCost": "Geschätzte Kosten",
   "pws.costDisclaimer": "Schätzung basierend auf API-Listenpreisen, keine tatsächliche Abrechnung.",
+  "pws.unresolvedRequestedModel": "Enthält Nutzung eines nicht aufgelösten angefragten Modells",
   "pws.modelBreakdown": "Modellaufschlüsselung",
   "pws.col.model": "Modell",
   "pws.col.cost": "Gesch. Kosten",

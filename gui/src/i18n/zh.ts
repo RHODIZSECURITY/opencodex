@@ -1929,6 +1929,7 @@ export const zh: Record<TKey, string> = {
   "pws.usageLast30d": "用量（最近 30 天）",
   "pws.estimatedCost": "预估费用",
   "pws.costDisclaimer": "基于 API 公示价格的预估值，非实际计费金额。",
+  "pws.unresolvedRequestedModel": "包含未解析请求模型、由默认提供商处理的用量",
   "pws.modelBreakdown": "模型用量明细",
   "pws.col.model": "模型",
   "pws.col.cost": "预估费用",

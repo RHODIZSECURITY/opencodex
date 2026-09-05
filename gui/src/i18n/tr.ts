@@ -1165,6 +1165,7 @@ export const tr: Record<TKey, string> = {
   "pws.usageLast30d": "Kullanım (son 30 gün)",
   "pws.estimatedCost": "Tahmini maliyet",
   "pws.costDisclaimer": "API liste fiyatı tahminidir.",
+  "pws.unresolvedRequestedModel": "Çözümlenemeyen istenen model kullanımını içerir",
   "pws.modelBreakdown": "Model dağılımı",
   "pws.col.model": "Model",
   "pws.col.cost": "Tahm. maliyet",

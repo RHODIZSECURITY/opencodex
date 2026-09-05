@@ -958,6 +958,7 @@ export const zhTW: Record<TKey, string> = {
   "pws.usageLast30d": "用量（最近 30 天）",
   "pws.estimatedCost": "預估費用",
   "pws.costDisclaimer": "基於 API 公示價格的預估值，非實際計費金額。",
+  "pws.unresolvedRequestedModel": "包含未解析請求模型、由預設供應商處理的用量",
   "pws.modelBreakdown": "模型用量明細",
   "pws.col.model": "模型",
   "pws.col.cost": "預估費用",
