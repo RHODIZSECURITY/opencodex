@@ -31,6 +31,14 @@ validate the actual integration with currentdev; old local proof is not
 claimed to test this later base. No blanket claim that earlier unexplained
 discovery stall or Fast opt-in ambiguity is fixed.
 
+During final landing checks, dev advanced again to
+ef9c538f36f94f0e95c7f4833642e5b03bd29e2e (#3664). The first PR head0d071d
+passed CI33971079937 on tree739edf9d based on c470, but that result does not
+certify the newer integration. Preserve0d071d as a checkpoint, merge the
+new dev into this branch without conflict, and validate the updated final
+head through the same PR before admin landing. This is required base-drift
+handling, not the deferred post-merge regression cycles.
+
 ## Post-merge phase map
 -840: consume820's exact new test/fixture/layout plan on the delivereddev;
  execute first full post-merge main comparison and deliver resulting evidence.
