@@ -632,8 +632,36 @@ export function clearGatherRoutedModelsInflight(): void {
   gatherInflight.clear();
 }
 
+const NUMERIC_MODEL_ID_SEGMENT = /^\d+$/;
+
+/**
+ * Resolve an unknown Claude point release or date pin from the nearest configured
+ * family row. Only numeric tail segments are removed so unrelated model families
+ * cannot inherit one another's limits.
+ */
+function anthropicFamilyContextWindow(
+  record: Record<string, number> | undefined,
+  id: string,
+): number | undefined {
+  if (!record || !id.toLowerCase().startsWith("claude-")) return undefined;
+  let candidate = id;
+  while (true) {
+    const cut = candidate.lastIndexOf("-");
+    if (cut <= 0 || !NUMERIC_MODEL_ID_SEGMENT.test(candidate.slice(cut + 1))) return undefined;
+    candidate = candidate.slice(0, cut);
+    const value = modelRecordValue(record, candidate);
+    if (typeof value === "number" && value > 0) return value;
+  }
+}
+
+/**
+ * Resolve the configured context window in exact-model, Anthropic numeric-family,
+ * then provider-wide order. Return undefined when the selected value is not positive.
+ */
 export function configuredContextWindow(prov: OcxProviderConfig, id: string): number | undefined {
-  const configured = modelRecordValue(prov.modelContextWindows, id) ?? prov.contextWindow;
+  const configured = modelRecordValue(prov.modelContextWindows, id)
+    ?? (prov.adapter === "anthropic" ? anthropicFamilyContextWindow(prov.modelContextWindows, id) : undefined)
+    ?? prov.contextWindow;
   return typeof configured === "number" && configured > 0 ? configured : undefined;
 }
 
