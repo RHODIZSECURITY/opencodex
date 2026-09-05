@@ -1,233 +1,57 @@
-# 445 — Temporary port-probe peer disposal
+# 445 — Runtime verification prerequisite
 
-## Loop spec and authority
+## Scope and workflow
 
-C3 bounded behavior-fix prerequisite, separate from pure-move WP450. User
-authorization covers scoped verification repairs and stacked PR maintenance;
-local suites remain prohibited. Work stays in the bound a2c0 checkout, on
-`codex/fix-port-probe-peer-disposal`, base `dev` at
-`a687eb735afc7307f902816972c2f8fb522ed2f3`. Main owns Git/FSM/remote checks;
-gpt-6-astra high workers have bounded file ownership. No merges, deployment,
-live proxy changes, dependency installation outside isolated remote checkouts,
-credential changes, or unrelated cleanup work. Time/tokens are user-unbounded;
-individual subprocesses and probes remain bounded.
+C3 independent runtime-maintenance prerequisite for the modularization train.
+PR #3640 uses branch `codex/fix-port-probe-peer-disposal`, base `dev`.
+Its production and test diff is the review surface. Investigation, negative
+controls, failure analysis and reproduction records remain in ignored scratch,
+not public devlog. Publication of the final retrospective waits for release.
 
-Stop only when this repair has a reviewed PR, exact-head remote gates and CI
-evidence. Then D returns to the suspended WP450 for its own re-plan/restack and
-fresh verification. Its existing acceptance criteria are unchanged. Source
-and receipt identity remain in the same checkout throughout each cycle.
+Bound session: `01a06e97-b9d8-7250-8204-bb788338c288`; same a2c0 checkout
+owns implementation, persisted PABCD and receipts. Main owns Git/PR/CI.
+Delegation uses gpt-6-astra high with disjoint source/test ownership.
+No merge, release, live-service change or repository-wide setting change.
 
-## Problem and evidence
+## Planned files and acceptance
 
-Both temporary TCP servers in `src/server/ports.ts` wait for `server.close()`
-before resolving, but neither disposes connections accepted during the brief
-bind probe. These listeners are not application servers and have no request
-handler. An accepted peer can therefore hold selection open before startup
-publishes runtime records.
+- `src/server/ports.ts`: bounded existing-owner maintenance; preserve public
+  exports, caller interfaces, error handling and selection policies.
+- `tests/server/ports.test.ts`: scoped regression coverage; preserve the
+  original test cases and isolate test doubles from the parent process.
+- `structure/01_runtime.md`: ownership row only.
+- This public scope record and the carried000/003 workflow documents.
 
-Remote experiment on Bun1.4.0, unchanged actual CI merge tree: a concurrent
-TCP peer held `isPortAvailable()` for2s; closing only that peer released the
-promise. A second experiment used aborting HTTP readiness requests: after5s
-all fetches had settled, yet the probe remained pending another2s. The
-experiments establish the socket-lifetime defect. They do not alone prove
-that every historical CI recovery failure has the same cause.
+Keep source/tests below400lines and added functions below50lines. Do not
+weaken assertions, alter verification thresholds or mark a failed check passed.
 
-Competing hypotheses: H1 pre-bind wait; H2 early runtime failure with retained
-handles; H3 probe/environment mismatch. The controlled peer-close toggle
-rules out bind contention/permissions and runtime startup code for this
-specific reproduction. The HTTP variant demonstrates that client abort is
-not sufficient disposal. The prior CI instance has no live stack, so its
-precise attribution remains unconfirmed until further evidence.
+All runtime verification is remote. Use the reviewed source-bound receipt
+recipe stored in ignored evidence: check clean expected HEAD before/after
+SSH, create a fresh isolated clone, match fetched branch SHA, frozen dependency
+setup, explicit package Bun1.4.0, build, typecheck, focused subsystem/boundary
+tests, privacy, full suite, and final clean HEAD. Preserve full output and
+actual exits. No local suites or typecheck; no shared-checkout reset.
 
-A third control matched the recovery test's sequential polling: each HTTP
-attempt aborts after2s, then waits100ms before the next attempt. It also held
-the real probe at iteration0 beyond5s, with no active fetch, and remained held
-for another2s after polling stopped. This removes aggressive overlapping
-polling as a prerequisite for the reproduced defect.
+Independent review, exact-head remote gates and hosted CI must pass. A prior
+head's results do not establish a later head. Detailed verification records
+are kept with private receipt evidence; no completion is inferred from a plan.
 
-Unchanged head and CI merge-tree singleton/batch controls passed. Even the
-complete original CI shard4/4 passed remotely with Bun1.4.0, isolate mode,
-GUI built, and two-core affinity. This does not erase the failed hosted job.
+## Continuation and coordination
 
-## Search, ownership, and rejected alternatives
+This work does not close a modularization ledger row. D resumes suspended
+WP450 for its own P/A, restack and fresh verification; do not count it done.
+PR #3633 remains independent until that controlled restack is performed.
 
-Main read the complete163-line ports module, its existing tests, reclaim
-caller, and startup selection path. `isPortAvailable` is the primitive used
-by availability/reclaim; `allocateEphemeralPort` repeats the same temporary
-server lifetime for port0. Existing `setEphemeralPortAllocatorForTests`
-bypasses the affected implementation and is unsuitable for regression proof.
+The user requires conversational one-at-a-time non-Windows CI coordination.
+Windows-owner work remains excluded. Changes that start CI, including pushes,
+retargeting and landing, require the scheduled slot. Code/static review may
+continue while waiting. Scope authority is already granted; a queue wait is
+not a request for more user permission.
 
-Keep this resource lifecycle in its existing owner; no new module, dependency,
-export, global setter, timer, socket registry, or cycle. Do not change retry
-deadlines, bind-error interpretation, ephemeral fallback policy, or reserved
-port handling. Premature resolve, `unref`, `end`, and a timeout race leave the
-resource problem intact and are rejected. Fix both same-owner instances, not
-the downstream recovery assertion. Recovery fixture cleanup is separate debt.
+## Review disposition
 
-## Exact implementation scope
-
-- MODIFY `src/server/ports.ts`: add a small private temporary-server factory
-  (under15lines) whose connection listener is installed before listen. It
-  explicitly creates the server, registers a public `server.on("connection")`
-  handler, and returns that server. Do not use a constructor callback: the
-  pinned Bun implementation defers that callback's registration until native
-  accept. The handler registers narrow socket-error disposal and immediately destroys
-  each accepted socket. Use it at the two existing `createServer()` sites.
-  Keep success inside the real server-close callback and preserve all existing
-  signatures, bind-error handlers, and caller behavior.
-- MODIFY `tests/server/ports.test.ts`: retain all original assertions. Add
-  deterministic subprocess-isolated regression coverage of the real
-  `isPortAvailable(port)` and `findAvailablePort(0)` implementations. Inside
-  each disposable test subprocess, a `node:net` Server-prototype method double
-  delivers two accepted peers and only completes close after both are destroyed. Check
-  socket error disposal, close-completion-before-result, and the independently
-  specified selected port. Override listen/close/address only in the isolated
-  child, retaining the real createServer constructor and public EventEmitter
-  registration. Never replace network methods in the parent test process or
-  reach into Bun's private callback-storage symbols.
-  Resolve source through `tests/helpers/repo-root.ts`; no new test file.
-- MODIFY `structure/01_runtime.md`: add one ownership row describing temporary
-  port-probe socket disposal; no authentication or server-composition changes.
-- This plan and carried000/003 are the only other tracked changes.
-
-Expected source change under25lines; test amendment under120lines; each file
-remains below400lines. Main owns docs/SoT; worker owns only source/test files.
-Any additional behavior or broader cleanup requires a separate P amendment.
-
-## Audit and verification
-
-Independent A review must verify both affected call sites, safe disposal before
-listen, no premature close success, regression isolation, unchanged exports,
-and exact scoped writes. An operational review checks the scheduling amendment:
-new445before450,450suspendedpending with all evidence/criteria preserved.
-
-Before code change, run the new regression remotely against unchanged source
-and require failure in both paths. After correction require green. Revert only
-disposal in a disposable remote clone and require the regression to fail again;
-restore before final checks. Run the real socket and aborted-fetch experiments
-against the corrected source; they must terminate without client cooperation.
-Local inspection may use diff/AST/bash syntax only, never local tests/typecheck.
-
-Final remote recipe follows003 and the already-reviewed WP450 recipe, with
-this branch and explicit package Bun1.4.0 on PATH. From clean published head,
-`cxc receipt test` must wrap local head/clean checks before and after SSH.
-SSH creates a new `mktemp -d` clone; fetch/match the exact branch SHA; frozen
-root+GUI install; build GUI; run typecheck; run focused
-`tests/server/ports.test.ts`, `tests/server/port-reclaim.test.ts`,
-`tests/update/update-stop-first.test.ts`, and
-`tests/lab/core-lab-boundary.test.ts`; privacy; full `bun run test`; and final
-HEAD/clean checks. Propagate all exits and preserve complete output. The
-executable recipe is written and syntax-reviewed before A closes.
-
-Acceptance: deterministic red/green/revert-red; real peer experiments settle;
-all named focused checks, typecheck/privacy/full suite exit0; unchanged public
-API and ownership boundary; independent C review; exact-head CI green; PR open
-with every template section and actual evidence. Never count this support
-repair as resolving another modularization ledger row.
-
-## Stack map
-
-| Layer | Branch | Base | Scope |
-|---|---|---|---|
-| WP450 / PR3633 | codex/split-cli-status | this repair after rebase | original pure-move status extraction only |
-| WP445 / PR pending | codex/fix-port-probe-peer-disposal | dev | temporary probe peer disposal only |
-
-Keep parent open until its child is retargeted appropriately; no merge is
-authorized. WP450 needs fresh head-bound evidence after restacking. The old
-4a71894 receipt remains historical proof, not the new head's acceptance.
-
-## A closure and CI scheduling
-
-Hooke passed the two-site disposal design, nine original exports, and isolated
-regression plan. Both reviewers found a verifier error-propagation issue:
-inline `test -z` around Git-status substitution could conceal Git failure.
-All five sites now assign status in a standalone command before checking
-emptiness. Hooke and Wegener independently closed that blocker with PASS;
-the script passes Bash syntax checking. No runtime result is inferred.
-
-The user's latest instruction requires cross-task CI coordination: leave the
-Windows task alone, message other owners, and schedule non-Windows CI one at
-a time. Main has contacted the provider, registration, image, and Reserve
-owners and will hold this repair's push/full verification until its slot.
-Implementation and static review may proceed while that queue drains. Never
-cancel another task's run without confirming ownership and communicating the
-chosen order. Existing successful job evidence must be preserved where the
-CI platform supports rerunning only failed/cancelled jobs.
-
-## B regression-harness correction
-
-The first two-case remote run completed in97ms and failed both cases, but
-those failures were not accepted as RED evidence: Bun1.4.0 did not route the
-native named createServer import through the child `mock.module` replacement.
-The double reported zero factory calls and the real probe completed before
-the controlled close flag. This tests the broken double, not peer disposal.
-Product source remains unchanged.
-
-The test-only repair uses child-local Server prototype method overrides so
-the real constructor retains connection-listener registration while the
-double controls listen events, address and close completion. This changes
-only instrumentation, not the intended behavioral assertions or public API.
-Remote RED must be repeated at an allocated CI handoff before source changes.
-The wrapper also used unavailable remote `rg` after the run; its final marker
-check now uses grep. Neither the wrapper exit127 nor the two wrong-reason
-failures count as a valid regression result.
-
-The corrected fixture was then moved to a private module constant so the test
-callback stays15lines rather than embedding a long script in a function. The
-child reads only the two explicitly supplied argv entries. Existing11cases
-and all instrumentation/behavior assertions remain intact.
-
-RED2 is valid: explicit Bun1.4.0 ran both new cases in98ms; interception,
-rejection absence and close registration passed, then both cases failed at
-`probe must destroy both accepted peers`, actual `[false,false]` versus
-`[true,true]`. Test exit1 and wrapper exit0 with the expected-RED marker are
-recorded in `wp445-short-red2.log`. Original production source remained
-unchanged. Stage2 is now authorized to implement only the planned two-site
-disposal correction. Green verification still awaits an allocated slot.
-
-Stage2 implementation adds a six-line private `createProbeServer` and replaces
-the two existing factory calls: source +10/−2, now171lines. It attaches the
-socket-error disposal handler before immediate destroy and leaves success in
-the existing server-close callbacks. Worker static review preserves all nine
-exports/imports and bind-error/timeout/fallback/reserved-port logic. Main
-inspected the complete diff and whitespace checks pass. The existing test
-file now235lines (+100/−0 versus base), with all11original tests preserved and
-a15line regression callback. Main added the single Runtime ownership row.
-No local runtime tests ran. C must still establish restored GREEN, real-socket
-controls, full gates, current-head CI and independent review before completion.
-
-## P re-plan after the first GREEN attempt
-
-The first GREEN attempt applied the correct source/test blobs but reported
-11original passes and2new failures at peer disposal. The wrapper stopped
-before any real-peer control. This is not a successful check and does not
-establish a production regression. Main returned C→P before further repair.
-
-Pinned primary-source proof: [Bun net implementation at34cbb9a40](https://github.com/oven-sh/bun/blob/34cbb9a40/src/js/node/net.ts).
-The constructor stores its callback in server options (lines3364–3365); native
-accept prepends it immediately before emitting the connection event
-(lines4021–4025, also1181–1189). A direct synthetic emit therefore bypassed
-that deferred registration. Static assumptions about Node-style constructor
-registration were wrong for this Bun version.
-
-Rejected alternatives: weakening the disposal assertions, reaching into a
-private Bun symbol, or changing to a Node-only test would conceal the timing
-contract. Explicit public `server.on("connection", handler)` registration
-before listen makes the intended lifecycle real and observable without
-runtime-private knowledge. Both production call sites and every test assertion
-remain unchanged. Expected helper8lines/source173lines; this is a two-line
-refinement of the private factory, not a wider behavior change.
-
-Re-audit this explicit-listener plan before B. Then repeat the two-case RED
-control against baseline, verify GREEN plus all three real-peer experiments,
-and toggle disposal off/on again. The focused wrapper must emit its captured
-failure tail before exiting, so an early test error cannot hide the evidence.
-Do not rerun during another owner's CI slot; #3636 currently owns it.
-
-Heisenberg independently approved the re-plan: explicit public registration
-reaches both native acceptance and synthetic emission, with no private-symbol
-dependency and no weakened assertion. B changed only the private factory
-(+3/−1 versus the constructor-callback candidate). It now has8lines; source
-has173lines and retains all9exports. Tests and docs were unchanged by the
-worker. Main reviewed the diff. Renewed runtime evidence is still pending;
-the prior static PASS does not substitute for this round's checks.
+A reviewer identified that the previous version mixed investigation records
+with this public scope document. Those details were moved to ignored scratch
+and removed from the current public document. Earlier published commits may
+still be accessible; this change is not a history-purge claim. The actual
+source/test review and all verification requirements remain unchanged.
