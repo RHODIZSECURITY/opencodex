@@ -72,7 +72,7 @@ function assertMetadataBounds(headers: Headers): void {
   for (const [name, value] of headers) {
     bytes += Buffer.byteLength(name) + Buffer.byteLength(value);
     count++;
-    const family = /^(x-codex(?:-[a-z0-9-]+)?)-(?:primary|secondary)-(?:used-percent|window-minutes|reset-at)$/.exec(name);
+    const family = /^(x-codex(?:-[a-z0-9-]+)?)-(?:(?:primary|secondary|tertiary)-(?:used-percent|window-minutes|reset-at)|limit-name)$/.exec(name);
     if (family) families.add(family[1]!);
   }
   if (bytes > CODEX_WS_METADATA_MAX_BYTES || count > CODEX_WS_METADATA_MAX_HEADERS || families.size > CODEX_WS_METADATA_MAX_FAMILIES) {

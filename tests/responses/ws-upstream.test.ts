@@ -918,6 +918,15 @@ describe("codexWsUpstreamFetch", () => {
 });
 
 describe("native WS metadata boundaries", () => {
+  test("tertiary and label-only metadata families share the native family budget", () => {
+    for (const suffix of ["tertiary-used-percent", "limit-name"]) {
+      const owner = new CodexWsMetadata();
+      owner.commit();
+      const headers = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`x-codex-family-${i}-${suffix}`, "1"]));
+      expect(() => owner.consume({ type: "codex.response.metadata", headers }, 2000)).toThrow("header budget");
+      expect([...owner.snapshot()]).toHaveLength(0);
+    }
+  });
   test("new valid windows replace missing optional fields instead of inheriting old resets", () => {
     const owner = new CodexWsMetadata();
     owner.consume({ type: "codex.rate_limits", rate_limits: { primary: { used_percent: 8, window_minutes: 300, reset_at: 1900000000 } } }, 100);

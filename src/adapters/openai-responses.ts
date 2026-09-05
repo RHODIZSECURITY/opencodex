@@ -2318,7 +2318,14 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         if (mayForwardCallerCredentials) {
           for (const h of FORWARD_HEADERS) {
             const v = incoming?.headers.get(h);
-            if (v) headers[h] = v;                                      // …so forwarded auth always wins.
+            if (v) {
+              if (h === CODEX_RESPONSES_LITE_HEADER) {
+                for (const name of Object.keys(headers)) {
+                  if (name.toLowerCase() === h) delete headers[name];
+                }
+              }
+              headers[h] = v; // …so genuine forwarded fields win.
+            }
           }
         }
         const override = runtimeProvider._codexAccountOverride;

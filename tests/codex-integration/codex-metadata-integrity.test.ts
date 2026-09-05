@@ -168,6 +168,20 @@ describe("Codex request transport metadata", () => {
   const liteKey = "ws_request_header_x_openai_internal_codex_responses_lite";
   const hintHeader = "x-codex-routing-hint";
 
+  test("caller Lite false replaces a mixed-case configured true header", async () => {
+    const { prepareCodexWsRequest } = await import("../../src/server/responses/codex-ws-request");
+    const parsed = minimalParsed();
+    parsed._rawBody = { model: "gpt-5.6-sol", stream: true, input: [], client_metadata: { [liteKey]: "true" } };
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex",
+      headers: { "X-OpenAI-Internal-Codex-Responses-Lite": "true" },
+    });
+    const request = await adapter.buildRequest(parsed, { headers: new Headers({ [liteHeader]: "false" }) });
+    expect(new Headers(request.headers).get(liteHeader)).toBe("false");
+    const prepared = prepareCodexWsRequest(url, { body: request.body, headers: request.headers })!;
+    expect(JSON.parse(prepared.frameText).client_metadata[liteKey]).toBe("false");
+  });
+
   test("canonical adapter forwards Lite through selected auth and derives the final wire tier/model", async () => {
     const parsed = minimalParsed();
     parsed.modelId = "gpt-5.4";
