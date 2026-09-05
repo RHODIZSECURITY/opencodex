@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleResponses, handleResponsesCompact } from "../../src/server/responses";
 import * as adapterResolveModule from "../../src/server/adapter-resolve";
+import * as visionModule from "../../src/vision";
 import { saveCodexAccountCredential } from "../../src/codex/account-store";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -1544,6 +1545,41 @@ describe("computer screenshot output translation boundary", () => {
     type: "message", role: "user",
     content: [{ type: "input_image", image_url: "https://example.com/ordinary.png" }],
   };
+
+  test("rejects before an otherwise active vision description", async () => {
+    const config = keyProviderConfig({ adapter: "openai-chat", noVisionModels: ["model"] });
+    config.visionSidecar = { enabled: true, backend: "routed", model: "vision/seeing" };
+    config.providers.vision = { adapter: "openai-chat", baseUrl: "https://vision.example/v1", apiKey: "test-key" };
+    // Routed vision needs no live OpenAI account for this controlled description dependency.
+    const resolveAuth = spyOn(visionModule, "shouldResolveOpenAiVisionSidecar").mockReturnValue(false);
+    const describe = spyOn(visionModule, "describeImagesInPlace").mockImplementation(async () => {});
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return jsonResponse({ id: "chat_vision_control", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+    }) as typeof fetch;
+    try {
+      const control = await handleResponses(compactionRequest({
+        model: "gw/model", stream: false, input: [ordinaryImage],
+      }), config, { model: "", provider: "" });
+      expect(control.status).toBe(200);
+      await control.text();
+      expect(describe).toHaveBeenCalledTimes(1);
+      expect(fetches).toBe(1);
+      describe.mockClear();
+      fetches = 0;
+      const rejected = await handleResponses(compactionRequest({
+        model: "gw/model", stream: false, input: [screenshot, ordinaryImage],
+      }), config, { model: "", provider: "" });
+      expect(rejected.status).toBe(400);
+      await rejected.text();
+      expect(describe).not.toHaveBeenCalled();
+      expect(fetches).toBe(0);
+    } finally {
+      describe.mockRestore();
+      resolveAuth.mockRestore();
+    }
+  });
 
   test("rejects translated computer outputs before upstream or vision work", async () => {
     let fetches = 0;

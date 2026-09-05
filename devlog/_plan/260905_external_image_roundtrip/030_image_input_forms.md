@@ -69,3 +69,18 @@ node TypeScript, static test bundling, privacy scan, exact-head CI. Independent 
 review confirms no native rejection, payload logging, new fetch, or execution authority.
 Reuse existing modules; defer broad splits in large files to avoid unrelated churn.
 Publish third stacked PR against codex/external-image-wire-contract; no merge yet.
+
+## C-review corrections
+
+Accepted consumer mismatch: output parser's nonempty-URL predicate must match raw vision
+caption indexing. MODIFY src/vision/index.ts syncRawBodyImageDescriptions to skip empty
+URLs for both message/tool fields, preserve existing file marker when available, and
+never consume a later image's caption. Remove the now-unneeded private boolean argument.
+MODIFY tests/vision/vision-cache.test.ts with function/custom arrays containing empty
+URLs before two real images; actual describeImagesInPlace must preserve caption order.
+Standalone .tmp/vision-caption-alignment-probe.ts demonstrated the misalignment (exit1).
+
+Accepted coverage gap: core guard test must activate vision in its ordinary-image
+control. Explicit routed vision fixture, controlled description dependency, and no live
+account resolution; control describes once, computer-output request describes zero.
+These repairs preserve the original030scope and do not implement040or050.
