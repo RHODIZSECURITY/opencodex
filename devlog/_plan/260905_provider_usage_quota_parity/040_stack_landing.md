@@ -50,9 +50,13 @@ new heads still require remote CI.
 Concrete follow-on conflict: upstream PR #3622 landed the same quota-reset integration repairs,
 followed by #3623's update-test diagnostic change, at `dev`1c1ca060a. Preserve both commits.
 Use upstream's route/capability declarations and generated reference verbatim; retain this
-unit's stricter observation-time and HTTPS-transport/privacy assertions without duplicate
+unit's stricter observation-time, HTTPS-schema and payload-privacy assertions without duplicate
 properties or fixtures. This conflict resolution, not unrelated base chasing, advances the
 frozen baseline. Cascade every child and require fresh exact-head CI.
+
+The webhook fixture bridges an HTTPS-shaped test URL to an HTTP loopback receiver. It
+verifies configuration acceptance and activation/delivery, not TLS negotiation or certificate
+validation. These remain outside this fixture's evidence claim.
 
 The Windows stabilization stack then landed #3610/#3613 at `dev`be81013fa, creating another
 concrete conflict in the same webhook fixture. Adopt its portable receiver-promise wait and
