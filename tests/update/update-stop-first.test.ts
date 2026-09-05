@@ -4,7 +4,9 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runNpmCachePreflight } from "../../src/update/npm-cache-preflight.mjs";
+import { resolveCodexHomeDir } from "../../src/codex/home";
 import { isProcessAlive, killProxy } from "../../src/lib/process-control";
+import { createIsolatedTestEnvironment } from "../../scripts/test";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { repoRoot as resolveRepoRoot } from "../helpers/repo-root";
 
@@ -493,6 +495,21 @@ describe("update stops the running proxy before replacing files", () => {
     expect(isProcessAlive(auditedRecoveryPid)).toBe(false);
   });
 
+  test("recovery sandbox replaces an inherited Codex home without claiming a managed service", () => {
+    const parentEnv = { CODEX_HOME: "/synthetic-parent-codex", OCX_REAL_HOME: "/synthetic-real-home", FIXTURE: "unchanged" };
+    const isolated = createIsolatedTestEnvironment(parentEnv);
+    try {
+      expect(resolveCodexHomeDir({ env: isolated.env })).toBe(join(isolated.root, ".codex"));
+      expect(existsSync(join(isolated.root, ".codex"))).toBe(true);
+      expect(isolated.env.OCX_REAL_HOME).toBe("/synthetic-real-home");
+      expect(isolated.env.FIXTURE).toBe("unchanged");
+      expect(existsSync(join(isolated.root, ".opencodex", "service-state.json"))).toBe(false);
+      expect(parentEnv).toEqual({ CODEX_HOME: "/synthetic-parent-codex", OCX_REAL_HOME: "/synthetic-real-home", FIXTURE: "unchanged" });
+    } finally {
+      isolated.cleanup();
+    }
+  });
+
   test("a failed cache pre-flight aborts before the stop callback can run", () => {
     let stopped = false;
     const malformedSpawn = (() => ({ status: 0, signal: null, stdout: "not-json", stderr: "" })) as never;
@@ -592,26 +609,26 @@ describe("update stops the running proxy before replacing files", () => {
   test.skipIf(process.platform === "win32")(
     "npm launcher restarts the stopped runtime after a staged update failure",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "ocx-update-recovery-"));
+      const isolated = createIsolatedTestEnvironment();
+      const root = isolated.root;
       const packageRoot = join(root, "node_modules", "@bitkyc08", "opencodex");
       const launcher = join(packageRoot, "bin", "ocx.mjs");
-      const opencodexHome = join(root, "opencodex-home");
+      const opencodexHome = isolated.env.OPENCODEX_HOME!;
       const fakeBin = join(root, "fake-bin");
       const fakeNpm = join(fakeBin, "npm");
       const cache = join(root, "npm-cache");
       const diagnostics = join(root, "recovery-diagnostics");
       const bundledBun = join(repoRoot, "node_modules", "bun");
       const env = {
-        ...process.env,
-        HOME: root,
-        USERPROFILE: root,
-        OPENCODEX_HOME: opencodexHome,
+        ...isolated.env,
         OCX_FAKE_NPM_CACHE: cache,
-        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+        PATH: `${fakeBin}:${isolated.env.PATH ?? ""}`,
       };
       let recoveredPid: number | undefined;
 
       try {
+        // Bind the actual child environment, not merely HOME, to this case.
+        expect(resolveCodexHomeDir({ env })).toBe(join(root, ".codex"));
         const port = await freePort();
         expect(existsSync(bundledBun)).toBe(true);
         mkdirSync(dirname(launcher), { recursive: true });
