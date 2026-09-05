@@ -4,6 +4,14 @@ Depends on030/040/050; wp6. No new runtime features. Main owns all external writ
 
 ## Diagnosed CI prerequisite (test-only, no production storage changes)
 
+Additional CI fixture correction:3591job101240765762 failed loopback startup with
+EADDRINUSE40895. The log cannot identify the owner of that port. Eleven fixtures used
+rawstartServer(0), bypassing the existing reserved-port allocator used by the rollback
+test. Reuse findAvailablePort with reservedPort for those public listener draws via one
+local helper. No startup retry, productionlistener/auth change, or assertion removal.
+Keep no-loopback/explicit-port/intentional-bind-failure tests unchanged. This removes a
+reachable fixture self-collision; it does not claim everyexternal bindrace is solved.
+
 PR3589 job101236091166 on7783355f9 fails the late-async-spill ordering test before
 its overwrite assertions: outer fallback uses real Date.now despite frozen inner
 clocks, so its80ms reserve can expire during real cleanup. Images aren't in this
