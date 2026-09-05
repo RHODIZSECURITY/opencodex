@@ -374,6 +374,13 @@ Native passthrough SSE has TWO shapes, selected per request in
   inspection side-effect set (shared `createSseInspector` factory in `relay.ts`)
   including the #44 late-terminal semantics.
 
+Both shapes carry the inbound caller-abort signal separately from the turn/shutdown
+controller. A caller-driven read rejection is 499/client_cancel without pool penalty;
+a genuine upstream reset remains synthetic 502. An already received terminal, including
+one completed by the error-path parser flush, retains its real outcome. Eager relays
+remove the caller listener when done and close signal-cancelled downstream streams even
+when the response-body cancel hook has not run.
+
 The two-shape contract is mirror-commented in `src/server/index.ts`; the real
 `core.ts` gate is source-invariant-tested by `tests/responses/passthrough-abort.test.ts`,
 and the platform matrix lives in `tests/lib/bun-stream-caps.test.ts`. Keep all three

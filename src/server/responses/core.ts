@@ -5008,7 +5008,10 @@ async function handleResponsesInner(
           },
           onClientCancel: () => options.onNativePassthroughCancel?.(),
           onDone: () => unregisterTurn(turnAc),
-        }, inlineEagerRewrite ? { rewriteBudget: translatorBudget } : undefined);
+        }, {
+          clientGoneSignal: options.abortSignal,
+          ...(inlineEagerRewrite ? { rewriteBudget: translatorBudget } : {}),
+        });
         // When selected, this relay closes response.completed even if upstream
         // keeps the connection alive. Marked Codex WS traffic, Windows
         // forced-rewrite traffic, and Darwin explicit eager traffic apply
