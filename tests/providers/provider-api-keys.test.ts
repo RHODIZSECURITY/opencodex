@@ -154,6 +154,24 @@ function keyQuotaResponse(percent: number): Response {
 }
 
 describe("credential-scoped key quota", () => {
+  test("the integrated Ollama Cloud reader supports each key without changing active configuration", async () => {
+    const provider = { adapter: "openai-chat", authMode: "key" as const, baseUrl: "https://ollama.com", apiKey: "fixture-first",
+      apiKeyPool: [{ id: "first", key: "fixture-first" }, { id: "second", key: "fixture-second" }] };
+    const config: OcxConfig = { port: 0, defaultProvider: "cloud-copy", providers: { "cloud-copy": provider } };
+    const before = JSON.stringify(config);
+    expect(providerApiKeyQuotaMode("cloud-copy", provider)).toBe("probe");
+    globalThis.fetch = (async (input, init) => {
+      expect(String(input)).toBe("https://ollama.com/api/usage");
+      expect(init?.redirect).toBe("error");
+      const first = new Headers(init?.headers).get("authorization") === "Bearer fixture-first";
+      return Response.json({ limits: { monthly: { usage: first ? 0.25 : 0.75 } } });
+    }) as typeof globalThis.fetch;
+    const rows = await fetchProviderApiKeyQuotas(config, "cloud-copy");
+    expect(rows.map(row => row.quota?.monthlyPercent)).toEqual([25, 75]);
+    expect(JSON.stringify(config)).toBe(before);
+    expect(providerApiKeyQuotaMode("cloud-copy", { ...provider, baseUrl: "https://ollama.example.invalid" })).toBe("unsupported");
+  });
+
   test("canonical Kimi keys retain the default key auth mode when authMode is omitted", async () => {
     const provider = { adapter: "openai-chat", baseUrl: "https://api.kimi.com/coding/v1", apiKey: "fixture-kimi-key" };
     const config: OcxConfig = { port: 0, defaultProvider: "coding-alias", providers: { "coding-alias": provider } };
