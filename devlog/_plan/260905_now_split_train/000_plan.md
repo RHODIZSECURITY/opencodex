@@ -64,12 +64,14 @@ Total: 77 implementation layers across 21 stacks (002_layer_map.md; 105 and
 ## Out of scope
 
 The 151 `RESOLVABLE_AFTER` and 19 `ACCEPTED` rows; core.ts / config.ts /
-service.ts / auth-api.ts; merges; releases.
+service.ts / auth-api.ts; releases and direct branch pushes. Reviewed admin
+landing after passing CI is now authorized by USER-ADMIN-LANDING-01 in003.
 
 ## Terminal outcome expected
 
-DONE when every layer in 002 has an open PR with a green exact-head CI rollup
-recorded in its decade doc.
+DONE when every approved layer in002 has passing final-head CI and an admin
+landing recorded with its review, stack-safety and dev-ancestry evidence.
+The user's later delivery instruction supersedes the initial open-PR-only end.
 
 ## Completion spine
 

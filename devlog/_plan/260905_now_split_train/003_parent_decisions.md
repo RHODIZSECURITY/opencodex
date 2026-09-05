@@ -203,3 +203,23 @@ state, while preserving output and failures inside the receipt command.
 No local Bun test command is allowed. Older shared-checkout recipes must not
 be reused; each current plan must supply its isolated verifier. Availability
 and success require real execution evidence.
+
+## USER-ADMIN-LANDING-01 — current delivery authority
+
+The user's later direct instruction requires every merge to use admin after
+CI passes. This supersedes earlier no-merge and open-PR-only delivery language
+in000, individual decade plans and the original goal wording. It does not
+waive verification or authorize direct pushes, releases or service changes.
+
+Before each landing, verify the exact PR head and tested integration tree,
+fresh passing required CI, and resolution of valid review blockers. Use admin
+merge with an explicit expected-head match. Preserve stacked children before
+automatic parent-branch deletion; recheck their base/head/diff after retarget.
+Fetch dev and prove the merge is its ancestor. Record these results per layer.
+Existing open criterion c-4 was amended to this requirement with its original
+definition preserved in the steering ledger; no criterion was marked met.
+
+The coordinator still schedules one non-Windows CI at a time. Retargeting and
+merging may start new CI, so those actions consume the assigned slot too.
+Windows-owner work remains excluded. Each peer retains its task scope; the
+admin instruction removes redundant permission questions, not failure gates.
