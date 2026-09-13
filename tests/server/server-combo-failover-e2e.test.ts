@@ -4083,3 +4083,45 @@ describe("thinking-summary defaults follow the serving combo route", () => {
     });
   }
 });
+
+describe("optional-control rejection failover regression", () => {
+  for (const stream of [false, true]) {
+    test.each(["user", "reasoning.effort"])(`429 -> optional %s 400 -> 200, stream=${stream}`, async parameter => {
+      const hits: string[] = [];
+      const first = serve(() => {
+        hits.push("quota");
+        return Response.json({ error: { type: "rate_limit_error", message: "Rate limit exceeded" } }, { status: 429 });
+      });
+      const incompatible = serve(async request => {
+        hits.push("incompatible");
+        const raw = await request.json() as Record<string, unknown>;
+        expect(raw.user).toBe("synthetic-client");
+        const error = parameter === "user"
+          ? { type: "invalid_request_error", message: "Unsupported parameter: user" }
+          : { type: "invalid_request_error", code: "unsupported_value", param: "reasoning.effort",
+            message: "Unsupported value: 'none' is not supported with this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'." };
+        return Response.json({ error }, { status: 400 });
+      });
+      const backup = serve(() => {
+        hits.push("backup");
+        return stream ? chatStream("recovered optional control") : chatSuccess("recovered optional control", "m3");
+      });
+      const config = comboConfig({
+        a: provider("openai-chat", baseUrl(first), "key-a"),
+        b: provider("openai-responses", baseUrl(incompatible), "key-b"),
+        c: provider("openai-chat", baseUrl(backup), "key-c"),
+      });
+      const response = await post(config, {
+        stream, user: "synthetic-client", prompt_cache_key: "synthetic-cache",
+        reasoning: { effort: "none" },
+      });
+      const text = await response.text();
+      expect(response.status).toBe(200);
+      expect(text).toContain("recovered optional control");
+      expect(text).not.toContain("Unsupported parameter");
+      expect(text).not.toContain("Unsupported value");
+      expect(hits).toEqual(["quota", "incompatible", "backup"]);
+      expect(isComboTargetInCooldown("free", { provider: "b", model: "m2" })).toBe(false);
+    });
+  }
+});

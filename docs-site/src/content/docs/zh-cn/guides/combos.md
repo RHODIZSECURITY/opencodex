@@ -290,3 +290,9 @@ combo id 不存在。响应是 HTTP 404，类型为 `invalid_request_error`。�
 ### 为什么故障切换在第一次错误后就停止了？
 
 该错误是终止性的，而不是针对目标的。修复无效输入、缩小过大的上下文、处理策略拒绝，或者纠正被拒绝的请求来源。对于这些情况，combo 不会继续跳转。
+
+## 可选参数兼容性
+
+一般 400 错误仍会终止请求，但明确拒绝 `user`，或对 `reasoning.effort`/`reasoning_effort` 返回不支持值的结构化错误，可让 combo 在输出开始前尝试下一个符合条件的目标，而不记录冷却时间。安全策略拒绝、取消以及已经开始的输出仍不可重放。
+
+[Canonical compatibility details](/guides/combos/#request-local-target-compatibility).

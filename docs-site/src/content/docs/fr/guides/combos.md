@@ -365,3 +365,9 @@ message de validation.
 
 L’erreur était terminale plutôt que spécifique à la cible. Corriger une entrée invalide, réduire un contexte surdimensionné,
 gérer un refus de politique ou corriger l’origine de la demande rejetée. Les combos ne sautent pas dans ces cas-là.
+
+## Compatibilité des paramètres facultatifs
+
+Exception aux erreurs 400 terminales : un rejet structuré de `user` ou une valeur non prise en charge pour `reasoning.effort`/`reasoning_effort` peut faire passer le combo à la cible admissible suivante, sans délai de refroidissement. Le refus de sécurité, l’annulation et une sortie déjà commencée restent non rejouables.
+
+[Canonical compatibility details](/guides/combos/#request-local-target-compatibility).

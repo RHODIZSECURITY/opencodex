@@ -404,3 +404,9 @@ Hata hedefe özgü olmaktan ziyade uç (terminal) bir hataydı. Geçersiz girdiy
 düzeltin, aşırı büyük bir bağlamı azaltın, bir politika reddini işleyin veya
 reddedilen istek kaynağını düzeltin. Kombolar bu durumlar için atlama yapmaz.
 
+
+## İsteğe bağlı parametre uyumluluğu
+
+Sonlandırıcı 400 hatalarının dar bir istisnası vardır: `user` alanını açıkça reddeden veya `reasoning.effort`/`reasoning_effort` için desteklenmeyen değer bildiren yapılandırılmış hata, çıktı başlamadan sonraki uygun hedefe geçebilir. Bu uyumsuzluk için bekleme süresi kaydedilmez. Güvenlik politikası reddi, iptal ve başlamış çıktı yeniden yürütülmez.
+
+[Canonical compatibility details](/guides/combos/#request-local-target-compatibility).

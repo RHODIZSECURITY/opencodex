@@ -350,3 +350,13 @@ Exact [model input declarations](config.md#explicit-per-model-capability-declara
 Provider-scoped approval reviewer settings are projected by the [catalog owner](catalog.md#provider-scoped-approval-reviewer); this surface retains its existing routing, transport and account-selection behavior.
 
 Renamed fixed-key providers receive [missing reasoning metadata](catalog.md#renamed-destination-reasoning-metadata) during derivation; explicit per-model entries and provider defaults retain precedence.
+
+## Request-local target compatibility
+
+`src/adapters/openai-responses.ts` omits only top-level `user` at the canonical ChatGPT Codex forward destination. Claude translation retains its original identity and prompt-cache key; public API and noncanonical gateways retain their `user` field. Input roles, tool-schema properties, safety identifiers and original replay bodies are not changed.
+
+`src/combos/failover.ts` treats three intact HTTP 400 invalid-request envelopes as request-local incompatibilities: exactly `Unsupported parameter: user`; `unsupported_value` naming `reasoning.effort` or `reasoning_effort` with an explicit unsupported-value message; and `param: input` with a bounded model-scoped `does not support image inputs` message. A null provider code is accepted only for that observed image envelope. Only the exact proxy wrapper is unwrapped, within three envelopes and 16,384 characters; conflicting codes, malformed/truncated envelopes and reflected JSON do not gain hop permission.
+
+The combo may advance to its next eligible unattempted target before output commitment. It records no target/provider cooldown for these request-local mismatches and does not silently drop reasoning controls or raise `none` to a supported rung. Cancellation, origin/cyber-policy rejection, non-replayable post-send errors and the existing streaming commit boundary stay authoritative. Other invalid requests remain terminal.
+
+Regression coverage: `tests/responses/responses-forward-prompt-envelope.test.ts`, `tests/routing/router-combo-failover-classification.test.ts`, and `tests/server/server-combo-failover-e2e.test.ts`.

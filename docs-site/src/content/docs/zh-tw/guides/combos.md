@@ -290,3 +290,9 @@ Combo id 未知。回應為 HTTP 404 並帶 type `invalid_request_error`。執�
 ### 為什麼 failover 在第一個錯誤後就停止了？
 
 該錯誤是終端的而非目標特定的。修正無效輸入、縮減過大的上下文、處理策略拒絕，或更正被拒的請求來源。Combo 對那些情況不會跳轉。
+
+## 選用參數相容性
+
+一般 400 錯誤仍會終止請求，但明確拒絕 `user`，或對 `reasoning.effort`/`reasoning_effort` 回傳不支援值的結構化錯誤，可讓 combo 在輸出開始前嘗試下一個符合條件的目標，而不記錄冷卻時間。安全政策拒絕、取消及已開始的輸出仍不可重播。
+
+[Canonical compatibility details](/guides/combos/#request-local-target-compatibility).
