@@ -3027,6 +3027,7 @@ describe("server combo failover 030 activation matrix", () => {
       }),
       b: provider("openai-chat", baseUrl(b), "key-b", {
         reasoningEfforts: ["low", "high"],
+        modelInputModalities: { m2: ["text", "image"] },
       }),
     }, undefined, { defaultEffort: "high" });
     const response = await post(config, {

@@ -343,9 +343,15 @@ Translated Chat request construction uses the [inline-image budget](transports/s
 
 OpenCode catalog discovery in `src/cli/opencode.ts` uses the local admin credential and a validated numeric-loopback management origin. It dials through `src/server/direct-local-http.ts`, rejects redirects and preserves the request/body deadline. Hub ingress selection stays separate from exported inference settings.
 
-The [explicit model-capability contract](config.md#explicit-per-model-capability-declarations) preserves operator declarations through provider storage and catalog capture; it does not infer upstream capability or change this surface's routing behavior.
+The [explicit model-capability contract](config.md#explicit-per-model-capability-declarations) preserves operator declarations through provider storage and catalog capture. Vision dispatch consumes those declarations together with registry/vendor metadata before any image-bearing upstream send.
 
-Exact [model input declarations](config.md#explicit-per-model-capability-declarations) now feed text-only eligibility and catalog hints; existing image-description/omission handling consumes them before the main upstream send.
+## Positive-only direct image admission
+
+`src/vision/plan.ts` admits raw image bytes to a routed target only when effective capability evidence positively proves image input. Evidence from the resolved runtime provider wins first; persisted provider declarations, registry enrichment and generated vendor metadata follow. A known text-only target or an unknown image capability is preprocessed through the configured Vision Sidecar. The native Chat fast path is bypassed for those turns so it cannot evade this gate.
+
+A routed `visionSidecar.model` is itself dispatchable only when the same capability chain positively proves image support. If no usable sidecar plan exists, image parts are stripped before the main upstream request rather than being sent to an unverified target. Search-result image verbalization uses the same main-target decision. `modelInputModalities` is symmetric evidence: `["text","image"]` proves native image support while `["text"]` routes through preprocessing. Runtime provider hooks such as injected `fetch` functions are preserved without mutation during capability enrichment.
+
+Regression coverage: `tests/vision/vision-cache.test.ts`, `tests/vision/vision-eligibility.test.ts`, `tests/vision/vision-routed.test.ts`, and `tests/adapters/openai/openai-chat-native-policy.test.ts`.
 
 Provider-scoped approval reviewer settings are projected by the [catalog owner](catalog.md#provider-scoped-approval-reviewer); this surface retains its existing routing, transport and account-selection behavior.
 
