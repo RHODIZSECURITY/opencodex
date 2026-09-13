@@ -352,12 +352,13 @@ const PROVIDER_SCOPED_FAILURE_CODES = new Set([
 ]);
 
 /**
- * Two concrete optional-control incompatibilities are request-local, not terminal for a combo.
+ * Precise target-local request incompatibilities are request-local, not terminal for a combo.
  * Require a bounded, intact provider envelope; never infer compatibility from echoed prompt text.
  * Only OpenCodex's exact error wrapper may be unwrapped, with a fixed depth budget. Unknown or
  * conflicting codes fail closed. No fields are removed here and no same-target replay is added.
+ * Image rejection requires `param: input` and an exact model-scoped prefix.
  */
-function isOptionalControlIncompatibility(status: number, message: string, code?: string | null): boolean {
+function isRequestLocalTargetIncompatibility(status: number, message: string, code?: string | null): boolean {
   if (status !== 400 || message.length > 16_384) return false;
   const genericCodes = new Set(["", "invalid_request_error", "unsupported_parameter", "unsupported_value"]);
   if (!genericCodes.has(normalizedFailureCode(code))) return false;
@@ -370,8 +371,8 @@ function isOptionalControlIncompatibility(status: number, message: string, code?
     const error = (payload as Record<string, unknown>).error;
     if (!error || typeof error !== "object" || Array.isArray(error)) return false;
     const e = error as Record<string, unknown>;
-    if (e.code !== undefined && typeof e.code !== "string") return false;
-    const errorCode = normalizedFailureCode(e.code as string | undefined);
+    if (e.code !== undefined && e.code !== null && typeof e.code !== "string") return false;
+    const errorCode = normalizedFailureCode(typeof e.code === "string" ? e.code : undefined);
     if (!genericCodes.has(errorCode) || typeof e.message !== "string") return false;
     if (e.type !== "invalid_request_error" && e.type !== "upstream_error") return false;
     if (e.message.startsWith("Provider error 400: ") && e.param === undefined
@@ -383,9 +384,12 @@ function isOptionalControlIncompatibility(status: number, message: string, code?
     if (e.message === "Unsupported parameter: user") {
       return (e.param === undefined || e.param === "user") && errorCode !== "unsupported_value";
     }
-    return errorCode === "unsupported_value"
+    if (errorCode === "unsupported_value"
       && (e.param === "reasoning.effort" || e.param === "reasoning_effort")
-      && e.message.startsWith("Unsupported value:") && e.message.includes("not supported");
+      && e.message.startsWith("Unsupported value:") && e.message.includes("not supported")) return true;
+    return e.param === "input"
+      && (errorCode === "" || errorCode === "invalid_request_error")
+      && /^Model '[^']{1,256}' does not support image inputs\./.test(e.message);
   }
   return false;
 }
@@ -402,7 +406,7 @@ export function comboFailureCooldownScope(
     || REQUEST_SHAPE_FAILURE_CODES.has(code)
     || isRequestLocalFreePromptCap(status, message, options?.code)
     || isProviderTargetContextOverflow(status, message, options?.code)
-    || isOptionalControlIncompatibility(status, message, options?.code)
+    || isRequestLocalTargetIncompatibility(status, message, options?.code)
   ) return "none";
   if (isProviderScopedQuotaCap(status, message, options?.code)) return "provider";
   // A rejected or unpaid credential is provider-wide evidence: every target that routes
@@ -505,7 +509,7 @@ export function comboFailureDecision(
   // `free_rate_limited` no longer routes through `isProviderScopedQuotaCap` (it is a
   // per-request cap, not provider-wide evidence), so keep its hop verdict explicit here.
   if (failureCode === "free_rate_limited") return "hop";
-  if (isOptionalControlIncompatibility(status, message, options?.code)) return "hop";
+  if (isRequestLocalTargetIncompatibility(status, message, options?.code)) return "hop";
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
     return "stop";
   }

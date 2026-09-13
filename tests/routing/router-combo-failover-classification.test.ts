@@ -210,8 +210,13 @@ const unsupportedEffort = {
   message: "Unsupported value: 'none' is not supported with the 'gpt-5.3-codex-spark' model. Supported values are: 'low', 'medium', 'high', and 'xhigh'.",
 };
 
+const unsupportedImage = {
+  type: "invalid_request_error", code: null, param: "input",
+  message: "Model 'gpt-5.3-codex-spark' does not support image inputs. Try again with a vision model.",
+};
+
 describe("request-local optional control incompatibility", () => {
-  test.each([unsupportedUser, unsupportedEffort])("hops a structured optional-control rejection without cooling: %j", error => {
+  test.each([unsupportedUser, unsupportedEffort, unsupportedImage])("hops a structured target-local request rejection without cooling: %j", error => {
     const body = JSON.stringify({ error });
     for (const message of [body, `Provider error 400: ${body}`]) {
       expect(comboFailureDecision(400, message, { code: "invalid_request_error" })).toBe("hop");
@@ -274,5 +279,22 @@ describe("bounded optional-control error envelopes", () => {
     const message = JSON.stringify({ error: unsupportedEffort });
     expect(comboFailureDecision(400, message, { code: "unsupported_value" })).toBe("hop");
     expect(comboFailureCooldownScope(400, message, { code: "unsupported_value" })).toBe("none");
+  });
+});
+
+describe("image rejection classifier bounds", () => {
+  test.each([
+    { ...unsupportedImage, param: "tools" },
+    { ...unsupportedImage, code: "origin_rejected" },
+    { ...unsupportedImage, code: "unknown_terminal_code" },
+    { ...unsupportedImage, message: "This model does not support image inputs." },
+    { ...unsupportedImage, message: "Model 'x' does not support image inputs" },
+  ])("does not hop on a lookalike or conflicting image refusal: %j", error => {
+    expect(comboFailureDecision(400, JSON.stringify({ error }))).toBe("stop");
+  });
+  test("accepts the observed null-code envelope with an outer generic code", () => {
+    const message = JSON.stringify({ error: unsupportedImage });
+    expect(comboFailureDecision(400, message, { code: "invalid_request_error" })).toBe("hop");
+    expect(comboFailureCooldownScope(400, message, { code: "invalid_request_error" })).toBe("none");
   });
 });

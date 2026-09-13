@@ -368,6 +368,6 @@ gérer un refus de politique ou corriger l’origine de la demande rejetée. Les
 
 ## Compatibilité des paramètres facultatifs
 
-Exception aux erreurs 400 terminales : un rejet structuré de `user` ou une valeur non prise en charge pour `reasoning.effort`/`reasoning_effort` peut faire passer le combo à la cible admissible suivante, sans délai de refroidissement. Le refus de sécurité, l’annulation et une sortie déjà commencée restent non rejouables.
+Exception aux erreurs 400 terminales : un rejet structuré de `user`, une valeur non prise en charge pour `reasoning.effort`/`reasoning_effort`, ou un rejet d’entrée d’image propre à un modèle (`param: input`) peut faire passer le combo à la cible admissible suivante, sans délai de refroidissement. Le refus de sécurité, l’annulation et une sortie déjà commencée restent non rejouables.
 
 [Canonical compatibility details](/guides/combos/#request-local-target-compatibility).

@@ -263,6 +263,6 @@ ocx combo remove <id> --yes
 
 ## 任意パラメーターの互換性
 
-通常の 400 エラーは終了扱いですが、`user` の明示的な拒否、または `reasoning.effort`/`reasoning_effort` の非対応値を示す構造化エラーでは、出力開始前に次の適格なターゲットへ進めます。この不一致ではクールダウンを記録しません。安全ポリシーによる拒否、キャンセル、出力開始後の再実行は禁止のままです。
+通常の 400 エラーは終了扱いですが、`user` の明示的な拒否、`reasoning.effort`/`reasoning_effort` の非対応値、またはモデル固有の画像入力拒否（`param: input`）を示す構造化エラーでは、出力開始前に次の適格なターゲットへ進めます。この不一致ではクールダウンを記録しません。安全ポリシーによる拒否、キャンセル、出力開始後の再実行は禁止のままです。
 
 [Canonical compatibility details](/guides/combos/#request-local-target-compatibility).

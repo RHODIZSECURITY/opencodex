@@ -407,6 +407,6 @@ reddedilen istek kaynağını düzeltin. Kombolar bu durumlar için atlama yapma
 
 ## İsteğe bağlı parametre uyumluluğu
 
-Sonlandırıcı 400 hatalarının dar bir istisnası vardır: `user` alanını açıkça reddeden veya `reasoning.effort`/`reasoning_effort` için desteklenmeyen değer bildiren yapılandırılmış hata, çıktı başlamadan sonraki uygun hedefe geçebilir. Bu uyumsuzluk için bekleme süresi kaydedilmez. Güvenlik politikası reddi, iptal ve başlamış çıktı yeniden yürütülmez.
+Sonlandırıcı 400 hatalarının dar bir istisnası vardır: `user` alanını açıkça reddeden, `reasoning.effort`/`reasoning_effort` için desteklenmeyen değer bildiren veya modele özgü görüntü girdisini reddeden (`param: input`) yapılandırılmış hata, çıktı başlamadan sonraki uygun hedefe geçebilir. Bu uyumsuzluk için bekleme süresi kaydedilmez. Güvenlik politikası reddi, iptal ve başlamış çıktı yeniden yürütülmez.
 
 [Canonical compatibility details](/guides/combos/#request-local-target-compatibility).
