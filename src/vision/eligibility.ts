@@ -26,6 +26,7 @@ import { getModelMetadataCaseInsensitive, resolveMetadataProvider } from "../gen
 import { nativeInputModalities } from "../codex/catalog/metadata";
 import { SUPPORTED_NATIVE_OPENAI_SLUGS } from "../codex/catalog/native-models";
 import { enrichProviderFromRegistry } from "../providers/derive";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers-destination";
 
 /**
  * The wire protocols `planVisionSidecar` can dispatch to (#2188 roadmap 170
@@ -190,6 +191,13 @@ function modelAcceptsImageInputWithCache(
   const configuredModalities = provider ? modelRecordValue(provider.modelInputModalities, candidate.id) : undefined;
   const fromConfiguredModalities = advertisesImageInput(configuredModalities);
   if (fromConfiguredModalities !== undefined) return fromConfiguredModalities;
+  const canonicalCodex = candidate.provider === "openai"
+    && provider !== undefined
+    && isCanonicalOpenAiForwardProvider(provider);
+  if (canonicalCodex) {
+    const fromCodexBackend = metadataImageInput("openai-codex", candidate.id);
+    if (fromCodexBackend !== undefined) return fromCodexBackend;
+  }
   const fromRow = advertisesImageInput(candidate.inputModalities);
   if (fromRow !== undefined) return fromRow;
   return metadataImageInput(candidate.provider, candidate.id);

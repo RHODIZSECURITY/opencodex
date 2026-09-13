@@ -44,7 +44,7 @@ const textOnlyProvider: OcxProviderConfig = {
   noVisionModels: ["text-model"],
 };
 
-test("direct image admission is capability-positive-only", () => {
+test("direct image admission preprocesses proven-negative capability without guessing unknown custom models", () => {
   const config = {
     port: 10100, defaultProvider: "custom", providers: {
       custom: { adapter: "openai-chat", baseUrl: "https://custom.test/v1" },
@@ -55,7 +55,7 @@ test("direct image admission is capability-positive-only", () => {
       openrouter: { adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1" },
     },
   } as OcxConfig;
-  expect(requiresVisionPreprocessing(config, config.providers.custom!, "unknown-model", "custom")).toBe(true);
+  expect(requiresVisionPreprocessing(config, config.providers.custom!, "unknown-model", "custom")).toBe(false);
   expect(requiresVisionPreprocessing(config, config.providers.declared!, "vision", "declared")).toBe(false);
   const runtimePositive = {
     ...config.providers.custom!,
@@ -67,21 +67,23 @@ test("direct image admission is capability-positive-only", () => {
   )).toBe(true);
 });
 
-test("routed vision sidecar itself requires positive image capability", () => {
+test("routed vision sidecar rejects proven-blind models without guessing unknown configured models", () => {
   const main: OcxProviderConfig = {
     adapter: "openai-chat", baseUrl: "https://main.test/v1", noVisionModels: ["blind"],
   };
-  const unknownHelper: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://helper.test/v1" };
+  const helper: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://helper.test/v1" };
   const request = parseRequest({
     model: "main/blind",
     input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: DATA_A }] }],
   });
   const config = {
-    port: 10100, defaultProvider: "main", providers: { main, helper: unknownHelper },
+    port: 10100, defaultProvider: "main", providers: { main, helper },
     visionSidecar: { enabled: true, backend: "routed", model: "helper/unknown" },
   } as OcxConfig;
+  expect(planVisionSidecar(config, main, "blind", request, undefined, { providerName: "main" })?.backend).toBe("routed");
+  config.providers.helper!.modelInputModalities = { blind: ["text"], vision: ["text", "image"] };
+  config.visionSidecar!.model = "helper/blind";
   expect(planVisionSidecar(config, main, "blind", request, undefined, { providerName: "main" })).toBeUndefined();
-  config.providers.helper!.modelInputModalities = { vision: ["text", "image"] };
   config.visionSidecar!.model = "helper/vision";
   expect(planVisionSidecar(config, main, "blind", request, undefined, { providerName: "main" })?.backend).toBe("routed");
 });

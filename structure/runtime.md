@@ -345,11 +345,13 @@ OpenCode catalog discovery in `src/cli/opencode.ts` uses the local admin credent
 
 The [explicit model-capability contract](config.md#explicit-per-model-capability-declarations) preserves operator declarations through provider storage and catalog capture. Vision dispatch consumes those declarations together with registry/vendor metadata before any image-bearing upstream send.
 
-## Positive-only direct image admission
+## Capability-aware image admission
 
-`src/vision/plan.ts` admits raw image bytes to a routed target only when effective capability evidence positively proves image input. Evidence from the resolved runtime provider wins first; persisted provider declarations, registry enrichment and generated vendor metadata follow. A known text-only target or an unknown image capability is preprocessed through the configured Vision Sidecar. The native Chat fast path is bypassed for those turns so it cannot evade this gate.
+`src/vision/plan.ts` prevents raw image bytes from reaching any target whose effective capability is positively known to exclude image input. Evidence from the resolved runtime provider and explicit operator declarations takes precedence, followed by backend-specific/registry/vendor metadata. A proven text-only target is preprocessed through the configured Vision Sidecar; a positively image-capable target receives the image directly. Genuinely unknown custom models retain the existing compatibility path rather than being guessed text-only.
 
-A routed `visionSidecar.model` is itself dispatchable only when the same capability chain positively proves image support. If no usable sidecar plan exists, image parts are stripped before the main upstream request rather than being sent to an unverified target. Search-result image verbalization uses the same main-target decision. `modelInputModalities` is symmetric evidence: `["text","image"]` proves native image support while `["text"]` routes through preprocessing. Runtime provider hooks such as injected `fetch` functions are preserved without mutation during capability enrichment.
+Canonical ChatGPT Codex forwarding uses the generated `openai-codex` capability bundle rather than the public `openai` bundle. This matters when the two backends differ: for example, the vendored metadata records `gpt-5.3-codex-spark` as text-only on `openai-codex` while the public OpenAI row lists image input. The native Chat fast path and web-search image verbalization consume the same effective-capability decision.
+
+An explicitly configured routed `visionSidecar.model` is dispatchable unless capability evidence positively proves it cannot accept images; an unknown custom sidecar is not guessed blind. If a proven text-only main target has no usable sidecar plan, image parts are stripped before the upstream request rather than forwarded raw. `modelInputModalities` is symmetric evidence: `["text","image"]` proves image support while `["text"]` triggers preprocessing. Runtime provider hooks such as injected `fetch` functions are preserved without mutation during capability enrichment.
 
 Regression coverage: `tests/vision/vision-cache.test.ts`, `tests/vision/vision-eligibility.test.ts`, `tests/vision/vision-routed.test.ts`, and `tests/adapters/openai/openai-chat-native-policy.test.ts`.
 

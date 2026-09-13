@@ -1279,11 +1279,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     codexAccountMode: "pool",
     supportsServiceTier: true,
     featured: true,
-    // Compatibility for stale explicit combo targets. Upstream retired Spark from the native
-    // catalog, but older persisted combos can still name it. The Codex backend accepts text
-    // turns while rejecting raw image input, so classify it as sidecar-covered text-only: the
-    // runtime describes images through visionSidecar and forwards only the derived text.
-    noVisionModels: ["gpt-5.3-codex-spark"],
     note: "Codex login account pool (default) or Direct main-account mode via codexAccountMode",
   },
   {

@@ -295,7 +295,7 @@ describe("chat-surface recursion fence (full path)", () => {
     }
   });
 
-  test("routed describer end-to-end: unverified main target never receives raw image bytes", async () => {
+  test("routed describer end-to-end: declared text-only main target receives only the caption", async () => {
     const mainBodies: string[] = [];
     const describerBodies: string[] = [];
     upstream = Bun.serve({
@@ -335,6 +335,7 @@ describe("chat-surface recursion fence (full path)", () => {
           baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
           allowPrivateNetwork: true,
           apiKey: "k",
+          modelInputModalities: { "text-only": ["text"] },
         },
         vision: {
           adapter: "openai-chat",

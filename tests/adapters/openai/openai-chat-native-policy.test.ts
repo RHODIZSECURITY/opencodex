@@ -461,7 +461,7 @@ test("explicit text-only capabilities divert image-bearing native Chat requests"
   expect(isNativeChatRouteEligible(route, { messages: [{ role: "user", content: "hello" }] }, config)).toBe(true);
 });
 
-test("unknown image capability also diverts native Chat into the vision-aware pipeline", async () => {
+test("unknown image capability retains native Chat compatibility until capability is known", async () => {
   const { isNativeChatRouteEligible } = await import("../../../src/server/chat-native");
   const { routeModel } = await import("../../../src/router");
   const config = { port: 10100, defaultProvider: "custom", providers: { custom: provider() } } as OcxConfig;
@@ -469,5 +469,5 @@ test("unknown image capability also diverts native Chat into the vision-aware pi
   const imageBody = { messages: [{ role: "user", content: [{
     type: "image_url", image_url: { url: "data:image/png;base64,YQ==" },
   }] }] };
-  expect(isNativeChatRouteEligible(route, imageBody, config)).toBe(false);
+  expect(isNativeChatRouteEligible(route, imageBody, config)).toBe(true);
 });

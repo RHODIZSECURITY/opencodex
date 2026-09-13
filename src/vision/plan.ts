@@ -115,7 +115,7 @@ export function requiresVisionPreprocessing(
     return !runtimeModalities.includes("image");
   }
   if (!providerName) return false;
-  return modelAcceptsImageInput(config, { provider: providerName, id: modelId }) !== true;
+  return modelAcceptsImageInput(config, { provider: providerName, id: modelId }) === false;
 }
 
 /** Shared by auth admission and planning so a routed describer never borrows OpenAI auth. */
@@ -128,7 +128,7 @@ function usableRoutedVisionModel(config: OcxConfig): string | undefined {
   const targetProvider = routedModel.slice(0, sep);
   const targetId = routedModel.slice(sep + 1);
   const targetProviderConfig = config.providers?.[targetProvider];
-  return modelAcceptsImageInput(config, { provider: targetProvider, id: targetId }) === true
+  return modelAcceptsImageInput(config, { provider: targetProvider, id: targetId }) !== false
     && !(targetProviderConfig && isModelTextOnly(targetProviderConfig, targetId)) ? routedModel : undefined;
 }
 
@@ -160,8 +160,9 @@ export interface VisionPlan {
 
 /**
  * Decide whether the vision sidecar should pre-describe images for this request. Raw image
- * delivery is positive-capability only: known text-only and unknown-capability targets are
- * preprocessed, while only positively image-capable targets bypass this planner. The request must
+ * delivery is capability-driven: targets proven text-only are preprocessed, targets proven
+ * image-capable bypass this planner, and genuinely unknown custom targets retain legacy behavior.
+ * The request must
  * carry an image, the sidecar must be enabled, and the selected backend must be dispatchable.
  * Returns undefined otherwise; the caller strips images before any unverified upstream send.
  */

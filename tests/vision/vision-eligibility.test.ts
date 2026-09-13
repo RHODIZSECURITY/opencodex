@@ -158,7 +158,7 @@ describe("vision eligibility core", () => {
     })).toBe(false);
   });
 
-  test("11b. stale explicit Spark is sidecar-covered even if generated metadata says image", () => {
+  test("11b. canonical Codex backend metadata overrides a generic image-capable Spark row", () => {
     const config = configWithProviders({
       openai: {
         adapter: "openai-responses",
@@ -171,7 +171,8 @@ describe("vision eligibility core", () => {
       id: "gpt-5.3-codex-spark",
       inputModalities: ["text", "image"],
     };
-    expect(isVisionSidecarConsumer(config, "openai", candidate.id)).toBe(true);
+    // No model-specific blacklist is required: backend metadata owns the verdict.
+    expect(isVisionSidecarConsumer(config, "openai", candidate.id)).toBe(false);
     expect(modelAcceptsImageInput(config, candidate)).toBe(false);
     expect(isVisionEligibleModel(config, candidate)).toBe(false);
   });
