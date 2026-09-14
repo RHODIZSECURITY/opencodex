@@ -136,6 +136,18 @@ export function buildOpenAIChatPassthroughRequest(
   if (modelInList(provider.noReasoningModels, modelId) || rawEfforts?.length === 0) {
     delete body.reasoning_effort;
   }
+  // Native Chat passthrough must honor the same model-scoped tool-choice contract as
+  // the translated adapter path. Thinking backends such as DeepSeek V4 reject
+  // required/exact selectors while still accepting automatic choice; `none` remains
+  // semantically distinct and must stay disabled. Never mutate the caller-owned body.
+  if (
+    Array.isArray(body.tools)
+    && body.tools.length > 0
+    && body.tool_choice !== undefined
+    && modelInList(provider.autoToolChoiceOnlyModels, modelId)
+  ) {
+    body.tool_choice = body.tool_choice === "none" ? "none" : "auto";
+  }
 
   const openRouterRouting = resolveOpenRouterRouting(provider, modelId);
   if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);

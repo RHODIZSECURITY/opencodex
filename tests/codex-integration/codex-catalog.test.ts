@@ -6174,6 +6174,29 @@ describe("Codex catalog routed normalization", () => {
     };
     enrichProviderFromRegistry("my-glm", renamed);
     expect(renamed.modelSupportsReasoningSummaries?.["glm-4.6"]).toBe(true);
+
+    // Custom/case-changed provider names on DeepSeek's fixed endpoint must retain the
+    // stateless thinking replay contract or the next tool turn is rejected with HTTP 400.
+    const renamedDeepSeek: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("DeepSeek", renamedDeepSeek);
+    expect(renamedDeepSeek.preserveReasoningContentModels)
+      .toEqual(["deepseek-flash", "deepseek-v4-flash"]);
+    expect(renamedDeepSeek.autoToolChoiceOnlyModels)
+      .toEqual(["deepseek-flash", "deepseek-v4-flash"]);
+
+    // An explicit operator opt-out must survive destination enrichment.
+    const optedOutDeepSeek: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      preserveReasoningContentModels: [],
+    };
+    enrichProviderFromRegistry("DeepSeek", optedOutDeepSeek);
+    expect(optedOutDeepSeek.preserveReasoningContentModels).toEqual([]);
   });
 
   test("the destination fallback never claims an unrelated custom endpoint (#1100)", () => {

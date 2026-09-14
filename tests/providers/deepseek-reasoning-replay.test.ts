@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction, sanitizeReasoningInputContent } from "../../src/adapters/openai-responses";
+import { createOpenAIChatAdapter } from "../../src/adapters/openai-chat";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../../src/providers/derive";
 import { getProviderRegistryEntry } from "../../src/providers/registry";
 import { OCX_REASONING_PREFIX } from "../../src/responses/reasoning-envelope";
@@ -64,6 +65,29 @@ describe("sanitizeReasoningInputContent scoping", () => {
     const out = inputOf(sanitizeReasoningInputContent({ model: "m", input: [item] }));
     expect("encrypted_content" in out[0]!).toBe(false);
     expect(out[0]!.content).toEqual([]);
+  });
+});
+
+
+describe("DeepSeek Chat thinking tool_choice compatibility", () => {
+  const bodyFor = (toolChoice: "required" | { name: string }) => {
+    const provider = { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
+    enrichProviderFromRegistry("deepseek", provider);
+    const built = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "deepseek-flash",
+      context: {
+        messages: [{ role: "user", content: "inspect", timestamp: 0 }],
+        tools: [{ name: "read_file", description: "read", parameters: { type: "object", properties: {} } }],
+      },
+      stream: false,
+      options: { reasoning: "high", toolChoice },
+    });
+    return JSON.parse(String(built.body)) as { tool_choice?: unknown };
+  };
+
+  test("coerces required and exact tool choice to auto for thinking models", () => {
+    expect(bodyFor("required").tool_choice).toBe("auto");
+    expect(bodyFor({ name: "read_file" }).tool_choice).toBe("auto");
   });
 });
 

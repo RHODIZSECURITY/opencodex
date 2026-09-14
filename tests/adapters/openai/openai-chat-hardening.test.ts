@@ -157,6 +157,44 @@ describe("AgentRouter openai-chat compatibility", () => {
     expect(body).not.toHaveProperty("reasoning_effort");
     expect(rawBody.reasoning_effort).toBe("xhigh");
   });
+
+  test.each([
+    ["required", "auto"],
+    [{ type: "function", function: { name: "ping" } }, "auto"],
+    ["none", "none"],
+  ] as const)("passthrough chat normalizes auto-only tool_choice %o to %s", (toolChoice, expected) => {
+    const rawBody = {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "ping", parameters: { type: "object" } } }],
+      tool_choice: toolChoice,
+    };
+    const request = buildOpenAIChatPassthroughRequest(
+      provider({ autoToolChoiceOnlyModels: ["test-model"] }),
+      rawBody,
+      "test-model",
+      false,
+    );
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+
+    expect(body.tool_choice).toEqual(expected);
+    expect(rawBody.tool_choice).toEqual(toolChoice);
+  });
+
+  test("passthrough chat leaves exact tool_choice unchanged for an unlisted model", () => {
+    const toolChoice = { type: "function", function: { name: "ping" } };
+    const request = buildOpenAIChatPassthroughRequest(
+      provider({ autoToolChoiceOnlyModels: ["other-model"] }),
+      {
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "ping", parameters: { type: "object" } } }],
+        tool_choice: toolChoice,
+      },
+      "test-model",
+      false,
+    );
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+    expect(body.tool_choice).toEqual(toolChoice);
+  });
 });
 
 function parsed(): OcxParsedRequest {

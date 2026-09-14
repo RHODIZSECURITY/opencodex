@@ -1236,6 +1236,10 @@ const ORCAROUTER_MODEL_REASONING_EFFORTS = {
   // Live /models currently exposes ids and modalities, not the accepted reasoning ladder.
   "openai/gpt-5.5": ["low", "medium", "high", "xhigh"],
 };
+// OrcaRouter's DeepSeek V4 free route uses the same stateless thinking contract as
+// native DeepSeek chat: assistant tool-call turns must replay reasoning_content.
+// Keep this model-scoped so unrelated adaptive routes receive no fabricated history.
+const ORCAROUTER_REASONING_REPLAY_MODELS = ["deepseek/deepseek-v4-flash-free"];
 const CLINE_PASS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "cline-pass/glm-5.3": 1_048_576,
   "cline-pass/glm-5.3-flash": 1_048_576,
@@ -1556,6 +1560,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     liveModels: true,
     modelDiscovery: ORCAROUTER_MODEL_DISCOVERY,
     modelReasoningEfforts: ORCAROUTER_MODEL_REASONING_EFFORTS,
+    preserveReasoningContentModels: ORCAROUTER_REASONING_REPLAY_MODELS,
     note: "Connect your OrcaRouter account with OAuth 2.0 + PKCE; the issued API key is stored in OpenCodex's existing credential store.",
   },
   {
@@ -2079,6 +2084,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Catalog discovery owns WHICH models exist. These entries only retain verified
     // request-shaping facts that the upstream catalog does not currently publish.
     modelReasoningEfforts: ORCAROUTER_MODEL_REASONING_EFFORTS,
+    preserveReasoningContentModels: ORCAROUTER_REASONING_REPLAY_MODELS,
     note: "OpenAI-compatible adaptive router. Models and multimodal capabilities are discovered live from the public chat catalog. Use the OrcaRouter account entry for PKCE login.",
   },
   {
@@ -2246,6 +2252,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: Object.fromEntries(DEEPSEEK_NATIVE_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     modelSupportsReasoningSummaries: Object.fromEntries(DEEPSEEK_NATIVE_THINKING_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: DEEPSEEK_NATIVE_THINKING_MODELS,
+    // DeepSeek thinking mode rejects forced/required tool_choice; preserve none, coerce all other choices to auto.
+    autoToolChoiceOnlyModels: DEEPSEEK_NATIVE_THINKING_MODELS,
     // #4436: first-party deepseek-flash accepts native images on Chat and Responses.
     // Keep unprobed compatibility aliases on the #88 sidecar path. This must be fixed
     // here: router enrichment unions this list with saved config, so config cannot remove it.
