@@ -2085,20 +2085,21 @@ describe("server combo failover 030 activation matrix", () => {
     expect(primaryHits.every(hit => hit.webTool === valid)).toBe(true);
   });
 
-  test("context 400 stops while exhausted retryable targets return the sanitized last status", async () => {
+  test("context overflow advances while exhausted retryable targets return the sanitized last status", async () => {
     let stopBackupHits = 0;
     const context = serve(() => Response.json({ error: { code: "context_length_exceeded", message: "too many tokens" } }, { status: 400 }));
     const unused = serve(() => {
       stopBackupHits += 1;
-      return chatSuccess("must not run");
+      return chatSuccess("larger context fallback");
     });
     const stopConfig = comboConfig({
       a: provider("openai-chat", baseUrl(context), "key-a"),
       b: provider("openai-chat", baseUrl(unused), "key-b"),
     });
     const stopped = await post(stopConfig);
-    expect(stopped.status).toBe(400);
-    expect(stopBackupHits).toBe(0);
+    expect(stopped.status).toBe(200);
+    expect(stopBackupHits).toBe(1);
+    expect(await stopped.text()).toContain("larger context fallback");
 
     const order: string[] = [];
     const first = serve(() => {
@@ -2116,6 +2117,30 @@ describe("server combo failover 030 activation matrix", () => {
     expect(exhausted.status).toBe(404);
     expect(order).toEqual(["a", "b"]);
     expect(await exhausted.text()).not.toContain("sk-a-should-redact");
+  });
+
+  test("zero-output context overflow 502 hops to a healthy combo target", async () => {
+    let backupHits = 0;
+    const capped = serve(() => new Response([
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_context","status":"in_progress"}}',
+      "",
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"server_error","code":"upstream_server_error","message":"Your input exceeds the context window of this model. Please adjust your input and try again."}}}',
+      "",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } }));
+    const backup = serve(() => {
+      backupHits += 1;
+      return chatStream("larger context backup");
+    });
+    const response = await post(comboConfig({
+      a: provider("openai-responses", baseUrl(capped), "key-a"),
+      b: provider("openai-chat", baseUrl(backup), "key-b"),
+    }), { stream: true });
+    expect(response.status).toBe(200);
+    expect(backupHits).toBe(1);
+    expect(JSON.stringify(await collectSse(response))).toContain("larger context backup");
   });
 
   test("provider-specific prompt-too-long 400 hops to a larger-context combo target", async () => {
