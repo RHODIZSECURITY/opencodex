@@ -2157,6 +2157,42 @@ describe("server combo failover 030 activation matrix", () => {
       .toEqual(["[combo] free: all targets cooling, waiting 200ms for b/m2"]);
   });
 
+  test("last-resort cooldown policy defers an available final target for a recoverable primary", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    const a = serve(() => {
+      aHits += 1;
+      return aHits === 1
+        ? Response.json({ error: { message: "rate limited" } }, { status: 429 })
+        : chatSuccess("primary recovered", "m1");
+    });
+    const b = serve(() => {
+      bHits += 1;
+      return chatSuccess("last resort", "m2");
+    });
+    const providers = {
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    };
+
+    const prior = await post(comboConfig(
+      providers,
+      [{ provider: "a", model: "m1" }],
+      { cooldownMs: 100 },
+    ));
+    expect(prior.status).toBe(429);
+    await prior.text();
+
+    const fresh = await post(comboConfig(
+      providers,
+      [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      { cooldownMs: 100, waitForCooldownMs: 500, cooldownWaitPolicy: "last-resort" },
+    ));
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toContain("primary recovered");
+    expect([aHits, bHits]).toEqual([2, 0]);
+  });
+
   test("returns immediate 503 when all targets cool and the wait budget is unset", async () => {
     const t0 = Date.parse("2026-07-18T00:00:00.000Z");
     Date.now = () => t0;

@@ -788,7 +788,7 @@ describe("combo target cooldowns", () => {
     expect(earliestComboCooldownExpiry("free", [{ provider: "c", model: "m3" }], now)).toBeUndefined();
   });
 
-  test("failover preserves configured priority while waiting for cooldown", async () => {
+  test("logs and waits for the target with the earliest cooldown expiry", async () => {
     const config = baseConfig({
       combos: {
         free: {
@@ -811,65 +811,66 @@ describe("combo target cooldowns", () => {
         waitForCooldownMs: 10_000,
         sleep: async ms => { sleeps.push(ms); },
       });
-      expect(sleeps).toEqual([8_000]);
-      expect(pick?.target).toMatchObject({ provider: "a", model: "m1" });
+      expect(sleeps).toEqual([3_000]);
+      expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
       expect(warning).toHaveBeenCalledWith(
-        "[combo] free: all targets cooling, waiting 8000ms for a/m1",
+        "[combo] free: all targets cooling, waiting 3000ms for b/m2",
       );
     } finally {
       warning.mockRestore();
     }
   });
 
-  test("failover skips a higher-priority cooldown that exceeds the wait budget", async () => {
-    const config = baseConfig({
-      combos: {
-        free: {
-          targets: [
-            { provider: "a", model: "m1" },
-            { provider: "b", model: "m2" },
-          ],
-          waitForCooldownMs: 10_000,
-        },
-      },
-    });
+  test("last-resort cooldown policy defers the final target for a recoverable higher-priority target", async () => {
+    const config = baseConfig({ combos: { free: {
+      strategy: "failover",
+      cooldownWaitPolicy: "last-resort",
+      targets: [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      waitForCooldownMs: 10_000,
+    } } });
     const now = 1_000_000;
-    coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 12_000 });
-    coolComboTarget("free", config.combos!.free!.targets[1]!, { now, cooldownMs: 3_000 });
+    coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 8_000 });
     const sleeps: number[] = [];
     const pick = await pickComboTargetWithWait(config, "free", {
-      now,
-      waitForCooldownMs: 10_000,
-      sleep: async ms => { sleeps.push(ms); },
+      now, waitForCooldownMs: 10_000, sleep: async ms => { sleeps.push(ms); },
     });
-    expect(sleeps).toEqual([3_000]);
+    expect(sleeps).toEqual([8_000]);
+    expect(pick?.target).toMatchObject({ provider: "a", model: "m1" });
+  });
+
+  test("last-resort cooldown policy uses the final target when higher-priority wait exceeds budget", async () => {
+    const config = baseConfig({ combos: { free: {
+      strategy: "failover",
+      cooldownWaitPolicy: "last-resort",
+      targets: [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      waitForCooldownMs: 5_000,
+    } } });
+    const now = 1_000_000;
+    coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 8_000 });
+    const sleeps: number[] = [];
+    const pick = await pickComboTargetWithWait(config, "free", {
+      now, waitForCooldownMs: 5_000, sleep: async ms => { sleeps.push(ms); },
+    });
+    expect(sleeps).toEqual([]);
     expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
   });
 
-  test("non-failover strategies retain earliest-cooldown selection", async () => {
-    const config = baseConfig({
-      combos: {
-        free: {
-          strategy: "round-robin",
-          targets: [
-            { provider: "a", model: "m1" },
-            { provider: "b", model: "m2" },
-          ],
-          waitForCooldownMs: 10_000,
-        },
-      },
-    });
+  test("last-resort cooldown policy does not let an earlier final cooldown outrank a viable higher target", async () => {
+    const config = baseConfig({ combos: { free: {
+      strategy: "failover",
+      cooldownWaitPolicy: "last-resort",
+      targets: [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      waitForCooldownMs: 10_000,
+    } } });
     const now = 1_000_000;
     coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 8_000 });
     coolComboTarget("free", config.combos!.free!.targets[1]!, { now, cooldownMs: 3_000 });
     const sleeps: number[] = [];
     const pick = await pickComboTargetWithWait(config, "free", {
-      now,
-      waitForCooldownMs: 10_000,
-      sleep: async ms => { sleeps.push(ms); },
+      now, waitForCooldownMs: 10_000, sleep: async ms => { sleeps.push(ms); },
     });
-    expect(sleeps).toEqual([3_000]);
-    expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
+    expect(sleeps).toEqual([8_000]);
+    expect(pick?.target).toMatchObject({ provider: "a", model: "m1" });
   });
 
   test.each(["deleted", "renamed"] as const)("returns null when the combo is %s during cooldown wait", async change => {
@@ -1646,9 +1647,14 @@ describe("combo validation and normalization", () => {
     }
     expect(comboConfigIssues("free", { ...VALID_COMBO, waitForCooldownMs: 0 }, providers))
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ path: ["waitForCooldownMs"] })]));
+    expect(comboConfigIssues("free", { ...VALID_COMBO, cooldownWaitPolicy: "later" }, providers))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ path: ["cooldownWaitPolicy"] })]));
+    expect(comboConfigIssues("free", { ...VALID_COMBO, cooldownWaitPolicy: "last-resort" }, providers))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ path: ["cooldownWaitPolicy"] })]));
     const normalized = normalizeComboConfig(VALID_COMBO);
     expect(normalized.cooldownMs).toBeUndefined();
     expect(normalized.waitForCooldownMs).toBe(0);
+    expect(normalized.cooldownWaitPolicy).toBe("earliest");
   });
 
   test("normalizes valid values and returns defensive default efforts", () => {
@@ -1660,6 +1666,7 @@ describe("combo validation and normalization", () => {
       stickyLimit: 1,
       cooldownMs: undefined,
       waitForCooldownMs: 0,
+      cooldownWaitPolicy: "earliest",
       defaultEffort: "high",
       defaultEffortMode: "fallback",
       reasoningEffortMode: "strict",
