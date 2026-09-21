@@ -737,6 +737,18 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("fast", target, now + 5_000)).toBe(false);
   });
 
+  test("a 158527ms 502 keeps the failed target cooled for at least 60 seconds", () => {
+    const now = 1_000_000;
+    coolComboTarget("observed-qwen-stall", target, {
+      now,
+      cooldownMs: 5_000,
+      status: 502,
+      attemptDurationMs: 158_527,
+    });
+    expect(isComboTargetInCooldown("observed-qwen-stall", target, now + 59_999)).toBe(true);
+    expect(isComboTargetInCooldown("observed-qwen-stall", target, now + 60_000)).toBe(false);
+  });
+
   test("Retry-After and reset timestamps remain authoritative over cooldown floors", () => {
     const now = 1_000_000;
     coolComboTarget("retry", target, {
