@@ -341,6 +341,7 @@ export function advanceComboAfterFailure(
     status?: number;
     code?: string | null;
     message?: string;
+    attemptDurationMs?: number;
   } = {},
 ): ComboPick | null {
   noteComboFailure(pick.comboId, pick.target, pick.writerGeneration);
@@ -395,13 +396,24 @@ export async function pickComboTargetWithWait(
     && isComboTargetInCooldown(comboId, target, now)
     && (customEligible?.(target) ?? true),
   );
-  const earliest = earliestComboCooldown(comboId, waitingTargets, now);
-  if (earliest === undefined) return null;
-  const delay = earliest.expiry - now;
+  // Failover is an ordered priority ladder. When every remaining target is
+  // cooling, preserve that configured priority instead of promoting a lower
+  // target merely because its cooldown expires sooner. A lower-priority
+  // target is considered only when every target before it cannot become ready
+  // within this request's wait budget. Other strategies retain the existing
+  // earliest-expiry behavior.
+  const cooldown = combo.strategy === "failover"
+    ? waitingTargets
+        .map(target => earliestComboCooldown(comboId, [target], now))
+        .find(candidate => candidate !== undefined
+          && candidate.expiry - now <= options.waitForCooldownMs)
+    : earliestComboCooldown(comboId, waitingTargets, now);
+  if (cooldown === undefined) return null;
+  const delay = cooldown.expiry - now;
   if (delay > options.waitForCooldownMs) return null;
   // The expiry computation above is the single source of truth for the wait budget.
   // Its target preserves configured order for ties.
-  const target = earliest.target;
+  const target = cooldown.target;
   console.warn(
     `[combo] ${comboId}: all targets cooling, waiting ${delay}ms for ${targetKey(target)}`,
   );
