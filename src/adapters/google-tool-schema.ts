@@ -201,11 +201,25 @@ function sanitizeSchema(
     if (required.length > 0) out.required = required;
   }
 
-  if (state.remainingNodes <= 0) return out;
+  if (state.remainingNodes <= 0) {
+    // Google rejects type=array without an items child. If there is no node budget left for that
+    // mandatory child, widen this node instead of reading items past the budget or emitting an
+    // invalid provider schema.
+    if (out.type === "array") delete out.type;
+    return out;
+  }
 
-  if (isRecord(node.items)) {
-    const items = sanitizeSchema(node.items, defs, depth + 1, refDepth, false, state);
+  const itemNode = node.items;
+  if (isRecord(itemNode)) {
+    const items = sanitizeSchema(itemNode, defs, depth + 1, refDepth, false, state);
     if (items !== BUDGET_EXHAUSTED) out.items = items;
+  } else if (out.type === "array") {
+    // JSON Schema's omitted items and items=true are unconstrained. Google requires the field, so
+    // materialize an equivalent empty child. Tuple/boolean forms are unsupported by Google's
+    // function-schema subset; widening their item constraint is safer than sending an invalid
+    // array declaration that rejects the entire request.
+    state.remainingNodes -= 1;
+    out.items = {};
   }
 
   if (state.remainingNodes <= 0) return out;

@@ -59,6 +59,23 @@ describe("Google wire compiler", () => {
     expect(body.futureTopLevelField).toBeUndefined();
   });
 
+  test("compiles array schemas with an explicit unconstrained items node", () => {
+    const compiled = compileGoogleWireBody({
+      tools: [{
+        functionDeclarations: [{
+          name: "array_without_items",
+          parameters: {
+            type: "object",
+            properties: { items: { type: "array" } },
+          },
+        }],
+      }],
+    });
+    const declaration = (compiled.body.tools as Array<{ functionDeclarations: Array<Record<string, any>> }>)[0]
+      .functionDeclarations[0];
+    expect(declaration.parameters.properties.items).toEqual({ type: "array", items: {} });
+  });
+
   test("the Google adapter compiles tool names on request and restores them on response", async () => {
     const originalName = `9 invalid tool ${"x".repeat(80)}`;
     const adapter = createGoogleAdapter({
