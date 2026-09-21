@@ -90,6 +90,12 @@ replacement, and root object coercion. Lossless normalization does not set `loss
 case folding, duplicate enum/required removal, nullable-union collapse, and string-const conversion
 preserve the accepted value set. Annotation-only fields such as title, default, examples, comments,
 deprecated, read-only/write-only, external documentation and examples are omitted without loss.
+Google requires every emitted `type: "array"` declaration to contain an `items` child. An
+unconstrained array therefore materializes `items: {}` without loss. Tuple or unsupported boolean
+`items` forms retain their existing loss category and are widened to that provider-compatible
+unconstrained child. If the 1,024-node traversal budget is exhausted before a required array child
+can be emitted, the sanitizer drops the array type instead of reading beyond the budget or emitting
+an invalid array declaration; that widening is covered by the existing budget-loss accounting.
 Local-reference siblings use 2020-12-style conjunctive semantics for loss accounting, while the
 wire transform retains its implemented overlay-wins merge; enum reports compare that intersection
 with the post-filter set actually emitted.

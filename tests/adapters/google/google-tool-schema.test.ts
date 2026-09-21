@@ -132,6 +132,23 @@ describe("sanitizeGeminiToolParameters", () => {
     expect(props.refLike.type).toBe("object");
   });
 
+  test("materializes unconstrained items for arrays because Google requires the field", () => {
+    const out = sanitizeGeminiToolParameters({
+      type: "object",
+      properties: {
+        omitted: { type: "array" },
+        explicitTrue: { type: "array", items: true },
+        tuple: { type: "array", items: [{ type: "string" }, { type: "number" }] },
+        typed: { type: "array", items: { type: "string" } },
+      },
+    });
+    const props = out.properties as Record<string, Record<string, unknown>>;
+    expect(props.omitted).toEqual({ type: "array", items: {} });
+    expect(props.explicitTrue).toEqual({ type: "array", items: {} });
+    expect(props.tuple).toEqual({ type: "array", items: {} });
+    expect(props.typed).toEqual({ type: "array", items: { type: "string" } });
+  });
+
   test("collapses type arrays to a single nullable type", () => {
     const out = sanitizeGeminiToolParameters({
       type: "object",
@@ -475,6 +492,7 @@ describe("sanitizeGeminiToolParameters", () => {
     });
     const sanitized = (out.properties as Record<string, Record<string, unknown>>).container;
     expect(readItems).toBe(false);
+    expect(sanitized.type).toBeUndefined();
     expect(sanitized.items).toBeUndefined();
     expect(countSchemaNodes(out)).toBe(1_024);
   });
