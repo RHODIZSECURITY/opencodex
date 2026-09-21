@@ -744,6 +744,7 @@ export async function executeComboResponses(
       status: failure.response.status,
       code: failure.upstreamCode,
       message: failure.classificationText,
+      attemptDurationMs: Math.max(0, failureNow - started),
     });
     // Same target selector as the exclusionary pick below, minus `exclude`: the only
     // difference is deliberate and is the whole point of the single-target retry.

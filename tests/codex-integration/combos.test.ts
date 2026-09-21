@@ -43,6 +43,7 @@ import {
   UnknownComboError,
 } from "../../src/combos";
 import {
+  COMBO_SLOW_FAILURE_THRESHOLD_MS,
   comboFailureCooldownScope,
   comboFailureDecision,
   isTransientRequestRateLimit,
@@ -696,6 +697,67 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("default", target, now + 60_000)).toBe(false);
   });
 
+  test("short combo cooldown cannot downgrade credential or billing provider failures", () => {
+    const now = 1_000_000;
+    for (const [comboId, status, code] of [
+      ["auth", 401, "invalid_api_key"],
+      ["billing", 402, "payment_required"],
+      ["forbidden", 403, null],
+      ["quota", 429, "insufficient_quota"],
+    ] as const) {
+      coolComboTarget(comboId, target, {
+        now,
+        cooldownMs: 5_000,
+        status,
+        code,
+        message: status === 429 ? "quota exhausted" : "provider refusal",
+      });
+      expect(isComboTargetInCooldown(comboId, target, now + 59_999)).toBe(true);
+      expect(isComboTargetInCooldown(comboId, target, now + 60_000)).toBe(false);
+    }
+  });
+
+  test("a slow 5xx gets a 60-second floor but a fast 5xx keeps the combo cooldown", () => {
+    const now = 1_000_000;
+    coolComboTarget("slow", target, {
+      now,
+      cooldownMs: 5_000,
+      status: 502,
+      attemptDurationMs: COMBO_SLOW_FAILURE_THRESHOLD_MS,
+    });
+    coolComboTarget("fast", target, {
+      now,
+      cooldownMs: 5_000,
+      status: 502,
+      attemptDurationMs: COMBO_SLOW_FAILURE_THRESHOLD_MS - 1,
+    });
+    expect(isComboTargetInCooldown("slow", target, now + 59_999)).toBe(true);
+    expect(isComboTargetInCooldown("slow", target, now + 60_000)).toBe(false);
+    expect(isComboTargetInCooldown("fast", target, now + 4_999)).toBe(true);
+    expect(isComboTargetInCooldown("fast", target, now + 5_000)).toBe(false);
+  });
+
+  test("Retry-After and reset timestamps remain authoritative over cooldown floors", () => {
+    const now = 1_000_000;
+    coolComboTarget("retry", target, {
+      now,
+      retryAfter: "2",
+      cooldownMs: 5_000,
+      status: 402,
+    });
+    coolComboTarget("reset", target, {
+      now,
+      resetAt: Math.floor((now + 3_000) / 1_000),
+      cooldownMs: 5_000,
+      status: 502,
+      attemptDurationMs: COMBO_SLOW_FAILURE_THRESHOLD_MS,
+    });
+    expect(isComboTargetInCooldown("retry", target, now + 1_999)).toBe(true);
+    expect(isComboTargetInCooldown("retry", target, now + 2_000)).toBe(false);
+    expect(isComboTargetInCooldown("reset", target, now + 2_999)).toBe(true);
+    expect(isComboTargetInCooldown("reset", target, now + 3_000)).toBe(false);
+  });
+
   test("finds the earliest cooldown expiry and waits within the budget", async () => {
     const config = baseConfig({
       combos: {
@@ -726,7 +788,7 @@ describe("combo target cooldowns", () => {
     expect(earliestComboCooldownExpiry("free", [{ provider: "c", model: "m3" }], now)).toBeUndefined();
   });
 
-  test("logs and waits for the target with the earliest cooldown expiry", async () => {
+  test("failover preserves configured priority while waiting for cooldown", async () => {
     const config = baseConfig({
       combos: {
         free: {
@@ -749,14 +811,65 @@ describe("combo target cooldowns", () => {
         waitForCooldownMs: 10_000,
         sleep: async ms => { sleeps.push(ms); },
       });
-      expect(sleeps).toEqual([3_000]);
-      expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
+      expect(sleeps).toEqual([8_000]);
+      expect(pick?.target).toMatchObject({ provider: "a", model: "m1" });
       expect(warning).toHaveBeenCalledWith(
-        "[combo] free: all targets cooling, waiting 3000ms for b/m2",
+        "[combo] free: all targets cooling, waiting 8000ms for a/m1",
       );
     } finally {
       warning.mockRestore();
     }
+  });
+
+  test("failover skips a higher-priority cooldown that exceeds the wait budget", async () => {
+    const config = baseConfig({
+      combos: {
+        free: {
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          waitForCooldownMs: 10_000,
+        },
+      },
+    });
+    const now = 1_000_000;
+    coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 12_000 });
+    coolComboTarget("free", config.combos!.free!.targets[1]!, { now, cooldownMs: 3_000 });
+    const sleeps: number[] = [];
+    const pick = await pickComboTargetWithWait(config, "free", {
+      now,
+      waitForCooldownMs: 10_000,
+      sleep: async ms => { sleeps.push(ms); },
+    });
+    expect(sleeps).toEqual([3_000]);
+    expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
+  });
+
+  test("non-failover strategies retain earliest-cooldown selection", async () => {
+    const config = baseConfig({
+      combos: {
+        free: {
+          strategy: "round-robin",
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          waitForCooldownMs: 10_000,
+        },
+      },
+    });
+    const now = 1_000_000;
+    coolComboTarget("free", config.combos!.free!.targets[0]!, { now, cooldownMs: 8_000 });
+    coolComboTarget("free", config.combos!.free!.targets[1]!, { now, cooldownMs: 3_000 });
+    const sleeps: number[] = [];
+    const pick = await pickComboTargetWithWait(config, "free", {
+      now,
+      waitForCooldownMs: 10_000,
+      sleep: async ms => { sleeps.push(ms); },
+    });
+    expect(sleeps).toEqual([3_000]);
+    expect(pick?.target).toMatchObject({ provider: "b", model: "m2" });
   });
 
   test.each(["deleted", "renamed"] as const)("returns null when the combo is %s during cooldown wait", async change => {
