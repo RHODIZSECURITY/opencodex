@@ -724,17 +724,40 @@ function sanitizeSchema(
   }
 
   if (state.remainingNodes <= 0) {
-    if (Object.hasOwn(node, "items") || Object.hasOwn(node, "anyOf")) reportBudgetExhausted(state);
+    // Google rejects type=array without an items child. If the traversal budget is already
+    // exhausted, widen the array declaration instead of reading items past the budget or
+    // emitting a provider-invalid schema.
+    if (out.type === "array") {
+      reportBudgetExhausted(state);
+      delete out.type;
+    } else if (Object.hasOwn(node, "items") || Object.hasOwn(node, "anyOf")) {
+      reportBudgetExhausted(state);
+    }
     return out;
   }
 
-  if (Array.isArray(node.items)) {
+  const itemNode = node.items;
+  if (Array.isArray(itemNode)) {
     addGoogleToolSchemaLoss(state.report, "tuple-prefix-dropped");
-  } else if (isRecord(node.items)) {
-    const items = sanitizeSchema(node.items, defs, depth + 1, refDepth, false, state);
+    if (out.type === "array") {
+      state.remainingNodes -= 1;
+      out.items = {};
+    }
+  } else if (isRecord(itemNode)) {
+    const items = sanitizeSchema(itemNode, defs, depth + 1, refDepth, false, state);
     if (items !== BUDGET_EXHAUSTED) out.items = items;
+    else if (out.type === "array") delete out.type;
   } else if (Object.hasOwn(node, "items")) {
     addGoogleToolSchemaLoss(state.report, "invalid-schema-widened");
+    if (out.type === "array") {
+      state.remainingNodes -= 1;
+      out.items = {};
+    }
+  } else if (out.type === "array") {
+    // JSON Schema's omitted items is unconstrained. Google requires the field, so materialize
+    // an equivalent empty child. This preserves the accepted value set and is not a loss.
+    state.remainingNodes -= 1;
+    out.items = {};
   }
 
   if (state.remainingNodes <= 0) {
