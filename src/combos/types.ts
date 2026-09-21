@@ -1,6 +1,6 @@
 import { isCodexReasoningEffort } from "../reasoning-effort";
 import { SUPPORTED_NATIVE_OPENAI_SLUGS } from "../codex/catalog/native-models";
-import type { OcxComboConfig, OcxComboDefaultEffort, OcxComboDefaultEffortMode, OcxComboReasoningEffortMode, OcxComboStrategy, OcxComboTarget, OcxProviderConfig } from "../types";
+import type { OcxComboConfig, OcxComboCooldownWaitPolicy, OcxComboDefaultEffort, OcxComboDefaultEffortMode, OcxComboReasoningEffortMode, OcxComboStrategy, OcxComboTarget, OcxProviderConfig } from "../types";
 import { COMBO_NAMESPACE, isValidComboId, targetKey } from "./identifiers";
 
 export const COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS = 0;
@@ -25,6 +25,7 @@ export interface NormalizedComboConfig {
   stickyLimit: number;
   cooldownMs?: number;
   waitForCooldownMs: number;
+  cooldownWaitPolicy: OcxComboCooldownWaitPolicy;
   defaultEffort: OcxComboDefaultEffort | null;
   /** Client-precedence policy; `fallback` preserves legacy behavior. */
   defaultEffortMode: OcxComboDefaultEffortMode;
@@ -160,6 +161,14 @@ export function comboConfigIssues(
       || body.waitForCooldownMs < 0
       || body.waitForCooldownMs > 600_000)) {
     issues.push({ path: ["waitForCooldownMs"], message: "waitForCooldownMs must be an integer from 0 to 600000" });
+  }
+  if (body.cooldownWaitPolicy !== undefined
+    && body.cooldownWaitPolicy !== "earliest"
+    && body.cooldownWaitPolicy !== "last-resort") {
+    issues.push({
+      path: ["cooldownWaitPolicy"],
+      message: 'cooldownWaitPolicy must be "earliest" or "last-resort"',
+    });
   }
   if (body.defaultEffort !== undefined
     && body.defaultEffort !== null
@@ -318,6 +327,7 @@ export function normalizeComboConfig(raw: OcxComboConfig): NormalizedComboConfig
     stickyLimit: raw.stickyLimit ?? 1,
     cooldownMs: raw.cooldownMs,
     waitForCooldownMs: raw.waitForCooldownMs ?? COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS,
+    cooldownWaitPolicy: raw.cooldownWaitPolicy === "last-resort" ? "last-resort" : "earliest",
     defaultEffort,
     defaultEffortMode: raw.defaultEffortMode === "force" && defaultEffort !== null ? "force" : "fallback",
     reasoningEffortMode: raw.reasoningEffortMode === "adaptive" ? "adaptive" : "strict",

@@ -78,12 +78,14 @@ import { COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS } from "../../combos";
 function sparseComboConfig<T extends {
   cooldownMs?: number;
   waitForCooldownMs?: number;
+  cooldownWaitPolicy?: "earliest" | "last-resort";
   imageInput?: "auto" | "disabled";
   reasoningEffortMode?: "strict" | "adaptive";
   defaultEffortMode?: "fallback" | "force";
-}>(combo: T): Omit<T, "cooldownMs" | "waitForCooldownMs" | "imageInput" | "reasoningEffortMode" | "defaultEffortMode"> & {
+}>(combo: T): Omit<T, "cooldownMs" | "waitForCooldownMs" | "cooldownWaitPolicy" | "imageInput" | "reasoningEffortMode" | "defaultEffortMode"> & {
   cooldownMs?: number;
   waitForCooldownMs?: number;
+  cooldownWaitPolicy?: "last-resort";
   imageInput?: "disabled";
   reasoningEffortMode?: "adaptive";
   defaultEffortMode?: "force";
@@ -91,6 +93,7 @@ function sparseComboConfig<T extends {
   const {
     cooldownMs,
     waitForCooldownMs,
+    cooldownWaitPolicy,
     imageInput,
     reasoningEffortMode,
     defaultEffortMode,
@@ -102,6 +105,7 @@ function sparseComboConfig<T extends {
     ...(waitForCooldownMs !== undefined && waitForCooldownMs !== COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS
       ? { waitForCooldownMs }
       : {}),
+    ...(cooldownWaitPolicy === "last-resort" ? { cooldownWaitPolicy: "last-resort" as const } : {}),
     ...(imageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
     ...(reasoningEffortMode === "adaptive" ? { reasoningEffortMode: "adaptive" as const } : {}),
     ...(defaultEffortMode === "force" ? { defaultEffortMode: "force" as const } : {}),
@@ -173,6 +177,11 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
         : {}),
       ...(!Object.hasOwn(requestedCombo, "waitForCooldownMs") && previous?.waitForCooldownMs !== undefined
         ? { waitForCooldownMs: previous.waitForCooldownMs }
+        : {}),
+      // The dashboard does not expose cooldown ordering. Preserve an explicit last-resort policy
+      // when a GUI-shaped update omits it, just like the existing cooldown duration knobs.
+      ...(!Object.hasOwn(requestedCombo, "cooldownWaitPolicy") && previous?.cooldownWaitPolicy !== undefined
+        ? { cooldownWaitPolicy: previous.cooldownWaitPolicy }
         : {}),
       // The dashboard does not expose this advanced CLI/API policy. Preserve it when
       // a GUI round-trip omits the field instead of silently downgrading to fallback.

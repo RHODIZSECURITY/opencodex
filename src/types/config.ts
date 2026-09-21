@@ -1110,6 +1110,7 @@ export type OcxAccountPoolRotationStrategy = "quota" | "round-robin" | "fill-fir
 export type OcxAccountPoolQuotaWindow = "five-hour" | "weekly" | "max-utilization";
 
 export type OcxComboStrategy = "failover" | "round-robin" | "random" | "least-used" | "reset-window";
+export type OcxComboCooldownWaitPolicy = "earliest" | "last-resort";
 export type OcxComboDefaultEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type OcxComboDefaultEffortMode = "fallback" | "force";
 
@@ -1147,6 +1148,14 @@ export interface OcxComboConfig {
   cooldownMs?: number;
   /** Maximum wait for an eligible target cooldown to expire before failing closed. Default 0; range 0..600000, per selection attempt. */
   waitForCooldownMs?: number;
+  /**
+   * How failover chooses around cooling targets when `waitForCooldownMs` is non-zero.
+   * `earliest` (default) preserves legacy behavior and prefers whichever cooldown expires first.
+   * `last-resort` keeps the final configured failover target as a true last resort: before
+   * selecting it, a higher-priority cooling target is preferred when it can recover within the
+   * wait budget. Other non-final targets keep the normal low-latency failover behavior.
+   */
+  cooldownWaitPolicy?: OcxComboCooldownWaitPolicy;
   /** Used as a fallback when the client omits reasoning.effort, or as an override in `force` mode. null/omitted leaves the target default unchanged. */
   defaultEffort?: OcxComboDefaultEffort | null;
   /** `force` makes the combo default override a valid client effort. Omitted / `fallback` preserves client precedence. */

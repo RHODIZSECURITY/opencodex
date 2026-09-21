@@ -386,34 +386,66 @@ export async function pickComboTargetWithWait(
   const eligible = (target: Required<OcxComboTarget>): boolean =>
     !isComboTargetInCooldown(comboId, target, now)
     && (customEligible?.(target) ?? true);
-  const pick = pickComboTarget(config, comboId, { exclude: excluded, eligible, now });
-  if (pick || options.waitForCooldownMs <= 0 || options.abortSignal?.aborted) return pick;
   const combo = getCombo(config, comboId);
   if (!combo) throw new UnknownComboError(comboId);
+  const pick = pickComboTarget(config, comboId, { exclude: excluded, eligible, now });
+
+  if (
+    combo.strategy === "failover"
+    && combo.cooldownWaitPolicy === "last-resort"
+    && options.waitForCooldownMs > 0
+    && !options.abortSignal?.aborted
+  ) {
+    const finalTarget = combo.targets[combo.targets.length - 1];
+    const pickIsFinal = !!pick && !!finalTarget && targetKey(pick.target) === targetKey(finalTarget);
+    if (!pick || pickIsFinal) {
+      const higherPriorityCoolingTargets = combo.targets.slice(0, -1).filter(target =>
+        targetProviderIsUsable(config, target, now)
+        && !excluded.has(targetKey(target))
+        && isComboTargetInCooldown(comboId, target, now)
+        && (customEligible?.(target) ?? true),
+      );
+      const preferred = earliestComboCooldown(comboId, higherPriorityCoolingTargets, now);
+      if (preferred) {
+        const delay = preferred.expiry - now;
+        if (delay <= options.waitForCooldownMs) {
+          console.warn(
+            `[combo] ${comboId}: deferring last-resort target, waiting ${delay}ms for ${targetKey(preferred.target)}`,
+          );
+          try {
+            await (options.sleep ?? sleepWithAbort)(delay, options.abortSignal);
+          } catch (error) {
+            if (options.abortSignal?.aborted) return null;
+            throw error;
+          }
+          if (options.abortSignal?.aborted) return null;
+          if (!getCombo(config, comboId)) return null;
+          return pickComboTarget(config, comboId, {
+            exclude: excluded,
+            now: now + delay,
+            eligible: targetCandidate =>
+              !isComboTargetInCooldown(comboId, targetCandidate, now + delay)
+              && (customEligible?.(targetCandidate) ?? true),
+          });
+        }
+      }
+    }
+  }
+
+  if (pick || options.waitForCooldownMs <= 0 || options.abortSignal?.aborted) return pick;
   const waitingTargets = combo.targets.filter(target =>
     targetProviderIsUsable(config, target, now)
     && !excluded.has(targetKey(target))
     && isComboTargetInCooldown(comboId, target, now)
     && (customEligible?.(target) ?? true),
   );
-  // Failover is an ordered priority ladder. When every remaining target is
-  // cooling, preserve that configured priority instead of promoting a lower
-  // target merely because its cooldown expires sooner. A lower-priority
-  // target is considered only when every target before it cannot become ready
-  // within this request's wait budget. Other strategies retain the existing
-  // earliest-expiry behavior.
-  const cooldown = combo.strategy === "failover"
-    ? waitingTargets
-        .map(target => earliestComboCooldown(comboId, [target], now))
-        .find(candidate => candidate !== undefined
-          && candidate.expiry - now <= options.waitForCooldownMs)
-    : earliestComboCooldown(comboId, waitingTargets, now);
-  if (cooldown === undefined) return null;
-  const delay = cooldown.expiry - now;
+  const earliest = earliestComboCooldown(comboId, waitingTargets, now);
+  if (earliest === undefined) return null;
+  const delay = earliest.expiry - now;
   if (delay > options.waitForCooldownMs) return null;
   // The expiry computation above is the single source of truth for the wait budget.
   // Its target preserves configured order for ties.
-  const target = cooldown.target;
+  const target = earliest.target;
   console.warn(
     `[combo] ${comboId}: all targets cooling, waiting ${delay}ms for ${targetKey(target)}`,
   );
