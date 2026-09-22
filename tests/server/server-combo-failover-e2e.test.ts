@@ -3249,6 +3249,80 @@ describe("server combo failover 030 activation matrix", () => {
     }
   });
 
+  test("authoritative Anthropic combo catalog rejects a stale runTurn tool before commit", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      aHits += 1;
+      emit({ type: "tool_call_start", id: "call-stale", name: "mcp__github__list_branches" });
+      emit({ type: "tool_call_delta", arguments: "{}" });
+      emit({ type: "tool_call_end" });
+      emit({ type: "done", endTurn: true });
+    };
+    const b = serve(() => {
+      bHits += 1;
+      return chatStream("runTurn stale-tool backup");
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, {
+      stream: true,
+      tools: [{
+        type: "function",
+        name: "declared_only",
+        description: "Current client tool catalog.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      }],
+    }, {
+      inboundWire: "anthropic",
+      authoritativeClientToolCatalog: true,
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("runTurn stale-tool backup");
+    expect(text).not.toContain("mcp__github__list_branches");
+    expect([aHits, bHits]).toEqual([1, 1]);
+  });
+
+  test("authoritative Anthropic combo catalog rejects a stale buffered runTurn tool before commit", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      aHits += 1;
+      emit({ type: "tool_call_start", id: "call-stale-buffered", name: "mcp__github__list_branches" });
+      emit({ type: "tool_call_delta", arguments: "{}" });
+      emit({ type: "tool_call_end" });
+      emit({ type: "done", endTurn: true });
+    };
+    const b = serve(() => {
+      bHits += 1;
+      return chatSuccess("buffered runTurn stale-tool backup", "m2");
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, {
+      stream: false,
+      tools: [{
+        type: "function",
+        name: "declared_only",
+        description: "Current client tool catalog.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      }],
+    }, {
+      inboundWire: "anthropic",
+      authoritativeClientToolCatalog: true,
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("buffered runTurn stale-tool backup");
+    expect(text).not.toContain("mcp__github__list_branches");
+    expect([aHits, bHits]).toEqual([1, 1]);
+  });
+
   test("committed runTurn heartbeat text error never replays on backup", async () => {
     let aHits = 0;
     let bHits = 0;

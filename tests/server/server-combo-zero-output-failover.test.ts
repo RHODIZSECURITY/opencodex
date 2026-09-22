@@ -18,6 +18,7 @@ import {
   responseStatePersistPendingForTests,
 } from "../../src/responses/state";
 import { handleResponses } from "../../src/server/responses";
+import { handleClaudeMessages } from "../../src/server/claude-messages";
 import type { OcxConfig } from "../../src/types";
 
 /**
@@ -186,4 +187,333 @@ describe("combo zero-output bare Responses error failover", () => {
       ],
     });
   });
+
+  test("undeclared client tool before output fails closed on the target and hops to backup", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response([
+        "event: response.created",
+        `data: ${JSON.stringify({ type: "response.created", response: { id: "r-stale", status: "in_progress" } })}`,
+        "",
+        "event: response.output_item.added",
+        `data: ${JSON.stringify({
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            type: "function_call",
+            id: "fc-stale",
+            call_id: "call-stale",
+            name: "not_declared",
+            arguments: "{}",
+          },
+        })}`,
+        "",
+        "event: response.completed",
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: { ...responsesSuccess("must not commit", "m1"), output: [], status: "completed" },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return new Response([
+        "event: response.completed",
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: { ...responsesSuccess("declared-catalog backup", "m2"), status: "completed" },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const config = comboConfig({
+      a: provider("openai-responses", baseUrl(a), "key-a"),
+      b: provider("openai-responses", baseUrl(b), "key-b"),
+    });
+
+    const parent: RequestLogContext = { model: "", provider: "" };
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "combo/free",
+        input: "hello",
+        stream: true,
+        tools: [{
+          type: "function",
+          name: "declared_only",
+          description: "Only this tool is authorized for the current request.",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        }],
+      }),
+    }), config, parent);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("declared-catalog backup");
+    expect(text).not.toContain("not_declared");
+    expect(hits).toEqual(["a", "b"]);
+    expect(parent).toMatchObject({
+      provider: "combo",
+      model: "combo/free",
+      resolvedModel: "m2",
+      attempts: [
+        { ordinal: 1, provider: "a", model: "m1", status: 502 },
+        { ordinal: 2, provider: "b", model: "m2" },
+      ],
+    });
+  });
+
+  test("Claude /v1/messages inherits undeclared-tool failover and returns the backup", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response([
+        "event: response.created",
+        `data: ${JSON.stringify({ type: "response.created", response: { id: "r-claude-stale", status: "in_progress" } })}`,
+        "",
+        "event: response.output_item.added",
+        `data: ${JSON.stringify({
+          type: "response.output_item.added",
+          output_index: 0,
+          item: {
+            type: "function_call",
+            id: "fc-claude-stale",
+            call_id: "call-claude-stale",
+            name: "not_declared",
+            arguments: "{}",
+          },
+        })}`,
+        "",
+        "event: response.completed",
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: { ...responsesSuccess("must not commit", "m1"), output: [], status: "completed" },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return new Response([
+        "event: response.output_text.delta",
+        `data: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "claude backup",
+          item_id: "msg_backup",
+          output_index: 0,
+          content_index: 0,
+        })}`,
+        "",
+        "event: response.completed",
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: { ...responsesSuccess("claude backup", "m2"), status: "completed" },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const config = comboConfig({
+      a: provider("openai-responses", baseUrl(a), "key-a"),
+      b: provider("openai-responses", baseUrl(b), "key-b"),
+    });
+
+    const parent: RequestLogContext = { model: "", provider: "" };
+    const response = await handleClaudeMessages(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "combo/free",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [{
+          name: "declared_only",
+          description: "Only this tool is authorized for the current request.",
+          input_schema: { type: "object", properties: {}, additionalProperties: false },
+        }],
+      }),
+    }), config, parent);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("claude backup");
+    expect(text).not.toContain("not_declared");
+    expect(hits).toEqual(["a", "b"]);
+    expect(parent).toMatchObject({
+      provider: "combo",
+      model: "combo/free",
+      resolvedModel: "m2",
+      attempts: [
+        { ordinal: 1, provider: "a", model: "m1", status: 502 },
+        { ordinal: 2, provider: "b", model: "m2" },
+      ],
+    });
+  });
+
+  test("Claude /v1/messages hops past an OpenRouter-like stale chat tool call", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response([
+        `data: ${JSON.stringify({
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call-stale-github",
+                type: "function",
+                function: { name: "mcp__github__list_branches", arguments: "{}" },
+              }],
+            },
+            finish_reason: null,
+          }],
+        })}`,
+        "",
+        `data: ${JSON.stringify({
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        })}`,
+        "",
+        "data: [DONE]",
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return new Response([
+        "event: response.output_text.delta",
+        `data: ${JSON.stringify({
+          type: "response.output_text.delta",
+          delta: "openrouter stale-tool backup",
+          item_id: "msg_backup",
+          output_index: 0,
+          content_index: 0,
+        })}`,
+        "",
+        "event: response.completed",
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: { ...responsesSuccess("openrouter stale-tool backup", "m2"), status: "completed" },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const config = comboConfig({
+      openrouterFixture: provider("openai-chat", baseUrl(a), "key-openrouter"),
+      backup: provider("openai-responses", baseUrl(b), "key-backup"),
+    }, [
+      { provider: "openrouterFixture", model: "nvidia/nemotron" },
+      { provider: "backup", model: "m2" },
+    ]);
+
+    const parent: RequestLogContext = { model: "", provider: "" };
+    const response = await handleClaudeMessages(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "claude-cli/2.1.200" },
+      body: JSON.stringify({
+        model: "combo/free",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [{
+          name: "declared_only",
+          description: "Only this tool is authorized for the current request.",
+          input_schema: { type: "object", properties: {}, additionalProperties: false },
+        }],
+      }),
+    }), config, parent);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("openrouter stale-tool backup");
+    expect(text).not.toContain("mcp__github__list_branches");
+    expect(hits).toEqual(["a", "b"]);
+    expect(parent).toMatchObject({
+      provider: "combo",
+      model: "combo/free",
+      resolvedModel: "m2",
+      attempts: [
+        { ordinal: 1, provider: "openrouterFixture", model: "nvidia/nemotron", status: 502 },
+        { ordinal: 2, provider: "backup", model: "m2" },
+      ],
+    });
+  });
+
+  test("Claude /v1/messages preserves a deferred partial catalog instead of treating it as stale", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return new Response([
+        `data: ${JSON.stringify({
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call-deferred-github",
+                type: "function",
+                function: { name: "mcp__github__list_branches", arguments: "{}" },
+              }],
+            },
+            finish_reason: null,
+          }],
+        })}`,
+        "",
+        `data: ${JSON.stringify({
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        })}`,
+        "",
+        "data: [DONE]",
+        "",
+        "",
+      ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return Response.json(responsesSuccess("unexpected backup", "m2"));
+    });
+    const config = comboConfig({
+      openrouterFixture: provider("openai-chat", baseUrl(a), "key-openrouter"),
+      backup: provider("openai-responses", baseUrl(b), "key-backup"),
+    }, [
+      { provider: "openrouterFixture", model: "nvidia/nemotron" },
+      { provider: "backup", model: "m2" },
+    ]);
+
+    const parent: RequestLogContext = { model: "", provider: "" };
+    const response = await handleClaudeMessages(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "claude-cli/2.1.200" },
+      body: JSON.stringify({
+        model: "combo/free",
+        max_tokens: 64,
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [{
+          name: "declared_only",
+          description: "This request intentionally uses a partial deferred catalog.",
+          defer_loading: true,
+          input_schema: { type: "object", properties: {}, additionalProperties: false },
+        }],
+      }),
+    }), config, parent);
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("mcp__github__list_branches");
+    expect(text).not.toContain("unexpected backup");
+    expect(hits).toEqual(["a"]);
+    expect(parent).toMatchObject({
+      provider: "combo",
+      model: "combo/free",
+      resolvedModel: "nvidia/nemotron",
+      attempts: [{ ordinal: 1, provider: "openrouterFixture", model: "nvidia/nemotron" }],
+    });
+  });
+
 });

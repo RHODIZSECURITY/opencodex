@@ -81,10 +81,21 @@ checks the original declaration kind.
 
 ## Undeclared-tool refusal is an inbound-protocol claim
 
-Whether a routed provider's call to an undeclared tool is refused depends on the inbound protocol,
-not on the adapter or the upstream protocol. The `responses` inbound protocol refuses it and ends
-the turn, which is the #1700 contract. The `chat` and `anthropic` inbound protocols relay it,
-because those specs place validation and execution with the client's own tool runner.
+Whether a routed provider's call to an undeclared tool is refused normally depends on the inbound
+protocol, not on the adapter or the upstream protocol. The `responses` inbound protocol refuses it
+and ends the turn, which is the #1700 contract. The `chat` and generic `anthropic` inbound
+protocols relay it, because those specs place validation and execution with the client's own tool
+runner.
+
+There is one narrower translated-Claude exception. `ocx claude` is identifiable by the Claude
+Code user agent, and Claude Code disables MCP tool deferral when `ANTHROPIC_BASE_URL` points at a
+non-first-party gateway. When such a request contains no explicit deferred-tool, tool-search, or
+tool-reference semantics, `src/server/claude-messages.ts` marks its translated current-turn
+catalog authoritative. Adapter streaming and buffered delivery then enforce the same declared-tool
+guard as Responses. A stale MCP identity from an earlier provider/session therefore becomes a
+pre-commit 502 inside a combo attempt and can fail over instead of reaching Claude as executable
+`tool_use`. Requests that explicitly opt into deferred discovery keep the ordinary Anthropic
+passthrough behavior.
 
 A manifest claiming a disposition for tool-call delivery therefore names its inbound protocol. The
 same provider, base URL, adapter, and authentication mode produce `passthrough` on `chat` and

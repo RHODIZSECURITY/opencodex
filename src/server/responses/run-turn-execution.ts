@@ -18,7 +18,7 @@ import type { AdapterEventQueue } from "../../adapters/run-turn-queue";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import { providerFetch } from "./fetch-helpers";
 import { normalizeLogConversationId } from "../request-log-conversation";
-import type { AdapterEvent, OcxProviderContinuationState } from "../../types";
+import { normalizeDeclaredToolName, type AdapterEvent, type OcxProviderContinuationState } from "../../types";
 import { adapterFailureFromMessage, SEND_BUDGET_EXHAUSTED_CODE } from "../../lib/errors";
 import { SendBudgetExhaustedError } from "../../lib/upstream-retry";
 import {
@@ -38,6 +38,39 @@ import {
 import { rememberResponseState } from "../../responses/state";
 import { trackStreamLifetime } from "../lifecycle";
 import { awaitThoughtSignatureDurability } from "../../responses/thought-signature-replay";
+import {
+  UNDECLARED_TOOL_CALL_ERROR_CODE,
+  undeclaredToolCallMessage,
+} from "../responses-undeclared-tool-guard";
+
+function undeclaredRunTurnToolName(
+  event: AdapterEvent,
+  declaredToolNames: ReadonlySet<string> | undefined,
+): string | undefined {
+  if (!declaredToolNames || event.type !== "tool_call_start") return undefined;
+  const effectiveName = normalizeDeclaredToolName(event.name, declaredToolNames);
+  return declaredToolNames.has(effectiveName) ? undefined : effectiveName;
+}
+
+async function* guardAuthoritativeComboToolEvents(
+  source: AsyncIterable<AdapterEvent>,
+  declaredToolNames: ReadonlySet<string> | undefined,
+): AsyncGenerator<AdapterEvent> {
+  for await (const event of source) {
+    const name = undeclaredRunTurnToolName(event, declaredToolNames);
+    if (name !== undefined) {
+      yield {
+        type: "error",
+        status: 502,
+        errorType: "upstream_error",
+        code: UNDECLARED_TOOL_CALL_ERROR_CODE,
+        message: undeclaredToolCallMessage(name),
+      };
+      return;
+    }
+    yield event;
+  }
+}
 
 /** One responsibility of the Responses request pipeline; state owners are explicit. */
 export async function executeResponsesRunTurn(
@@ -365,6 +398,8 @@ export async function executeResponsesRunTurn(
     };
 
     const { toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
+    const enforceDeclaredToolNames = options.authoritativeClientToolCatalog === true
+      || (inboundWire !== "chat" && inboundWire !== "anthropic");
     if (parsed.stream) {
       void runTurn();
       let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
@@ -374,6 +409,9 @@ export async function executeResponsesRunTurn(
         eventSource = await preflightRunTurnFailover(eventSource);
       }
       if (options.comboAttempt) {
+        if (enforceDeclaredToolNames) {
+          eventSource = guardAuthoritativeComboToolEvents(eventSource, declaredToolNames);
+        }
         const preflight = await preflightAdapterEvents(eventSource);
         if (preflight.error || preflight.empty) {
           runTurnAbort.abort();
@@ -411,7 +449,7 @@ export async function executeResponsesRunTurn(
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
           declaredToolNames,
-          enforceDeclaredToolNames: inboundWire !== "chat" && inboundWire !== "anthropic",
+          enforceDeclaredToolNames,
           toolParameterSchemas,
           ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
           ...(routedCompaction ? { compaction: true } : {}),
@@ -467,6 +505,14 @@ export async function executeResponsesRunTurn(
       events = runTurnEvents;
     }
     if (options.comboAttempt) {
+      if (enforceDeclaredToolNames) {
+        const undeclared = events
+          .map(event => undeclaredRunTurnToolName(event, declaredToolNames))
+          .find((name): name is string => name !== undefined);
+        if (undeclared !== undefined) {
+          return formatErrorResponse(502, "upstream_error", undeclaredToolCallMessage(undeclared));
+        }
+      }
       const firstMeaningful = events.find(event => event.type !== "heartbeat");
       if (!firstMeaningful || firstMeaningful.type === "error") {
         const message = firstMeaningful?.type === "error"
@@ -482,7 +528,7 @@ export async function executeResponsesRunTurn(
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       declaredToolNames,
-      enforceDeclaredToolNames: inboundWire !== "chat" && inboundWire !== "anthropic",
+      enforceDeclaredToolNames,
       toolParameterSchemas,
       freeformToolNames,
       toolSearchToolNames,
