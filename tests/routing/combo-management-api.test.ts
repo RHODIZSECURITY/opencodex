@@ -385,6 +385,25 @@ describe("combo management API", () => {
         reasoningEffortMode: "adaptive",
         imageInput: "disabled",
       });
+
+      // A combo that never opted into either capability must stay sparse across the same
+      // dashboard-shaped round trip; omission is preservation, not materialization of defaults.
+      const sparseCreated = await comboApi(config, "PUT", "/api/combos", {
+        id: "sparse-capabilities",
+        combo: { targets: [{ provider: "a", model: "m1" }] },
+      });
+      expect(sparseCreated?.status).toBe(200);
+      const sparseUpdated = await comboApi(config, "PUT", "/api/combos", {
+        id: "sparse-capabilities",
+        combo: { targets: [{ provider: "a", model: "m1" }] },
+      });
+      expect(sparseUpdated?.status).toBe(200);
+      expect((await responseJson(sparseUpdated)).combo).not.toHaveProperty("reasoningEffortMode");
+      expect(config.combos?.["sparse-capabilities"]).not.toHaveProperty("reasoningEffortMode");
+      expect(config.combos?.["sparse-capabilities"]).not.toHaveProperty("imageInput");
+      const persistedSparse = JSON.parse(readFileSync(getConfigPath(), "utf8")) as OcxConfig;
+      expect(persistedSparse.combos?.["sparse-capabilities"]).not.toHaveProperty("reasoningEffortMode");
+      expect(persistedSparse.combos?.["sparse-capabilities"]).not.toHaveProperty("imageInput");
     });
   });
 
@@ -461,6 +480,20 @@ describe("combo management API", () => {
       expect(listed.combos).toEqual([expect.objectContaining({
         id: "limited", imageInput: "disabled",
       })]);
+
+      // Explicitly restoring the default clears the stored override instead of pinning "auto".
+      const reset = await comboApi(config, "PUT", "/api/combos", {
+        id: "limited",
+        combo: {
+          targets: [{ provider: "a", model: "m1" }],
+          imageInput: "auto",
+        },
+      });
+      expect(reset?.status).toBe(200);
+      expect((await responseJson(reset)).combo).not.toHaveProperty("imageInput");
+      expect(config.combos?.limited).not.toHaveProperty("imageInput");
+      const persisted = JSON.parse(readFileSync(getConfigPath(), "utf8")) as OcxConfig;
+      expect(persisted.combos?.limited).not.toHaveProperty("imageInput");
     });
   });
 
