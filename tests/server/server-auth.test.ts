@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { saveCodexAccountCredential } from "../../src/codex/account-store";
 import { clearCodexWebSocketRegistry, getTrackedCodexWebSocketCountForAccount } from "../../src/codex/websocket-registry";
 import { INTERNAL_DEADLINE_MS, SERVER_BUDGET_MS } from "../helpers/test-budget";
+import { BOUNDED_BODY_TIMEOUT_MS } from "../../src/lib/bounded-body";
 import { clearAccountNeedsReauth, clearAccountQuota, getAccountQuota, isAccountNeedsReauth, markAccountNeedsReauth, updateAccountQuota } from "../../src/codex/auth-api";
 import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
@@ -3555,19 +3556,30 @@ describe("server local API auth", () => {
     }
   });
 
-  // Stall past BOUNDED_BODY_TIMEOUT_MS (5s). The old 7s test budget left ~1.9s of
-  // headroom and timed out on windows-latest under runner contention.
+  // Schedule the final byte only after the stream has already delivered its prefix and the
+  // bounded reader asks for more. The former timer started in start(), before the proxy even
+  // began inspecting the clone, so a loaded Windows runner could spend >100ms reaching the
+  // inspector and make the nominal 5.1s suffix beat its 5s deadline. Anchoring the delay to the
+  // second pull makes the ordering deterministic while still letting the untouched client body
+  // finish before Bun.serve's 10s idle timeout.
   test("stalled 400 body timeout never authorizes a pool retry", async () => {
     const prefix = unsupportedModelBody().slice(0, -1);
     const suffix = "}";
     const body = prefix + suffix;
+    let stage: "prefix" | "wait" | "done" = "prefix";
     const harness = await startPoolRetryHarness(() => rejectionResponse(new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(prefix));
+      pull(controller) {
+        if (stage === "prefix") {
+          stage = "wait";
+          controller.enqueue(new TextEncoder().encode(prefix));
+          return;
+        }
+        if (stage !== "wait") return;
+        stage = "done";
         setTimeout(() => {
           controller.enqueue(new TextEncoder().encode(suffix));
           controller.close();
-        }, 5_100);
+        }, BOUNDED_BODY_TIMEOUT_MS + 1_000);
       },
     })));
     try {

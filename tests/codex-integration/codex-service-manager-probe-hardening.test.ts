@@ -13,6 +13,11 @@ import { inspectNativeCodexOwnership } from "../../src/integrations/native/owner
 import { setTrustedWindowsSystemDirectoryResolverForTests } from "../../src/lib/windows-elevation";
 import { getDefaultConfig } from "../../src/config";
 import { startServer } from "../../src/server";
+import * as windowsAcl from "../../src/lib/windows-secret-acl";
+import {
+  resetWindowsPrincipalForTests,
+  setSyntheticWindowsPrincipalForTests,
+} from "../../src/lib/windows-user-principal";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 let home = "";
@@ -28,10 +33,23 @@ beforeEach(() => {
   writeFileSync(join(trustedSystem32, "schtasks.exe"), "");
   writeFileSync(join(trustedSystem32, "sc.exe"), "");
   setTrustedWindowsSystemDirectoryResolverForTests(() => trustedSystem32);
+  // This suite simulates the Windows scheduler boundary. Do not couple it to the
+  // hosted runner's PowerShell/SID/NTFS ACL state while startServer acquires its
+  // unrelated spend-ledger owner.
+  setSyntheticWindowsPrincipalForTests("*S-1-5-21-1-2-3-1001");
+  const aclSuccess = { success: true, exitCode: 0, timedOut: false, stdout: "" };
+  windowsAcl.setIcaclsRunnerForTests(() => aclSuccess);
+  windowsAcl.setAsyncIcaclsRunnerForTests(async () => aclSuccess);
+  windowsAcl.resetHardenedStateForTests();
 });
 
 afterEach(() => {
   setTrustedWindowsSystemDirectoryResolverForTests(null);
+  windowsAcl.setIcaclsRunnerForTests(null);
+  windowsAcl.setAsyncIcaclsRunnerForTests(null);
+  windowsAcl.resetHardenedStateForTests();
+  setSyntheticWindowsPrincipalForTests(null);
+  resetWindowsPrincipalForTests();
   removeTreeWithRetry(home);
 });
 
