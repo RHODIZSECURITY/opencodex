@@ -434,6 +434,15 @@ function buildResponseJSONWithBudget(
         }
         flushToolCall();
         const effectiveName = normalizeDeclaredToolName(e.name, options?.declaredToolNames);
+        if (options?.enforceDeclaredToolNames === true && !options.declaredToolNames) {
+          errorEvent = {
+            type: "error",
+            message: "declared-tool enforcement requires an explicit request tool catalog",
+            status: 502,
+            errorType: "upstream_error",
+          };
+          break;
+        }
         if (
           options?.declaredToolNames
           && options.enforceDeclaredToolNames !== false
