@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManagementRequest as Request } from "../helpers/management-auth";
 import { comboProviderFactory } from "../helpers/combo-provider";
+import { chatStream, chatSuccess } from "../helpers/combo-failover-upstream";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -18,8 +19,10 @@ import {
   responseStatePersistPendingForTests,
 } from "../../src/responses/state";
 import { handleResponses } from "../../src/server/responses";
+import type { ProviderAdapter } from "../../src/adapters/base";
 import { handleClaudeMessages } from "../../src/server/claude-messages";
-import type { OcxConfig } from "../../src/types";
+import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../../src/types";
+import { createRequestExecutionBudget } from "../../src/lib/request-execution-budget";
 
 /**
  * Zero-output combo failover driven by a bare Responses SSE `error` event.
@@ -45,6 +48,35 @@ let previousHome: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 const provider = comboProviderFactory(() => undefined);
+const actualResolver = await import("../../src/server/adapter-resolve");
+const actualResolveAdapter = actualResolver.resolveAdapter;
+let customRunTurn: NonNullable<ProviderAdapter["runTurn"]> | undefined;
+
+mock.module("../../src/server/adapter-resolve", () => ({
+  ...actualResolver,
+  resolveAdapter(
+    providerConfig: OcxProviderConfig,
+    cacheRetention?: "none" | "short" | "long",
+    providerId?: string,
+  ) {
+    if (providerConfig.adapter === "test-run-turn") {
+      const adapter: ProviderAdapter = {
+        name: "test-run-turn",
+        buildRequest: () => ({ url: providerConfig.baseUrl, method: "POST", headers: {}, body: "" }),
+        async *parseStream(): AsyncGenerator<AdapterEvent> {
+          yield { type: "error", message: "test runTurn adapter does not use parseStream" };
+        },
+        async runTurn(parsed, incoming, emit) {
+          if (!customRunTurn) throw new Error("custom runTurn not installed");
+          await customRunTurn(parsed, incoming, emit);
+        },
+      };
+      return adapter;
+    }
+    return actualResolveAdapter(providerConfig, cacheRetention, providerId);
+  },
+}));
+
 let releaseSpendHome: (() => void) | undefined;
 
 beforeEach(() => {
@@ -59,6 +91,7 @@ beforeEach(() => {
   clearComboTargetCooldowns();
   clearKeyCooldowns();
   clearCodexUpstreamHealth();
+  customRunTurn = undefined;
   clearRequestLogsForTests();
   clearResponseStateForTests();
 });
@@ -131,6 +164,21 @@ function comboConfig(
     providers,
     combos: { free: { strategy: "failover", targets, ...extra } },
   };
+}
+
+
+type HandleOptions = NonNullable<Parameters<typeof handleResponses>[3]>;
+
+async function post(
+  config: OcxConfig,
+  raw: Record<string, unknown> = {},
+  options: HandleOptions = {},
+): Promise<Response> {
+  return handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "combo/free", input: "hello", stream: false, ...raw }),
+  }), config, { model: "", provider: "" }, options);
 }
 
 describe("combo zero-output bare Responses error failover", () => {
@@ -514,6 +562,139 @@ describe("combo zero-output bare Responses error failover", () => {
       resolvedModel: "nvidia/nemotron",
       attempts: [{ ordinal: 1, provider: "openrouterFixture", model: "nvidia/nemotron" }],
     });
+  });
+
+  test("last-resort cooldown policy defers an available final target for a recoverable primary", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    const a = serve(() => {
+      aHits += 1;
+      return aHits === 1
+        ? Response.json({ error: { message: "rate limited" } }, { status: 429 })
+        : chatSuccess("primary recovered", "m1");
+    });
+    const b = serve(() => {
+      bHits += 1;
+      return chatSuccess("last resort", "m2");
+    });
+    const providers = {
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    };
+
+    const prior = await post(comboConfig(
+      providers,
+      [{ provider: "a", model: "m1" }],
+      { cooldownMs: 100 },
+    ));
+    expect(prior.status).toBe(429);
+    await prior.text();
+
+    const fresh = await post(comboConfig(
+      providers,
+      [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }],
+      { cooldownMs: 100, waitForCooldownMs: 500, cooldownWaitPolicy: "last-resort" },
+    ));
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toContain("primary recovered");
+    expect([aHits, bHits]).toEqual([2, 0]);
+  });
+
+  test("authoritative Anthropic combo catalog rejects a stale runTurn tool before commit", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      aHits += 1;
+      emit({ type: "tool_call_start", id: "call-stale", name: "mcp__github__list_branches" });
+      emit({ type: "tool_call_delta", arguments: "{}" });
+      emit({ type: "tool_call_end" });
+      emit({ type: "done", endTurn: true });
+    };
+    const b = serve(() => {
+      bHits += 1;
+      return chatStream("runTurn stale-tool backup");
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, {
+      stream: true,
+      tools: [{
+        type: "function",
+        name: "declared_only",
+        description: "Current client tool catalog.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      }],
+    }, {
+      inboundWire: "anthropic",
+      authoritativeClientToolCatalog: true,
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("runTurn stale-tool backup");
+    expect(text).not.toContain("mcp__github__list_branches");
+    expect([aHits, bHits]).toEqual([1, 1]);
+  });
+
+  test("authoritative Anthropic combo catalog rejects a stale buffered runTurn tool before commit", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      aHits += 1;
+      emit({ type: "tool_call_start", id: "call-stale-buffered", name: "mcp__github__list_branches" });
+      emit({ type: "tool_call_delta", arguments: "{}" });
+      emit({ type: "tool_call_end" });
+      emit({ type: "done", endTurn: true });
+    };
+    const b = serve(() => {
+      bHits += 1;
+      return chatSuccess("buffered runTurn stale-tool backup", "m2");
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, {
+      stream: false,
+      tools: [{
+        type: "function",
+        name: "declared_only",
+        description: "Current client tool catalog.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      }],
+    }, {
+      inboundWire: "anthropic",
+      authoritativeClientToolCatalog: true,
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("buffered runTurn stale-tool backup");
+    expect(text).not.toContain("mcp__github__list_branches");
+    expect([aHits, bHits]).toEqual([1, 1]);
+  });
+
+
+  test("an exhausted shared budget refuses the first combo target before upstream dispatch", async () => {
+    let hits = 0;
+    const upstream = serve(() => {
+      hits += 1;
+      return chatSuccess("must not dispatch", "m1");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(upstream), "key-a"),
+    });
+    const exhausted = createRequestExecutionBudget(undefined, "combo-initial-denied");
+    // Simulate sends already consumed by an enclosing leg of the same logical request. A
+    // one-target combo's declared total is four, so its first reservation must now be refused.
+    exhausted.used = 4;
+
+    const response = await post(config, {}, { sendBudget: exhausted });
+    const text = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(text).toContain("request_send_budget_exhausted");
+    expect(hits).toBe(0);
   });
 
 });

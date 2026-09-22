@@ -30,6 +30,19 @@ describe("explicit server cooldown versus local wait allowance", () => {
     expect(earliestComboCooldownExpiry(combo, [target], now)).toBe(now + 3_600_000);
   });
 
+  test("pathological server delays are safety-bounded to one day", () => {
+    const oneDay = 24 * 60 * 60_000;
+    expect(parseRetryAfterMs("31536000", now, { preserveServerDelay: true })).toBe(oneDay);
+    expect(parseRetryAfterMs(new Date(now + 365 * oneDay).toUTCString(), now, {
+      preserveServerDelay: true,
+    })).toBe(oneDay);
+
+    coolComboTarget(combo, target, { now, retryAfter: "31536000" });
+    expect(earliestComboCooldownExpiry(combo, [target], now)).toBe(now + oneDay);
+    expect(isComboTargetInCooldown(combo, target, now + oneDay - 1)).toBe(true);
+    expect(isComboTargetInCooldown(combo, target, now + oneDay)).toBe(false);
+  });
+
   test("a configured fallback is still bounded to ten minutes", () => {
     coolComboTarget(combo, target, { now, cooldownMs: 99_000_000 });
     expect(earliestComboCooldownExpiry(combo, [target], now)).toBe(now + 600_000);

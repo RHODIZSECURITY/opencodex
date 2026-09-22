@@ -356,6 +356,38 @@ describe("combo management API", () => {
     });
   });
 
+  test("PUT preserves advanced capability policies omitted by dashboard-shaped updates", async () => {
+    await withTempHome(async () => {
+      const config = baseConfig({ combos: undefined });
+      saveConfig(config);
+      const created = await comboApi(config, "PUT", "/api/combos", {
+        id: "capabilities",
+        combo: {
+          reasoningEffortMode: "adaptive",
+          imageInput: "disabled",
+          targets: [{ provider: "a", model: "m1" }],
+        },
+      });
+      expect(created?.status).toBe(200);
+
+      const dashboardUpdate = await comboApi(config, "PUT", "/api/combos", {
+        id: "capabilities",
+        combo: { targets: [{ provider: "a", model: "m1" }] },
+      });
+      expect(dashboardUpdate?.status).toBe(200);
+      expect((await responseJson(dashboardUpdate)).combo).toMatchObject({
+        reasoningEffortMode: "adaptive",
+        imageInput: "disabled",
+      });
+
+      const persisted = JSON.parse(readFileSync(getConfigPath(), "utf8")) as OcxConfig;
+      expect(persisted.combos?.capabilities).toMatchObject({
+        reasoningEffortMode: "adaptive",
+        imageInput: "disabled",
+      });
+    });
+  });
+
   test("PUT resets an explicit zero waitForCooldownMs to the sparse default", async () => {
     await withTempHome(async () => {
       const config = baseConfig({ combos: undefined });

@@ -15,6 +15,7 @@ interface TargetCooldown {
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 10 * 60_000;
+const MAX_SERVER_COOLDOWN_MS = 24 * 60 * 60_000;
 /** Short cooldown for request-rate 429s (for example provider code 1302) that omit Retry-After. */
 export const COMBO_REQUEST_RATE_COOLDOWN_MS = 5_000;
 /** Slow failed attempts get a longer floor so short combo cooldowns do not re-pay the same stall. */
@@ -124,11 +125,12 @@ export function parseRetryAfterMs(
 ): number | undefined {
   const text = value?.trim();
   if (!text) return undefined;
-  // A local wait ceiling must not make an explicit upstream reset expire early.
-  // Keep legacy bounded parsing for other callers. The opt-in stores a timestamp;
-  // the combo picker still independently limits how long a live request waits.
+  // A local wait ceiling must not make a normal explicit upstream reset expire early.
+  // Keep legacy bounded parsing for other callers, while the opt-in permits multi-hour
+  // directives up to a one-day safety ceiling so a hostile/malformed Retry-After cannot
+  // quarantine a target for months or effectively forever.
   const maximum = options?.preserveServerDelay === true
-    ? Number.MAX_SAFE_INTEGER - Math.max(0, now)
+    ? MAX_SERVER_COOLDOWN_MS
     : MAX_COOLDOWN_MS;
   if (/^\d+(?:\.\d+)?$/.test(text)) {
     const seconds = Number(text);
@@ -252,8 +254,8 @@ export function coolComboTarget(
     ?? resetDelayMs
     ?? fallbackCooldownMs;
   targetCooldowns.set(cooldownMapKey(comboId, target), {
-    // Only the locally chosen fallback is capped at ten minutes. An explicit
-    // server lower bound (including one hour) remains authoritative.
+    // Locally chosen fallbacks stay capped at ten minutes. Explicit server delays may
+    // be longer (for example one hour) but are already bounded to one day above.
     cooldownUntil: now + (serverDelayMs ?? Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS)),
   });
   sweepExpiredOnWrite(now);

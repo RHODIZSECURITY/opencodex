@@ -188,6 +188,12 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       ...(!Object.hasOwn(requestedCombo, "defaultEffortMode") && previous?.defaultEffortMode !== undefined
         ? { defaultEffortMode: previous.defaultEffortMode }
         : {}),
+      ...(!Object.hasOwn(requestedCombo, "reasoningEffortMode") && previous?.reasoningEffortMode !== undefined
+        ? { reasoningEffortMode: previous.reasoningEffortMode }
+        : {}),
+      ...(!Object.hasOwn(requestedCombo, "imageInput") && previous?.imageInput !== undefined
+        ? { imageInput: previous.imageInput }
+        : {}),
     };
     const error = comboConfigError(id, effectiveCombo, config.providers, {
       requireEnabledTarget: true,
