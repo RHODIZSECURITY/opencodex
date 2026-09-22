@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { repoPath, repoRoot } from "../helpers/repo-root";
 import { withInstalledShim } from "../helpers/codex-shim-install-fixture";
+
+// The install probe intentionally observes a successful launcher for 5s. The default Bun
+// test timeout is also 5s, so an actually healthy probe can lose to the harness deadline.
+setDefaultTimeout(15_000);
 
 describe("version-manager shim destruction (#2412)", () => {
   test("a destroyed shim diagnostic does not open a non-file launcher", () => {

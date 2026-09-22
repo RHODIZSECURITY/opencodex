@@ -390,7 +390,7 @@ failures and 5xx attempts lasting at least 15 seconds receive a 60-second local 
 while explicit Retry-After and reset timestamps remain authoritative. The management API persists
 an explicit last-resort policy across dashboard-shaped updates even though the dashboard does not
 expose that advanced field. Regression coverage lives in `tests/codex-integration/combos.test.ts`
-and `tests/server/server-combo-failover-e2e.test.ts`.
+and `tests/server/server-combo-zero-output-failover.test.ts`.
 
 Canonical Spark Lite metadata follows the final serialized model and surviving nonempty Lite tool catalog; see [Responses transport](transports/responses.md).
 
