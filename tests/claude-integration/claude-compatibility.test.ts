@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeClaudeCompatibility, isClaudeCompatibilityMode } from "../../src/claude/compatibility";
+import { analyzeClaudeCompatibility, claudeRequestUsesDeferredToolCatalog, isClaudeCompatibilityMode } from "../../src/claude/compatibility";
 
 // Shapes from Anthropic's thinking, tool-search, strict-tool-use and Messages docs:
 // https://platform.claude.com/docs/en/build-with-claude/thinking
@@ -76,6 +76,23 @@ describe("Claude translated compatibility", () => {
       tools: [{ ...functionTool, strict: false, defer_loading: false, allowed_callers: ["direct"] }],
       messages: [{ role: "assistant", content: [{ type: "tool_use", name: "lookup", id: "t1", input: {}, caller: { type: "direct" } }] }],
     }, { mode: "enforce" })).toEqual({ decision: "allow", compatible: true, featureCodes: [] });
+  });
+
+  test("tool-catalog authority stands down only for explicit deferred discovery semantics", () => {
+    expect(claudeRequestUsesDeferredToolCatalog({ tools: [functionTool] })).toBe(false);
+    expect(claudeRequestUsesDeferredToolCatalog({
+      tools: [{ ...functionTool, defer_loading: true }],
+    })).toBe(true);
+    expect(claudeRequestUsesDeferredToolCatalog({
+      defer_tools: true,
+      tools: [functionTool],
+    })).toBe(true);
+    expect(claudeRequestUsesDeferredToolCatalog({
+      tools: [{ type: "tool_search_tool_regex_20251119", name: "tool_search" }],
+    })).toBe(true);
+    expect(claudeRequestUsesDeferredToolCatalog(
+      userBlock({ type: "tool_result", tool_use_id: "t1", content: [{ type: "tool_reference", tool_name: "lookup" }] }),
+    )).toBe(true);
   });
 
   test("cache hints, examples and thinking settings are explicitly tolerated degradation", () => {

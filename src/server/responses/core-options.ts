@@ -94,6 +94,12 @@ export interface HandleResponsesOptions {
    * it. Omitted means a genuine Responses inbound.
    */
   inboundWire?: InboundWire;
+  /**
+   * Internal translated-client assertion: the caller supplied its complete current tool catalog.
+   * When true, chat/Anthropic replay may enforce declared-tool membership just like Responses.
+   * Omitted keeps the partial/deferred-catalog contract for those wires (#4735).
+   */
+  authoritativeClientToolCatalog?: boolean;
   /** Internal transport identity for route-scoped upstream compatibility policy. */
   inboundTransport?: "websocket";
   /**

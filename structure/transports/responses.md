@@ -657,13 +657,23 @@ executes a top-level tool call, so a hallucinated `apply_patch` — which under 
 as a nested `tools.apply_patch(...)` helper inside `exec` — is refused before it reaches the
 runtime, where it previously surfaced as a bare `aborted` with the file untouched.
 
-The `chat` and `anthropic` inbound wires relay the call instead. This is a deliberate reversal of
-#1700's scope for those two wires, not an oversight. Both vendor specs make the client's own runner
-responsible for validating a tool call and then executing or denying it, and harnesses on those
-endpoints defer part of their catalog to conserve prompt tokens and discover the rest at runtime.
-Enforcing membership against a partial catalog killed those streams mid-turn with a 502 and cost the
-caller the whole turn. This proxy executes no tool call on any wire, so scoping enforcement off
-these two moves the decision to the party that already makes it rather than removing it.
+The `chat` and generic `anthropic` inbound wires relay the call instead. This is a deliberate
+reversal of #1700's scope for those two wires, not an oversight. Both vendor specs make the
+client's own runner responsible for validating a tool call and then executing or denying it, and
+harnesses on those endpoints defer part of their catalog to conserve prompt tokens and discover
+the rest at runtime. Enforcing membership against a partial catalog killed those streams mid-turn
+with a 502 and cost the caller the whole turn. This proxy executes no tool call on any wire, so
+scoping enforcement off these two moves the decision to the party that already makes it rather
+than removing it.
+
+Translated Claude Code requests have a narrower exception. Claude Code normally disables MCP
+deferral when `ANTHROPIC_BASE_URL` points at OpenCodex, so a request from a recognized
+`claude-cli/` or `claude-code/` user agent that has no explicit deferred-tool, tool-search, or
+tool-reference semantics owns a complete current-turn tool catalog. `claude-messages.ts` carries
+that fact as `authoritativeClientToolCatalog`; adapter streaming and buffered delivery then enable
+declared-tool enforcement. In a combo child, a stale provider-side tool identity therefore fails
+before client-visible output commits and can advance to the next target. Explicit deferred
+discovery leaves the historical Anthropic passthrough contract unchanged.
 
 An explicitly empty catalog still authorizes nothing on the wire that enforces. A request declaring
 an empty tool list is making a statement rather than omitting one, which is how the passthrough
@@ -675,7 +685,8 @@ and continuation-state suppression as well as the refusal, and it stands down on
 `authMode: "forward"` and for a request that declares no catalog at all.
 
 `src/server/responses/run-turn-execution.ts` and `src/server/responses/adapter-delivery.ts` set the
-flag from `inboundWire` on the streaming, buffered, and JSON paths alike, so the three cannot drift.
+flag from `inboundWire` plus the internal authoritative-catalog assertion on the streaming,
+buffered, and JSON paths alike, so the three cannot drift.
 
 ### Selection outlives the declaration check
 

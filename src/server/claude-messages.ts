@@ -23,7 +23,7 @@ import { resolveAlias, claudeCodeNativeAlias } from "../claude/alias";
 import { recordDesktopRequest } from "../claude/desktop-health";
 import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
-import { analyzeClaudeCompatibility, isClaudeCompatibilityMode } from "../claude/compatibility";
+import { analyzeClaudeCompatibility, claudeRequestUsesDeferredToolCatalog, isClaudeCompatibilityMode } from "../claude/compatibility";
 import {
   applyReplayRefusalClientHeaders,
   carryReplayRefusal,
@@ -84,6 +84,11 @@ import {
 } from "./fast-row";
 
 type Rec = Record<string, unknown>;
+
+function isClaudeCodeClientRequest(req: Request): boolean {
+  const userAgent = req.headers.get("user-agent")?.trim() ?? "";
+  return /^(?:claude-cli|claude-code)\//i.test(userAgent);
+}
 
 /**
  * Decode a Claude selector that may carry the fast marker.
@@ -678,6 +683,7 @@ async function handleClaudeMessagesWithBudget(
   let effortRow: ParsedEffortRowId | null = null;
   let fastRow: ParsedFastRowId | null = null;
   let requestedModel = "";
+  let authoritativeClientToolCatalog = false;
   try {
     anthropicBody = await readAnthropicBody(req, translatorBudget, resolveInboundBodyLimitBytes(config.maxInboundBodyBytes));
     // Defensive [1m] strip (devlog 138): clients normally remove the context-variant
@@ -746,6 +752,13 @@ async function handleClaudeMessagesWithBudget(
     if (!effortRow && !fastRow && isRec(anthropicBody) && wantsNativePassthrough(req, config, requestPolicy, anthropicBody.model)) {
       return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
     }
+    // Claude Code disables deferred MCP tool discovery when ANTHROPIC_BASE_URL points at a
+    // non-first-party host. In that default routed mode its current tools array is therefore a
+    // complete authorization snapshot, and a stale tool identity from an earlier target/session
+    // must not be relayed back to Claude. Keep the historical partial-catalog contract for generic
+    // Anthropic clients and for Claude requests that explicitly opt into tool deferral (#4735).
+    authoritativeClientToolCatalog = isClaudeCodeClientRequest(req)
+      && !claudeRequestUsesDeferredToolCatalog(anthropicBody);
     // Capture source semantics before effort rewriting or translation drops fields.
     // This policy is uniform across translated targets, including later fallback attempts.
     const compatibilityMode: unknown = config.claudeCode?.compatibility;
@@ -971,6 +984,7 @@ async function handleClaudeMessagesWithBudget(
     // Without this the replay would look native and a Responses-scoped wire default
     // would fire, disagreeing with the pre-flight decision above.
     inboundWire: "anthropic",
+    ...(authoritativeClientToolCatalog ? { authoritativeClientToolCatalog: true } : {}),
     claudeGoAffinity: { sessionLane: claudeGoSessionLane },
     claudeNativeSessionId,
     stripClaudeMainAuthForNoncanonicalForward: true,

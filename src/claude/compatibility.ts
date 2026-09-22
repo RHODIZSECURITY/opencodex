@@ -168,6 +168,21 @@ function detectFeatures(body: unknown, anthropicBeta?: string): Set<ClaudeFeatur
   return codes;
 }
 
+/**
+ * Whether the current Anthropic request is explicitly using a partial/deferred tool catalog.
+ *
+ * A translated Claude Code request normally carries its full MCP catalog because Claude disables
+ * tool search when ANTHROPIC_BASE_URL is a non-first-party host. When the request explicitly opts
+ * back into deferred discovery, however, an undeclared tool name can be legitimate and must stay
+ * under the client runner's authority (#4735).
+ */
+export function claudeRequestUsesDeferredToolCatalog(body: unknown): boolean {
+  const detected = detectFeatures(body);
+  return detected.has("deferred_tools")
+    || detected.has("tool_search")
+    || detected.has("tool_reference");
+}
+
 export interface ClaudeCompatibilityResult {
   featureCodes: ClaudeFeatureCode[];
   compatible: boolean;
