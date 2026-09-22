@@ -1716,6 +1716,33 @@ describe("declared tool enforcement is separate from declared tool normalization
     expect(output.find(item => item.name === "default.lookup")).toBeUndefined();
   });
 
+  test("explicit enforcement without a declared catalog fails closed in buffered mode", () => {
+    const json = buildResponseJSON(undeclaredCall, "routed/model", {
+      enforceDeclaredToolNames: true,
+    });
+    expect(json.status).toBe("failed");
+    expect((json.error as Record<string, unknown>).message).toContain(
+      "requires an explicit request tool catalog",
+    );
+    expect(json.output).toEqual([]);
+  });
+
+  test("explicit enforcement without a declared catalog fails closed in streaming mode", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(
+      replay(undeclaredCall),
+      "routed/model",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { enforceDeclaredToolNames: true },
+    ));
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(true);
+    expect(JSON.stringify(frames)).toContain("requires an explicit request tool catalog");
+    expect(JSON.stringify(frames)).not.toContain('"name":"todo_write"');
+  });
+
   test("enforcement stays on by default, so the Responses wire keeps failing closed (#1700)", () => {
     const json = buildResponseJSON(undeclaredCall, "routed/model", {
       declaredToolNames: new Set(["lookup"]),

@@ -1003,6 +1003,23 @@ export function bridgeToResponsesSSE(
               }
               if (currentToolCall) closeCurrentToolCall();
               const effectiveName = normalizeDeclaredToolName(event.name, options?.declaredToolNames);
+              if (options?.enforceDeclaredToolNames === true && !options.declaredToolNames) {
+                const failure = responseError(
+                  502,
+                  "upstream_error",
+                  "declared-tool enforcement requires an explicit request tool catalog",
+                );
+                emit("response.failed", {
+                  response: {
+                    ...responseSnapshot("failed", finishedItems),
+                    error: failure,
+                    last_error: failure,
+                  },
+                });
+                reportTerminal("failed");
+                terminalEvent = true;
+                break;
+              }
               const codeModeHelperName = effectiveName === "exec" && event.name !== effectiveName
                 ? event.name
                 : undefined;
