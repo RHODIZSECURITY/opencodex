@@ -51,9 +51,9 @@ function baseConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
     port: 10100,
     defaultProvider: "a",
     providers: {
-      a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1"] },
-      b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", models: ["m2"] },
-      c: { adapter: "openai-chat", baseUrl: "https://c.example/v1", apiKey: "kc", models: ["m3"] },
+      a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", liveModels: false, models: ["m1"] },
+      b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", liveModels: false, models: ["m2"] },
+      c: { adapter: "openai-chat", baseUrl: "https://c.example/v1", apiKey: "kc", liveModels: false, models: ["m3"] },
     },
     combos: {
       free: {
