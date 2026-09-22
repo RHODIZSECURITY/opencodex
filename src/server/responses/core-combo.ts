@@ -73,6 +73,8 @@ import {
 import { preflightComboStreamResponse } from "./combo-stream-preflight";
 import { streamingContextOverflowResponse, jsonContextOverflowResponse } from "./context-overflow";
 import { mandatoryResponsesReasoningReplayUnavailable } from "./core-replay";
+import { SEND_BUDGET_EXHAUSTED_CODE } from "../../lib/errors";
+import { SendBudgetExhaustedError } from "../../lib/upstream-retry";
 
 /**
  * Sends one combo target may run on its own before the ladder moves on. A target is a whole
@@ -448,8 +450,15 @@ export async function executeComboResponses(
       targetKey: `${pick.target.provider}/${pick.target.model}`,
       countedExternally: true,
     });
-    if (hopDecision && hopDecision.allowed) hopDecision.permit.use();
-    else if (hopDecision && !firstComboTarget) {
+    if (hopDecision && hopDecision.allowed) {
+      hopDecision.permit.use();
+    } else if (hopDecision && firstComboTarget) {
+      // The shared request budget can already be spent before combo dispatch (for example by
+      // an enclosing recovery leg). A denied first reservation is a hard local refusal: sending
+      // anyway would bypass the only request-wide ceiling and make the accounting lie.
+      const error = new SendBudgetExhaustedError("combo/" + comboId);
+      return formatErrorResponse(429, SEND_BUDGET_EXHAUSTED_CODE, error.message);
+    } else if (hopDecision) {
       // Out of budget is not this target's failure. The established exhaustion contract is to
       // return the last real upstream answer with its status, headers and any quota body
       // intact rather than to mint a synthetic error, and a later target only exists because

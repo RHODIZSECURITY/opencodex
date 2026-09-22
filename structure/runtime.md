@@ -387,8 +387,10 @@ and local to the combos that require it instead of changing cooldown ordering gl
 `src/combos/failover.ts` also prevents a short combo cooldown from immediately retrying known
 persistent provider failures or a slow failed 5xx attempt. Credential/billing/provider-quota
 failures and 5xx attempts lasting at least 15 seconds receive a 60-second local fallback floor,
-while explicit Retry-After and reset timestamps remain authoritative. The management API persists
-an explicit last-resort policy across dashboard-shaped updates even though the dashboard does not
+while explicit Retry-After and reset timestamps remain authoritative; Retry-After may extend
+beyond the ordinary ten-minute fallback cap but is safety-bounded to one day so malformed or
+hostile headers cannot quarantine a target indefinitely. The management API persists an explicit
+last-resort policy across dashboard-shaped updates even though the dashboard does not
 expose that advanced field. Regression coverage lives in `tests/codex-integration/combos.test.ts`
 and `tests/server/server-combo-zero-output-failover.test.ts`.
 

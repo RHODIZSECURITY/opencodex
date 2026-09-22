@@ -22,6 +22,7 @@ import { handleResponses } from "../../src/server/responses";
 import type { ProviderAdapter } from "../../src/adapters/base";
 import { handleClaudeMessages } from "../../src/server/claude-messages";
 import type { AdapterEvent, OcxConfig, OcxProviderConfig } from "../../src/types";
+import { createRequestExecutionBudget } from "../../src/lib/request-execution-budget";
 
 /**
  * Zero-output combo failover driven by a bare Responses SSE `error` event.
@@ -667,6 +668,29 @@ describe("combo zero-output bare Responses error failover", () => {
     expect(text).toContain("buffered runTurn stale-tool backup");
     expect(text).not.toContain("mcp__github__list_branches");
     expect([aHits, bHits]).toEqual([1, 1]);
+  });
+
+
+  test("an exhausted shared budget refuses the first combo target before upstream dispatch", async () => {
+    let hits = 0;
+    const upstream = serve(() => {
+      hits += 1;
+      return chatSuccess("must not dispatch", "m1");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(upstream), "key-a"),
+    });
+    const exhausted = createRequestExecutionBudget(undefined, "combo-initial-denied");
+    // Simulate sends already consumed by an enclosing leg of the same logical request. A
+    // one-target combo's declared total is four, so its first reservation must now be refused.
+    exhausted.used = 4;
+
+    const response = await post(config, {}, { sendBudget: exhausted });
+    const text = await response.text();
+
+    expect(response.status).toBe(429);
+    expect(text).toContain("request_send_budget_exhausted");
+    expect(hits).toBe(0);
   });
 
 });
