@@ -3556,41 +3556,27 @@ describe("server local API auth", () => {
     }
   });
 
-  // Schedule the final byte only after the stream has already delivered its prefix and the
-  // bounded reader asks for more. The former timer started in start(), before the proxy even
-  // began inspecting the clone, so a loaded Windows runner could spend >100ms reaching the
-  // inspector and make the nominal 5.1s suffix beat its 5s deadline. Anchoring the delay to the
-  // second pull makes the ordering deterministic while still letting the untouched client body
-  // finish before Bun.serve's 10s idle timeout.
+  // Start the suffix delay on the reader's second pull; construction-time scheduling raced the
+  // 5s inspector deadline on loaded Windows runners.
   test("stalled 400 body timeout never authorizes a pool retry", async () => {
-    const prefix = unsupportedModelBody().slice(0, -1);
-    const suffix = "}";
-    const body = prefix + suffix;
-    let stage: "prefix" | "wait" | "done" = "prefix";
+    const prefix = unsupportedModelBody().slice(0, -1), suffix = "}";
+    let stage = 0;
     const harness = await startPoolRetryHarness(() => rejectionResponse(new ReadableStream({
       pull(controller) {
-        if (stage === "prefix") {
-          stage = "wait";
-          controller.enqueue(new TextEncoder().encode(prefix));
-          return;
-        }
-        if (stage !== "wait") return;
-        stage = "done";
-        setTimeout(() => {
-          controller.enqueue(new TextEncoder().encode(suffix));
-          controller.close();
-        }, BOUNDED_BODY_TIMEOUT_MS + 1_000);
+        if (stage === 0) { stage = 1; controller.enqueue(new TextEncoder().encode(prefix)); return; }
+        if (stage !== 1) return;
+        stage = 2;
+        setTimeout(() => { controller.enqueue(new TextEncoder().encode(suffix)); controller.close(); },
+          BOUNDED_BODY_TIMEOUT_MS + 1_000);
       },
     })));
     try {
       const response = await harness.request();
       expect(response.status).toBe(400);
       expect(response.headers.get("x-pool-retry-test")).toBe("original");
-      expect(await response.text()).toBe(body);
+      expect(await response.text()).toBe(prefix + suffix);
       expect(harness.dispatches).toEqual(["acct-pool-a"]);
-    } finally {
-      await stopPoolRetryHarness(harness);
-    }
+    } finally { await stopPoolRetryHarness(harness); }
   }, { timeout: SERVER_BUDGET_MS });
 
   // Same windows-latest contention budget as the stalled-body case above: abort
