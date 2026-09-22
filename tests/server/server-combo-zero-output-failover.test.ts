@@ -693,4 +693,43 @@ describe("combo zero-output bare Responses error failover", () => {
     expect(hits).toBe(0);
   });
 
+  test("a denied later combo target preserves the last real upstream failure", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    const a = serve(() => {
+      aHits += 1;
+      return new Response(JSON.stringify({
+        error: { message: "primary budget sentinel", type: "server_error" },
+      }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const b = serve(() => {
+      bHits += 1;
+      return chatSuccess("must not dispatch backup", "m2");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+
+    let charges = 0;
+    const budget = createRequestExecutionBudget(undefined, "combo-later-denied", {
+      charge: () => {
+        charges += 1;
+        return charges === 1;
+      },
+      refund: () => {},
+    });
+
+    const response = await post(config, {}, { sendBudget: budget });
+    const text = await response.text();
+
+    expect(response.status).toBe(502);
+    expect(text).toContain("primary budget sentinel");
+    expect([aHits, bHits]).toEqual([1, 0]);
+    expect(charges).toBe(2);
+  });
+
 });
