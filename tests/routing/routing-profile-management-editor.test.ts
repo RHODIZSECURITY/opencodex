@@ -48,8 +48,8 @@ function baseConfig(): OcxConfig {
     port: 10100,
     defaultProvider: "a",
     providers: {
-      a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1", "m2"] },
-      b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", models: ["m2"] },
+      a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", liveModels: false, models: ["m1", "m2"] },
+      b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", liveModels: false, models: ["m2"] },
     },
     routingProfiles: {
       fast: {
