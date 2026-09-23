@@ -97,6 +97,27 @@ matters for maintainers is which groups exist and who resolves them:
 Env values are resolved through `src/config/proxy-env.ts`, so a config value naming an env var never persists
 the secret itself.
 
+### Combo failover cooldown wait policy
+
+`src/combos/resolve.ts` preserves the upstream earliest-expiry cooldown behavior by default.
+A failover combo can opt into `cooldownWaitPolicy: "last-resort"` when its final configured target
+is intentionally a degraded fallback. If that final target is the only immediately selectable
+target, the resolver first checks cooling higher-priority targets and waits for the earliest one
+that can recover inside `waitForCooldownMs`. The final target is used immediately when no such
+higher-priority target can recover inside the wait budget. This keeps last-resort routing explicit
+and local to the combos that require it instead of changing cooldown ordering globally.
+
+`src/combos/failover.ts` also prevents a short combo cooldown from immediately retrying known
+persistent provider failures or a slow failed 5xx attempt. Credential/billing/provider-quota
+failures and 5xx attempts lasting at least 15 seconds receive a 60-second local fallback floor,
+while explicit Retry-After and reset timestamps remain authoritative; Retry-After may extend
+beyond the ordinary ten-minute fallback cap but is safety-bounded to one day so malformed or
+hostile headers cannot quarantine a target indefinitely. The management API persists an explicit
+last-resort policy across dashboard-shaped updates even though the dashboard does not
+expose that advanced field. Regression coverage lives in `tests/codex-integration/combos.test.ts`
+and `tests/server/server-combo-failover-e2e.test.ts`.
+
+
 Malformed optional data-loopback and nested hub-management listener blocks are disabled in memory and reported by load-time warnings and read-only config diagnostics. Ingress warnings validate the raw ingress independently, so an invalid hub sibling does not falsely blame a valid ingress. The warning names only the field; unrelated providers and keys survive. Explicit writes remain strictly validated.
 
 The `ocx config show` reader in `src/cli/config-command.ts` uses those diagnostics directly. Its
