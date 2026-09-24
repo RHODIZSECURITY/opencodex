@@ -429,6 +429,50 @@ function isRequestLocalTargetIncompatibility(status: number, message: string, co
   return false;
 }
 
+const VERTEX_MALFORMED_FUNCTION_CALL_MESSAGE =
+  "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)";
+
+/**
+ * Vertex/Gemini can finish a zero-output turn with MALFORMED_FUNCTION_CALL after the model
+ * emitted a function call that the upstream could not parse. That is a verdict about THIS
+ * target's generated tool-call shape, not about the request itself or the next combo target.
+ *
+ * Keep this deliberately narrow: status 400, the exact structured invalid_request_error
+ * envelope, and the exact Vertex truncation message. Bare prose containing the marker is not
+ * enough to authorize replay. The combo layer only calls this policy before child output/tool
+ * commit; committed turns are fenced earlier and never reach this replay decision.
+ */
+function isVertexMalformedFunctionCallFailure(
+  status: number,
+  message: string,
+  code?: string | null,
+): boolean {
+  if (status !== 400 || message.length > 16_384) return false;
+  const allowedCodes = new Set(["", "invalid_request_error"]);
+  if (!allowedCodes.has(normalizedFailureCode(code))) return false;
+  let text = message.trim();
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (text.startsWith("Provider error 400: ")) text = text.slice("Provider error 400: ".length).trim();
+    let payload: unknown;
+    try { payload = JSON.parse(text); } catch { return false; }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const error = (payload as Record<string, unknown>).error;
+    if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+    const e = error as Record<string, unknown>;
+    if (e.code !== undefined && e.code !== null && typeof e.code !== "string") return false;
+    const errorCode = normalizedFailureCode(typeof e.code === "string" ? e.code : undefined);
+    if (!allowedCodes.has(errorCode) || typeof e.message !== "string") return false;
+    if (e.type !== "invalid_request_error") return false;
+    if (e.message === VERTEX_MALFORMED_FUNCTION_CALL_MESSAGE) return true;
+    if (e.message.startsWith("Provider error 400: ") && e.param === undefined) {
+      text = e.message;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
 /**
  * Codes a gateway uses when it declines a request field it cannot serve.
  *
@@ -543,6 +587,7 @@ export function comboFailureCooldownScope(
     || isProviderTargetContextOverflow(status, message, options?.code)
     || isDefiniteContextOverflow(status, message)
     || isRequestLocalTargetIncompatibility(status, message, options?.code)
+    || isVertexMalformedFunctionCallFailure(status, message, options?.code)
     // A capability gap says the target is healthy and the request did not fit it, which is the
     // same reason every other entry here refuses to cool a target.
     || isResponseFormatCapabilityRefusal(status, message, options?.code)
@@ -730,6 +775,7 @@ export function comboFailureDecision(
   // per-request cap, not provider-wide evidence), so keep its hop verdict explicit here.
   if (failureCode === "free_rate_limited") return "hop";
   if (isRequestLocalTargetIncompatibility(status, message, options?.code)) return "hop";
+  if (isVertexMalformedFunctionCallFailure(status, message, options?.code)) return "hop";
   // Must precede the generic `invalid_request_error` stop below, which is where this refusal
   // ended the chain: the gateway reports `type: "invalid_request_error"`, so the classifier
   // reaches that list and returns terminal before anything can ask whether the next target

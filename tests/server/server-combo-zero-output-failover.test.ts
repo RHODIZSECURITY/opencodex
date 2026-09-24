@@ -182,6 +182,49 @@ async function post(
 }
 
 describe("combo zero-output bare Responses error failover", () => {
+  test("Vertex malformed function-call 400 hops to backup for non-stream and stream", async () => {
+    const hits: string[] = [];
+    const leaf = {
+      message: "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)",
+      type: "invalid_request_error",
+      code: "invalid_request_error",
+    };
+    const vertex = serve(async request => {
+      const body = await request.json() as { model?: string; stream?: boolean };
+      hits.push(`vertex:${body.model}:${body.stream}`);
+      return Response.json({ error: leaf, response: { error: leaf } }, { status: 400 });
+    });
+    const backup = serve(async request => {
+      const body = await request.json() as { model?: string; stream?: boolean };
+      hits.push(`backup:${body.model}:${body.stream}`);
+      return body.stream ? chatStream("vertex stream backup") : chatSuccess("vertex json backup", "m2");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(vertex), "key-a"),
+      b: provider("openai-chat", baseUrl(backup), "key-b"),
+    });
+
+    const tools = [{
+      type: "function",
+      name: "lookup",
+      description: "lookup",
+      parameters: { type: "object", properties: {} },
+    }];
+    const unary = await post(config, { tools });
+    expect(unary.status).toBe(200);
+    expect(await unary.text()).toContain("vertex json backup");
+
+    clearComboTargetCooldowns();
+    clearComboSelectionState();
+    const streaming = await post(config, { stream: true, tools });
+    expect(streaming.status).toBe(200);
+    expect(await streaming.text()).toContain("vertex stream backup");
+    expect(hits).toEqual([
+      "vertex:m1:false", "backup:m2:false",
+      "vertex:m1:true", "backup:m2:true",
+    ]);
+  });
+
   test("zero-output bare Responses SSE error hops before committing the child stream", async () => {
     const hits: string[] = [];
     const a = serve(() => {
