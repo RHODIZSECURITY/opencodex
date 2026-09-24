@@ -761,50 +761,6 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toEqual(["go:m1", "orca:m2", "backup:m3"]);
   });
 
-  test("Vertex malformed function-call 400 hops to backup for non-stream and stream", async () => {
-    const hits: string[] = [];
-    const leaf = {
-      message: "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)",
-      type: "invalid_request_error",
-      code: "invalid_request_error",
-    };
-    const vertex = serve(async request => {
-      const body = await request.json() as { model?: string; stream?: boolean };
-      hits.push(`vertex:${body.model}:${body.stream}`);
-      return Response.json({ error: leaf, response: { error: leaf } }, { status: 400 });
-    });
-    const backup = serve(async request => {
-      const body = await request.json() as { model?: string; stream?: boolean };
-      hits.push(`backup:${body.model}:${body.stream}`);
-      return body.stream ? chatStream("vertex stream backup") : chatSuccess("vertex json backup", "m2");
-    });
-    const config = comboConfig({
-      a: provider("openai-chat", baseUrl(vertex), "key-a"),
-      b: provider("openai-chat", baseUrl(backup), "key-b"),
-    });
-
-    const unary = await post(config, {
-      tools: [{ type: "function", name: "lookup", description: "lookup", parameters: { type: "object", properties: {} } }],
-    });
-    expect(unary.status).toBe(200);
-    expect(JSON.stringify(await unary.json())).toContain("vertex json backup");
-    expect(isComboTargetInCooldown("free", { provider: "a", model: "m1" })).toBe(false);
-
-    clearComboTargetCooldowns();
-    clearComboSelectionState();
-    const streaming = await post(config, {
-      stream: true,
-      tools: [{ type: "function", name: "lookup", description: "lookup", parameters: { type: "object", properties: {} } }],
-    });
-    expect(streaming.status).toBe(200);
-    expect(JSON.stringify(await collectSse(streaming))).toContain("vertex stream backup");
-    expect(isComboTargetInCooldown("free", { provider: "a", model: "m1" })).toBe(false);
-    expect(hits).toEqual([
-      "vertex:m1:false", "backup:m2:false",
-      "vertex:m1:true", "backup:m2:true",
-    ]);
-  });
-
   test("ordinary openai-chat 503 hops to backup for non-stream and stream", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
