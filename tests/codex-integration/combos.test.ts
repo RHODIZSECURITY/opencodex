@@ -1064,6 +1064,20 @@ describe("combo failure policy and advancement", () => {
     expect(comboFailureDecision(413, "request too large")).toBe("stop");
   });
 
+  test("Vertex MALFORMED_FUNCTION_CALL hops only for the exact structured zero-output failure", () => {
+    const leaf = {
+      message: "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)",
+      type: "invalid_request_error",
+      code: "invalid_request_error",
+    };
+    const wrapped = `Provider error 400: ${JSON.stringify({ error: leaf, response: { error: leaf } })}`;
+    expect(comboFailureDecision(400, wrapped, { code: "invalid_request_error" })).toBe("hop");
+    expect(comboFailureCooldownScope(400, wrapped, { code: "invalid_request_error" })).toBe("none");
+    expect(comboFailureDecision(400, "MALFORMED_FUNCTION_CALL", { code: "invalid_request_error" })).toBe("stop");
+    const other = JSON.stringify({ error: { ...leaf, message: "ordinary malformed tool request" } });
+    expect(comboFailureDecision(400, other, { code: "invalid_request_error" })).toBe("stop");
+  });
+
   test("free-tier and monthly quota failures hop with the right scope, without weakening generic 400 handling", () => {
     const orca = JSON.stringify({ error: {
       type: "invalid_request_error",
