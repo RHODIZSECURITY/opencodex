@@ -158,6 +158,15 @@ export interface HandleResponsesOptions {
    */
   sendBudget?: TransientSendBudget;
   /**
+   * Internal provenance bit for OAuth roster expansion.
+   *
+   * True only when the logical request owns OpenCodex's normal ingress budget. An explicit
+   * caller-supplied budget is an exact ceiling and must never be widened behind the caller's
+   * back. Combo children inherit this bit while replacing sendBudget with their derived target
+   * scope, so normal platform requests still gain full multi-account coverage.
+   */
+  credentialRosterExpansion?: boolean;
+  /**
    * Terminal vision-describe marker (roadmap 180): true when the inbound
    * request IS the vision sidecar's own loopback describe call. The plan site
    * then STRIPS images instead of planning another describe — a depth cap of 1

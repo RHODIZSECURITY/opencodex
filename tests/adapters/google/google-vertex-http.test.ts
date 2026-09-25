@@ -209,6 +209,18 @@ describe("vertex retry fetch", () => {
     expect(mock.calls).toHaveLength(2);
   });
 
+  test("Antigravity preserves the platform transient-429 ladder on one credential", async () => {
+    const mock = mockFetch([
+      new Response(vertexError(429, "RESOURCE_EXHAUSTED", "rate limit, try again"), { status: 429, headers: { "Retry-After": "0" } }),
+      new Response(vertexError(429, "RESOURCE_EXHAUSTED", "rate limit, try again"), { status: 429, headers: { "Retry-After": "0" } }),
+      new Response("ok", { status: 200 }),
+    ]);
+    const res = await fetchAntigravityWithRetry(request, { timeoutMs: 5_000 });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("ok");
+    expect(mock.calls).toHaveLength(3);
+  });
+
   test("does NOT retry a quota-exhausted 429 (single attempt), but DOES retry a plain rate-limit 429", async () => {
     const quota = mockFetch([
       new Response(vertexError(429, "RESOURCE_EXHAUSTED", "Quota exceeded for your current billing plan"), { status: 429, headers: { "Retry-After": "0" } }),

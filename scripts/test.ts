@@ -395,6 +395,10 @@ export const SERIAL_FULL_SUITE_FILES = [
   "service/service-wsl-home-ownership.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
+  // The scrub suite has a 5s per-test deadline and completes in ~2.6s isolated, but can exceed
+  // that deadline under the four-worker full-suite lane. Keep it a namespace-scrub assertion,
+  // not a host-load benchmark.
+  "responses/responses-self-named-namespace-scrub.test.ts",
 ] as const;
 
 type SerialLaneBasename = (typeof SERIAL_FULL_SUITE_FILES)[number] extends infer P

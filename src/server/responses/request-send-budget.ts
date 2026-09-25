@@ -110,13 +110,16 @@ export function createResponsesSendBudget(
   // No floor. Math.max(1, ...) meant an exhausted request still funded one send on every
   // recovery leg, so a bounded per-leg allowance never became a bounded per-request one.
   const remainingTransientSendBudget = (budget: number): number =>
-    isRequestExecutionBudget(sendBudget)
-      ? sendBudget.remainingBaseSends(budget)
+    isRequestExecutionBudget(credentialRotationBudget)
+      ? credentialRotationBudget.remainingBaseSends(budget)
       : Math.max(0, budget - sendBudget.used);
-  // The adapter contract needs the full budget, not just the counter. options.sendBudget is
-  // typed as the narrow holder so a caller that predates this can still pass one, so narrow it
-  // once here rather than asserting at each adapter call site.
-  const adapterSendBudget = isRequestExecutionBudget(sendBudget) ? sendBudget : undefined;
+  // The adapter contract needs the SAME expanded policy credential rotation uses. Otherwise the
+  // first account can spend the original three-send base and every rotated account receives only
+  // its prepaid hop, so the pool nominally rotates while silently losing the platform retry
+  // ladder on every account after the first.
+  const adapterSendBudget = isRequestExecutionBudget(credentialRotationBudget)
+    ? credentialRotationBudget
+    : undefined;
   /**
    * Records an adapter's OWN inner retries against this attempt.
    *
@@ -230,8 +233,8 @@ export function createResponsesSendBudget(
       pendingHopPermit = undefined;
       return { attempts: 1, permit: hopPermit };
     }
-    if (!isRequestExecutionBudget(sendBudget)) return { attempts: 0 };
-    const decision = sendBudget.reserveDispatch({ sendClass, targetKey, countedExternally: true });
+    if (!isRequestExecutionBudget(credentialRotationBudget)) return { attempts: 0 };
+    const decision = credentialRotationBudget.reserveDispatch({ sendClass, targetKey, countedExternally: true });
     return decision.allowed ? { attempts: 1, permit: decision.permit } : { attempts: 0 };
   };
   /**
@@ -265,7 +268,19 @@ export function createResponsesSendBudget(
     countedExternally = false,
   ): { allowed: boolean; permit?: SingleUseDispatchPermit } => {
     if (!isRequestExecutionBudget(credentialRotationBudget)) return { allowed: true };
-    const decision = credentialRotationBudget.reserveDispatch({ sendClass, targetKey, countedExternally });
+    // A same-provider credential rotation is not a target/model transition. Recovery call sites
+    // pass diagnostic keys such as provider|model|oauth-429, while the adapter itself reserves
+    // physical sends against the request URL. Feeding that diagnostic key into the budget changes
+    // lastTargetKey, so the rotated account's next same-target retry looks like a second target
+    // transition and is refused. Keep the physical target identity stable for auth recovery.
+    const budgetTargetKey = sendClass === "auth-recovery" && credentialRotationBudget.lastTargetKey
+      ? credentialRotationBudget.lastTargetKey
+      : targetKey;
+    const decision = credentialRotationBudget.reserveDispatch({
+      sendClass,
+      targetKey: budgetTargetKey,
+      countedExternally,
+    });
     return decision.allowed ? { allowed: true, permit: decision.permit } : { allowed: false };
   };
   /**

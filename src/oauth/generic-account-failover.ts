@@ -34,6 +34,7 @@ import {
   seedPoolRotationAccount,
 } from "./pool-kernel";
 import { parseRetryAfterMs } from "../combos/failover";
+import { TRANSIENT_RETRY_MAX_ATTEMPTS } from "../lib/upstream-retry";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
@@ -49,27 +50,37 @@ export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
 export function genericOAuthFailoverLimit(
   config: OcxConfig,
   providerName: string,
-  now = Date.now(),
+  _now = Date.now(),
 ): number {
   const provider = config.providers?.[providerName];
   if (!provider || !isGenericFailoverProvider(providerName, provider)) return 0;
-  return Math.max(0, eligibleAccountCount(providerName, now) - 1);
+  const set = getAccountSet(providerName);
+  if (!set) return 0;
+  // This is a same-request ceiling, so it must not shrink as that very request cools accounts.
+  // The rotation selector still filters cooldowns before each hop; this cap only says how many
+  // distinct usable stored credentials could ever be visited before the request began.
+  const usableStoredAccounts = set.accounts.filter(account => account.needsReauth !== true).length;
+  return Math.max(0, usableStoredAccounts - 1);
 }
 
 /**
- * Additional request-send allowance required beyond upstream's original three OAuth rotations.
- * Pools of four accounts or fewer consume no extra request budget; larger pools gain exactly
- * enough sends to try every eligible credential once, never a blanket retry expansion.
+ * Additional request-send allowance needed to preserve the platform retry contract across a
+ * multi-account OAuth pool.
+ *
+ * OpenCodex gives one credential up to TRANSIENT_RETRY_MAX_ATTEMPTS physical sends before a
+ * credential hop. Each additional eligible account must therefore add the same bounded ladder;
+ * otherwise the first account can spend the shared request budget on valid same-account retries
+ * and starve later accounts before the combo is allowed to move on.
+ *
+ * This widens only the allowance. The roster-sized rotation limit still bounds how many accounts
+ * may be entered, and every physical send remains charged to the request/workflow ledger.
  */
 export function genericOAuthFailoverBudgetExtension(
   config: OcxConfig,
   providerName: string,
   now = Date.now(),
 ): number {
-  return Math.max(
-    0,
-    genericOAuthFailoverLimit(config, providerName, now) - GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
-  );
+  return genericOAuthFailoverLimit(config, providerName, now) * TRANSIENT_RETRY_MAX_ATTEMPTS;
 }
 
 const DEFAULT_COOLDOWN_MS = 60_000;
