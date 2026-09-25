@@ -342,6 +342,7 @@ export function advanceComboAfterFailure(
     status?: number;
     code?: string | null;
     message?: string;
+    attemptDurationMs?: number;
   } = {},
 ): ComboPick | null {
   noteComboFailure(pick.comboId, pick.target, pick.writerGeneration);

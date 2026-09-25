@@ -22,7 +22,7 @@ import { normalizeDeclaredToolName, type AdapterEvent, type OcxProviderContinuat
 import { adapterFailureFromMessage, SEND_BUDGET_EXHAUSTED_CODE } from "../../lib/errors";
 import { SendBudgetExhaustedError, markResponseNonReplayable } from "../../lib/upstream-retry";
 import {
-  GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
+  genericOAuthFailoverLimit,
   hasEligibleGenericOAuthFailoverTarget,
   isGenericOAuthFailoverEnabled,
   rotateGenericOAuthAccountOn429,
@@ -345,7 +345,7 @@ export async function executeResponsesRunTurn(
       if (
         status !== 429
         || !transportState.genericFailoverAccountId
-        || transportState.genericFailovers >= GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST
+        || transportState.genericFailovers >= genericOAuthFailoverLimit(config, route.providerName)
         || !isGenericOAuthFailoverEnabled(config, route.providerName)
       ) return false;
       // Intersection with the request's shared budget: the roster bound above answers "may this
@@ -474,7 +474,8 @@ export async function executeResponsesRunTurn(
     };
 
     const { toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
-    const enforceDeclaredToolNames = inboundWire !== "chat" && inboundWire !== "anthropic";
+    const enforceDeclaredToolNames = options.authoritativeClientToolCatalog === true
+      || (inboundWire !== "chat" && inboundWire !== "anthropic");
     const classifyUndeclaredFirstTool = (
       event: AdapterEvent,
     ): Extract<AdapterEvent, { type: "error" }> | undefined => {

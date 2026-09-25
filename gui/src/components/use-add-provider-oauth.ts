@@ -123,8 +123,17 @@ export function useAddProviderOAuth({
         await new Promise(r => setTimeout(r, OAUTH_LOGIN_POLL_INTERVAL_MS));
         if (!aliveRef.current || !isCurrent()) return;
         const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${providerId}`).catch(() => null);
-        const s = sRes ? await readJsonIfOk<{ loggedIn?: boolean; error?: string }>(sRes) : null;
+        const s = sRes ? await readJsonIfOk<{
+          loggedIn?: boolean;
+          error?: string;
+          url?: string;
+          instructions?: string;
+          deviceCode?: string;
+        }>(sRes) : null;
         if (!aliveRef.current || !isCurrent()) return;
+        if (s && (s.url !== undefined || s.instructions !== undefined || s.deviceCode !== undefined)) {
+          setOauthUrl(s.url ?? "", providerId, s.deviceCode, s.instructions);
+        }
         if (s?.error) {
           activeProvidersRef.current.delete(providerId);
           setOauthMsgTone("warn");

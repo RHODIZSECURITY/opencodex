@@ -1,5 +1,9 @@
 import type { ResponsesRequestContext } from "./core-options";
-import { createRequestExecutionBudget, isRequestExecutionBudget } from "../../lib/request-execution-budget";
+import {
+  createRequestExecutionBudget,
+  deriveRequestExecutionBudget,
+  isRequestExecutionBudget,
+} from "../../lib/request-execution-budget";
 import {
   chargeWorkflowSends,
   workflowSendCeilingReached,
@@ -42,6 +46,7 @@ export function transientSendCapFor(
 /** Owns the shared request send counter and recovery permits. */
 export function createResponsesSendBudget(
   requestContext: Pick<ResponsesRequestContext, "options" | "req" | "logCtx">,
+  genericOAuthFailoverBudgetExtension = 0,
 ) {
   const { options, req, logCtx } = requestContext;
 
@@ -53,6 +58,21 @@ export function createResponsesSendBudget(
   // parent's spend instead of starting over per target -- both halves of the measured
   // amplification in #4546.
   const sendBudget = options.sendBudget ?? createRequestExecutionBudget();
+  const credentialRotationBudget = isRequestExecutionBudget(sendBudget) && genericOAuthFailoverBudgetExtension > 0
+    ? deriveRequestExecutionBudget(sendBudget, options.comboAttempt === true
+      ? {
+          ...sendBudget.policy,
+          baseSendAllowance: Math.min(
+            sendBudget.policy.maxTotalModelSends,
+            sendBudget.policy.baseSendAllowance + genericOAuthFailoverBudgetExtension,
+          ),
+        }
+      : {
+          ...sendBudget.policy,
+          maxTotalModelSends: sendBudget.policy.maxTotalModelSends + genericOAuthFailoverBudgetExtension,
+          baseSendAllowance: sendBudget.policy.baseSendAllowance + genericOAuthFailoverBudgetExtension,
+        })
+    : sendBudget;
   // The root workflow is the user-visible task. A per-request cap cannot bound a fan-out that
   // sends once per child seven hundred times, so every send charged to the request is charged
   // to the root as well (#4546).
@@ -217,8 +237,8 @@ export function createResponsesSendBudget(
   /**
    * One credential hop of this logical request, admitted by the INTERSECTION of two bounds.
    *
-   * `GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST` and `ANTHROPIC_POOL_MAX_FAILOVERS_PER_REQUEST`
-   * stay exactly as they are: they bound rotation within one credential roster. What neither
+   * The generic OAuth roster-sized limit and `ANTHROPIC_POOL_MAX_FAILOVERS_PER_REQUEST`
+   * bound rotation within one credential roster. What neither
    * can see is everything else this request already sent, so three hops layered on a spent
    * budget still reached upstream three more times. A hop now happens only when its own layer
    * cap AND the shared budget both permit it, and the smaller of the two wins.
@@ -244,8 +264,8 @@ export function createResponsesSendBudget(
     targetKey: string,
     countedExternally = false,
   ): { allowed: boolean; permit?: SingleUseDispatchPermit } => {
-    if (!isRequestExecutionBudget(sendBudget)) return { allowed: true };
-    const decision = sendBudget.reserveDispatch({ sendClass, targetKey, countedExternally });
+    if (!isRequestExecutionBudget(credentialRotationBudget)) return { allowed: true };
+    const decision = credentialRotationBudget.reserveDispatch({ sendClass, targetKey, countedExternally });
     return decision.allowed ? { allowed: true, permit: decision.permit } : { allowed: false };
   };
   /**

@@ -263,7 +263,7 @@ describe("Responses per-account attribution for non-Codex OAuth", () => {
     });
   });
 
-  test.each([[1, 1], [5, 4]])("native Responses with %i accounts stays within %i sends on repeated 429", async (accounts, expectedSends) => {
+  test.each([[1, 1], [5, 5]])("native Responses with %i accounts tries at most %i accounts on repeated 429", async (accounts, expectedSends) => {
     await withHome(async () => {
       clearGenericFailoverHealth();
       for (let index = 0; index < accounts; index++) {

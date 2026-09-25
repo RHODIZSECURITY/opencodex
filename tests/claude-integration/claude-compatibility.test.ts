@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { analyzeClaudeCompatibility, isClaudeCompatibilityMode } from "../../src/claude/compatibility";
+import {
+  analyzeClaudeCompatibility,
+  claudeRequestUsesDeferredToolCatalog,
+  isClaudeCompatibilityMode,
+} from "../../src/claude/compatibility";
 
 // Shapes from Anthropic's thinking, tool-search, strict-tool-use and Messages docs:
 // https://platform.claude.com/docs/en/build-with-claude/thinking
@@ -55,6 +59,15 @@ describe("Claude translated compatibility", () => {
       }
     });
   }
+
+  test("distinguishes complete Claude Code catalogs from explicitly deferred catalogs", () => {
+    expect(claudeRequestUsesDeferredToolCatalog({ tools: [functionTool] })).toBe(false);
+    expect(claudeRequestUsesDeferredToolCatalog({ tools: [{ ...functionTool, defer_loading: true }] })).toBe(true);
+    expect(claudeRequestUsesDeferredToolCatalog({ tools: [{ type: "tool_search_tool_regex_20251119", name: "tool_search" }] })).toBe(true);
+    expect(claudeRequestUsesDeferredToolCatalog(userBlock({ type: "tool_result", tool_use_id: "t1", content: [
+      { type: "tool_reference", tool_name: "lookup" },
+    ] }))).toBe(true);
+  });
 
   test("ordinary client names, schemas and arguments are not protocol declarations", () => {
     for (const name of ["mcp_lookup", "tool_search", "tool_search_tool_local", "safe_code_execution", "computer"]) {

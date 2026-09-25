@@ -95,6 +95,31 @@ afterEach(async () => {
     removeTreeWithRetry(home);
   }
 });
+test("persistent provider failures keep a 60s floor even when the combo asks for 5s", () => {
+  const now = 1_000_000;
+  expect(coolComboTarget("free", target, { now, cooldownMs: 5_000, status: 401, message: "unauthorized" })).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 59_999)).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 60_001)).toBe(false);
+});
+
+test("a slow 5xx keeps a 60s floor so the combo does not immediately repay the stall", () => {
+  const now = 2_000_000;
+  expect(coolComboTarget("free", target, {
+    now, cooldownMs: 5_000, status: 503, message: "upstream busy", attemptDurationMs: 15_000,
+  })).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 59_999)).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 60_001)).toBe(false);
+});
+
+test("a fast ordinary 5xx still respects the configured short combo cooldown", () => {
+  const now = 3_000_000;
+  expect(coolComboTarget("free", target, {
+    now, cooldownMs: 5_000, status: 503, message: "upstream busy", attemptDurationMs: 1_000,
+  })).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 4_999)).toBe(true);
+  expect(isComboTargetInCooldown("free", target, now + 5_001)).toBe(false);
+});
+
 test("cooldown recording distinguishes a successful write from a stale removed writer", () => {
   expect(coolComboTarget("free", target, { cooldownMs: 1000 })).toBe(true);
   reconcileComboTargetCooldowns(removalContext());

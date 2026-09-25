@@ -166,7 +166,8 @@ export async function deliverAdapterResponse(
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
         declaredToolNames,
-        enforceDeclaredToolNames: options.inboundWire !== "chat" && options.inboundWire !== "anthropic",
+        enforceDeclaredToolNames: options.authoritativeClientToolCatalog === true
+          || (options.inboundWire !== "chat" && options.inboundWire !== "anthropic"),
       toolParameterSchemas,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
         ...(routedCompaction ? { compaction: true } : {}),
@@ -233,7 +234,8 @@ export async function deliverAdapterResponse(
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       declaredToolNames,
-      enforceDeclaredToolNames: options.inboundWire !== "chat" && options.inboundWire !== "anthropic",
+      enforceDeclaredToolNames: options.authoritativeClientToolCatalog === true
+        || (options.inboundWire !== "chat" && options.inboundWire !== "anthropic"),
       toolParameterSchemas,
       freeformToolNames,
       toolSearchToolNames,

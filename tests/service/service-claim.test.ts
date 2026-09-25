@@ -147,7 +147,11 @@ describe("runServiceClaim", () => {
     const previousUserProfile = process.env.USERPROFILE;
     if (process.platform === "win32") process.env.USERPROFILE = home.root;
     try {
-      expect(serviceStatePaths().every(path => path.startsWith(home.root))).toBe(true);
+      // The current sandbox state must be owned by this fixture. The service-state reader may
+      // also include the runner's isolated legacy default-home fallback; reading that sandbox
+      // path is safe and does not make it a writable target for this fixture.
+      expect(serviceStatePath().startsWith(home.root)).toBe(true);
+      expect(serviceStatePaths()).toContain(serviceStatePath());
       mkdirSync(serviceStatePath());
       const lines: string[] = [];
       const code = await runServiceClaim([...VALID, "--json"], {

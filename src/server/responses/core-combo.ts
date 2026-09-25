@@ -86,6 +86,7 @@ import { preflightComboStreamResponse } from "./combo-stream-preflight";
 import { streamingContextOverflowResponse, jsonContextOverflowResponse } from "./context-overflow";
 import { mandatoryResponsesReasoningReplayUnavailable } from "./core-replay";
 import { settleOperatorReplacement } from "../../lib/upstream-retry";
+import { genericOAuthFailoverBudgetExtension } from "../../oauth/generic-account-failover";
 import { createComboProtocolLanes, dispatchNativeComboChild } from "./core-combo-native";
 import { clientWireOf } from "../inference/client-wire";
 
@@ -110,11 +111,15 @@ export const COMBO_TARGET_BASE_SENDS = CODEX_TEXT_GUARDED_BUDGET_POLICY.baseSend
  * profile exactly, and a three-target combo whose every target fails hard reaches upstream six
  * times instead of the twelve #4546 measured.
  */
-export function comboExecutionBudgetPolicy(declaredTargets: number): RequestExecutionBudgetPolicy {
+export function comboExecutionBudgetPolicy(
+  declaredTargets: number,
+  credentialRosterExtraSends = 0,
+): RequestExecutionBudgetPolicy {
   const targets = Math.max(1, Math.trunc(declaredTargets));
   const hops = targets - 1;
   const reserve = CODEX_TEXT_GUARDED_BUDGET_POLICY.finalRecoveryAllowance;
-  const total = COMBO_TARGET_BASE_SENDS + hops + reserve;
+  const credentialSends = Math.max(0, Math.trunc(credentialRosterExtraSends));
+  const total = COMBO_TARGET_BASE_SENDS + hops + reserve + credentialSends;
   return {
     maxTotalModelSends: total,
     baseSendAllowance: total - reserve,
@@ -278,8 +283,15 @@ export async function executeComboResponses(
   // counter, but nothing read it as a limit across targets -- while its transition and
   // alternate-target ledgers come from the target list rather than from the single-target
   // account-move profile (#4546).
+  const credentialRosterFailoverSends = combo.targets.reduce(
+    (sum, target) => sum + genericOAuthFailoverBudgetExtension(config, target.provider),
+    0,
+  );
   const comboSendScope = isRequestExecutionBudget(options.sendBudget)
-    ? deriveSendBudgetScope(options.sendBudget, comboExecutionBudgetPolicy(combo.targets.length))
+    ? deriveSendBudgetScope(
+        options.sendBudget,
+        comboExecutionBudgetPolicy(combo.targets.length, credentialRosterFailoverSends),
+      )
     : undefined;
   // Expand previous_response_id before image policy and child dispatch so a
   // continuation that only references prior images still fails closed when
@@ -968,6 +980,7 @@ export async function executeComboResponses(
       status: failure.response.status,
       code: failure.upstreamCode,
       message: failure.classificationText,
+      attemptDurationMs: Math.max(0, failureNow - started),
       onCooldownRecorded: target => {
         failedTargetCooldownRecorded ||= targetKey(target) === failedTargetKey;
       },

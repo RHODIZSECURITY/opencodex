@@ -1774,7 +1774,18 @@ export interface OAuthAccountSummary {
  * the config at its request boundary and resolves the policy there with `emailMaskingEnabled`.
  * The default masks, so every existing caller keeps today's behaviour.
  */
-export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
+export function getLoginStatus(provider: string, maskEmails = true): {
+  loggedIn: boolean;
+  email?: string;
+  source?: OAuthCredentials["source"];
+  error?: string;
+  done: boolean;
+  url?: string;
+  instructions?: string;
+  deviceCode?: string;
+  activeAccountId?: string;
+  accounts?: OAuthAccountSummary[];
+} {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
   const set = getAccountSet(provider);
@@ -1805,6 +1816,9 @@ export function getLoginStatus(provider: string, maskEmails = true): { loggedIn:
     source: cred?.source,
     error: st?.error,
     done: st?.done ?? false,
+    ...(st?.url !== undefined ? { url: st.url } : {}),
+    ...(st?.instructions !== undefined ? { instructions: st.instructions } : {}),
+    ...(st?.deviceCode !== undefined ? { deviceCode: st.deviceCode } : {}),
     ...(set ? { activeAccountId: set.activeAccountId, accounts } : {}),
   };
 }
@@ -1859,8 +1873,19 @@ export async function startLoginFlow(
     let urlResolved = false;
     const ctrl: OAuthController = {
       onAuth: ({ url, instructions, deviceCode }) => {
-        urlResolved = true;
-        resolve({ url, instructions, deviceCode });
+        // Device grants may later transition to a provider-specific manual fallback. Keep the
+        // latest hint in token-safe login state so polling GUIs can replace the original device
+        // instructions instead of showing a stale callback field forever.
+        loginState.set(provider, {
+          done: false,
+          url,
+          ...(instructions !== undefined ? { instructions } : {}),
+          ...(deviceCode !== undefined ? { deviceCode } : {}),
+        });
+        if (!urlResolved) {
+          urlResolved = true;
+          resolve({ url, instructions, deviceCode });
+        }
       },
       onProgress: () => {},
       // GUI fallback when the browser cannot hit the loopback callback server.

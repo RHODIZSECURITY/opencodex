@@ -512,6 +512,68 @@ describe("legacy ChatGPT OAuth public-surface exclusion", () => {
     }
   });
 
+  test("device OAuth exposes live hint transitions and settles without manual callback input", async () => {
+    saveConfig(config());
+    const originalLogin = OAUTH_PROVIDERS.xai.login;
+    let releaseFallback!: () => void;
+    let releaseSettlement!: () => void;
+    const fallbackGate = new Promise<void>(resolve => { releaseFallback = resolve; });
+    const settlementGate = new Promise<void>(resolve => { releaseSettlement = resolve; });
+    OAUTH_PROVIDERS.xai.login = async (ctrl) => {
+      ctrl.onAuth({
+        url: "https://auth.example.test/device",
+        deviceCode: "ABCD-EFGH",
+        instructions: "Enter the device code",
+      });
+      await fallbackGate;
+      ctrl.onAuth({
+        url: "https://auth.example.test/fallback",
+        instructions: "Use fallback only if the device grant fails",
+      });
+      await settlementGate;
+      return {
+        access: "device-access",
+        refresh: "device-refresh",
+        accountId: "device-account",
+        expires: Date.now() + 60_000,
+      };
+    };
+
+    try {
+      const first = await startLoginFlow("xai");
+      expect(first).toMatchObject({
+        url: "https://auth.example.test/device",
+        deviceCode: "ABCD-EFGH",
+      });
+      expect(getLoginStatus("xai")).toMatchObject({
+        done: false,
+        url: "https://auth.example.test/device",
+        deviceCode: "ABCD-EFGH",
+      });
+
+      releaseFallback();
+      for (let i = 0; i < 100; i++) {
+        const status = getLoginStatus("xai");
+        if (status.url === "https://auth.example.test/fallback") break;
+        await Bun.sleep(1);
+      }
+      expect(getLoginStatus("xai")).toMatchObject({
+        url: "https://auth.example.test/fallback",
+        instructions: "Use fallback only if the device grant fails",
+      });
+      expect(getLoginStatus("xai").deviceCode).toBeUndefined();
+
+      releaseSettlement();
+      const done = await waitForOAuthDone("xai");
+      expect(done).toMatchObject({ done: true, loggedIn: true });
+    } finally {
+      releaseFallback();
+      releaseSettlement();
+      OAUTH_PROVIDERS.xai.login = originalLogin;
+      clearLoginState("xai");
+    }
+  });
+
   test("OAuth settlement preserves the original login failure", async () => {
     saveConfig(config());
     const originalLogin = OAUTH_PROVIDERS.xai.login;

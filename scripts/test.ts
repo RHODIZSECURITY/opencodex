@@ -381,11 +381,19 @@ export const SERIAL_FULL_SUITE_FILES = [
   // changing. Quarantining it here is what keeps it a test of the relay instead of a test of
   // its neighbours.
   "server/server-live.test.ts",
+  // Aborted-body inspection and server teardown have a fixed 30s budget; under the four-worker
+  // lane the abort case can spend that entire budget despite passing in ~17s in isolation.
+  "server/server-auth.test.ts",
   // These exercise the default-home service authority, shared by parallel Bun workers.
   // A fresh process/home prevents another file's authority from becoming this fixture's input.
   "service/service-ownership-state.test.ts",
   "service/service-sqlite-home.test.ts",
   "service/service.test.ts",
+  // These also read or mutate service/native-integration ownership state and are stable alone,
+  // but race under the four-worker full-suite lane with neighbouring authority fixtures.
+  "service/service-claim.test.ts",
+  "service/service-wsl-home-ownership.test.ts",
+  "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;
 

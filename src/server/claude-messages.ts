@@ -26,7 +26,7 @@ import { recordDesktopRequest } from "../claude/desktop-health";
 import { stripOneMillionMarker } from "../claude/context-windows";
 import { captureClaudeInbound } from "../claude/inbound-debug";
 import { claudeCodeForIngress } from "../claude/intercept/model-bindings";
-import { analyzeClaudeCompatibility, isClaudeCompatibilityMode } from "../claude/compatibility";
+import { analyzeClaudeCompatibility, claudeRequestUsesDeferredToolCatalog, isClaudeCompatibilityMode } from "../claude/compatibility";
 import {
   applyReplayRefusalClientHeaders,
   carryReplayRefusal,
@@ -102,6 +102,11 @@ import {
 } from "./fast-row";
 
 type Rec = Record<string, unknown>;
+
+function isClaudeCodeClientRequest(req: Request): boolean {
+  const userAgent = req.headers.get("user-agent")?.trim() ?? "";
+  return /^(?:claude-cli|claude-code)\//i.test(userAgent);
+}
 
 /** Which listener a Claude Messages request arrived on. Only the intercept ingress honours bindings. */
 export interface ClaudeIngressOptions {
@@ -751,11 +756,18 @@ async function handleClaudeMessagesWithBudget(
   let effortRow: ParsedEffortRowId | null = null;
   let fastRow: ParsedFastRowId | null = null;
   let requestedModel = "";
+  let authoritativeClientToolCatalog = false;
   // Built only under the reject policy; the legacy default leaves this request untouched.
   let envelope: ProtocolEnvelope | undefined;
   let messagesFeatures: () => Iterable<ProtocolFeature> = () => [];
   try {
     anthropicBody = await readAnthropicBody(req, translatorBudget, resolveInboundBodyLimitBytes(config.maxInboundBodyBytes));
+    // Claude Code disables deferred MCP tool discovery when routed through a non-first-party
+    // ANTHROPIC_BASE_URL. In that ordinary routed mode the request tools array is the complete
+    // current authorization snapshot; explicit deferred/search/reference features keep the
+    // historical partial-catalog contract.
+    authoritativeClientToolCatalog = isClaudeCodeClientRequest(req)
+      && !claudeRequestUsesDeferredToolCatalog(anthropicBody);
     // Defensive [1m] strip (devlog 138): clients normally remove the context-variant
     // marker themselves; the 1M signal we act on is the anthropic-beta header.
     // Case-insensitive — the CLI matches /\[1m\]/i (audit 021 #7).
@@ -1136,6 +1148,7 @@ async function handleClaudeMessagesWithBudget(
     // Without this the replay would look native and a Responses-scoped wire default
     // would fire, disagreeing with the pre-flight decision above.
     inboundWire: "anthropic",
+    ...(authoritativeClientToolCatalog ? { authoritativeClientToolCatalog: true } : {}),
     claudeGoAffinity: { sessionLane: claudeGoSessionLane },
     claudeNativeSessionId,
     stripClaudeMainAuthForNoncanonicalForward: true,

@@ -18,6 +18,8 @@ const MAX_COOLDOWN_MS = 10 * 60_000;
 const MAX_SERVER_DELAY_MS = 24 * 60 * 60_000;
 /** Short cooldown for request-rate 429s (for example provider code 1302) that omit Retry-After. */
 export const COMBO_REQUEST_RATE_COOLDOWN_MS = 5_000;
+/** Slow failed attempts get a longer floor so short combo cooldowns do not re-pay the same stall. */
+export const COMBO_SLOW_FAILURE_THRESHOLD_MS = 15_000;
 
 const QUOTA_LIMIT_CODES = new Set([
   "1308",
@@ -214,6 +216,7 @@ export function coolComboTarget(
     status?: number;
     code?: string | null;
     message?: string;
+    attemptDurationMs?: number;
   },
 ): boolean {
   const now = options?.now ?? Date.now();
@@ -227,14 +230,26 @@ export function coolComboTarget(
     preserveImmediate: true,
     preserveServerDelay: true,
   });
-  const cooldownMs = serverDelayMs
-    ?? parseResetCooldownMs(options?.resetAt, now)
-    ?? options?.cooldownMs
+  const resetDelayMs = parseResetCooldownMs(options?.resetAt, now);
+  const configuredFallbackMs = options?.cooldownMs
     ?? (isTransientRequestRateLimit({
       status: options?.status,
       code: options?.code,
       message: options?.message,
     }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
+  const persistentProviderFailure = typeof options?.status === "number"
+    && comboFailureCooldownScope(options.status, options.message ?? "", { code: options.code }) === "provider";
+  const slowServerFailure = typeof options?.status === "number"
+    && options.status >= 500
+    && typeof options.attemptDurationMs === "number"
+    && Number.isFinite(options.attemptDurationMs)
+    && options.attemptDurationMs >= COMBO_SLOW_FAILURE_THRESHOLD_MS;
+  const fallbackCooldownMs = persistentProviderFailure || slowServerFailure
+    ? Math.max(configuredFallbackMs, DEFAULT_COOLDOWN_MS)
+    : configuredFallbackMs;
+  const cooldownMs = serverDelayMs
+    ?? resetDelayMs
+    ?? fallbackCooldownMs;
   targetCooldowns.set(cooldownMapKey(comboId, target), {
     // Local fallbacks are capped at ten minutes; explicit server delays at one day.
     cooldownUntil: now + (serverDelayMs ?? Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS)),

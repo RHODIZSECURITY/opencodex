@@ -27,6 +27,7 @@ import { createAdapterContinuations } from "./adapter-continuation";
 import { deliverAdapterResponse } from "./adapter-delivery";
 import { releaseUpstreamHostAdmission } from "../../codex/upstream-host-health";
 import { releaseCodexAuthContextProbeLease } from "../../codex/auth-context";
+import { genericOAuthFailoverBudgetExtension } from "../../oauth/generic-account-failover";
 
 /** Public Responses entry and compatibility exports. Implementations live with their owners. */
 
@@ -109,7 +110,10 @@ async function handleResponsesInner(
       requestState,
       sidecarState,
     );
-    const sendBudgetState = createResponsesSendBudget(requestContext);
+    const sendBudgetState = createResponsesSendBudget(
+      requestContext,
+      genericOAuthFailoverBudgetExtension(config, requestState.route.providerName),
+    );
     if (sendBudgetState instanceof Response) return sendBudgetState;
     if ("passthrough" in transportState.adapter && transportState.adapter.passthrough && !sidecarState.routedCompaction) {
       return await executePassthroughResponse(

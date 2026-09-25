@@ -37,8 +37,40 @@ import { parseRetryAfterMs } from "../combos/failover";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
-/** Cap same-request rotations so a short Retry-After cannot spin. Mirrors the Anthropic bound. */
+/** Legacy baseline retained for compatibility/tests; live generic OAuth rotation is roster-sized. */
 export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
+
+/**
+ * Maximum same-request account rotations for this provider.
+ *
+ * The roster itself is the bound: every usable stored account may be tried at most once after
+ * the initial account. Cooldowns applied by each 429 prevent cycling back inside the request.
+ */
+export function genericOAuthFailoverLimit(
+  config: OcxConfig,
+  providerName: string,
+  now = Date.now(),
+): number {
+  const provider = config.providers?.[providerName];
+  if (!provider || !isGenericFailoverProvider(providerName, provider)) return 0;
+  return Math.max(0, eligibleAccountCount(providerName, now) - 1);
+}
+
+/**
+ * Additional request-send allowance required beyond upstream's original three OAuth rotations.
+ * Pools of four accounts or fewer consume no extra request budget; larger pools gain exactly
+ * enough sends to try every eligible credential once, never a blanket retry expansion.
+ */
+export function genericOAuthFailoverBudgetExtension(
+  config: OcxConfig,
+  providerName: string,
+  now = Date.now(),
+): number {
+  return Math.max(
+    0,
+    genericOAuthFailoverLimit(config, providerName, now) - GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
+  );
+}
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 15 * 60_000;

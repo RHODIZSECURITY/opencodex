@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { saveCredential } from "../../src/oauth/store";
+import { clearGenericFailoverHealth } from "../../src/oauth/generic-account-failover";
 import { createRequestExecutionBudget } from "../../src/lib/request-execution-budget";
 
 /**
@@ -280,6 +281,70 @@ describe("upstream sends per logical request", () => {
     // spend it on.
     expect(upstream.authorizations).toHaveLength(3);
     expect(totalSends(logCtx)).toBe(3);
+  });
+
+  test("combo policy reserves credential-roster sends without changing the legacy default", () => {
+    const legacy = comboExecutionBudgetPolicy(2);
+    const withFiveAccountTarget = comboExecutionBudgetPolicy(2, 1);
+    expect(legacy.maxTotalModelSends).toBe(COMBO_TARGET_BASE_SENDS + 2);
+    expect(withFiveAccountTarget.maxTotalModelSends).toBe(legacy.maxTotalModelSends + 1);
+    expect(withFiveAccountTarget.baseSendAllowance).toBe(withFiveAccountTarget.maxTotalModelSends - 1);
+  });
+
+  test("a five-account OAuth roster spends exactly five sends before surfacing the final 429", async () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "oauth-roster-send-budget-"));
+    process.env.OPENCODEX_HOME = home;
+    clearGenericFailoverHealth();
+    for (let index = 0; index < 5; index += 1) {
+      await saveCredential("xai", {
+        access: `oauth-access-${index}`,
+        refresh: `oauth-refresh-${index}`,
+        expires: Date.now() + 3_600_000,
+        accountId: `oauth-account-${index}`,
+        source: "oauth",
+      } as never, { addAccount: true });
+    }
+
+    const authorizations: string[] = [];
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+      return new Response(JSON.stringify({
+        error: { message: "rate limited", type: "rate_limit_error", code: "rate_limit_exceeded" },
+      }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      });
+    }) as typeof fetch;
+
+    const config = {
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth",
+          models: ["grok-4.6"],
+        },
+      },
+    } as unknown as OcxConfig;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+
+    try {
+      takeSpendHome();
+      const response = await handleResponses(responsesRequest("xai/grok-4.6"), config, logCtx);
+      await response.text();
+      expect(response.status).toBe(429);
+      expect(authorizations).toHaveLength(5);
+      expect(new Set(authorizations).size).toBe(5);
+      expect(totalSends(logCtx)).toBe(5);
+    } finally {
+      dropSpendHome();
+      clearGenericFailoverHealth();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
   });
 
   test("a one-target combo reduces to exactly the single-target shape", async () => {

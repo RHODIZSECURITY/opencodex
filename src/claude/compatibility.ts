@@ -168,6 +168,18 @@ function detectFeatures(body: unknown, anthropicBeta?: string): Set<ClaudeFeatur
   return codes;
 }
 
+/**
+ * Whether the current Anthropic request explicitly uses partial/deferred tool discovery.
+ * A routed Claude Code request without these features carries its complete current tool
+ * catalog, so replay must not authorize a stale tool identity from an older target/session.
+ */
+export function claudeRequestUsesDeferredToolCatalog(body: unknown): boolean {
+  const detected = detectFeatures(body);
+  return detected.has("deferred_tools")
+    || detected.has("tool_search")
+    || detected.has("tool_reference");
+}
+
 export interface ClaudeCompatibilityResult {
   featureCodes: ClaudeFeatureCode[];
   compatible: boolean;

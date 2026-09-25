@@ -7,6 +7,8 @@ import {
   clearGenericFailoverHealth,
   eligibleFailoverAccounts,
   genericFailoverRetryAfterSeconds,
+  genericOAuthFailoverBudgetExtension,
+  genericOAuthFailoverLimit,
   hasEligibleGenericOAuthFailoverTarget,
   hasFailoverAccountQuorum,
   isGenericFailoverProvider,
@@ -134,6 +136,24 @@ describe("#2568 generic OAuth account failover", () => {
     expect(rotateGenericOAuthAccountOn429(config(false), "xai", ids[0]!, null)).toBe(ids[1]);
     clearGenericFailoverHealth();
     expect(rotateGenericOAuthAccountOn429(config(true), "xai", ids[0]!, null)).toBe(ids[1]);
+  });
+
+  test("a five-account roster exposes four rotations and walks every account before exhaustion", async () => {
+    const ids = await seed(5);
+    const cfg = config();
+    expect(genericOAuthFailoverLimit(cfg, "xai")).toBe(4);
+    expect(genericOAuthFailoverBudgetExtension(cfg, "xai")).toBe(1);
+    const visited = [ids[0]!];
+    let current = ids[0]!;
+    for (let i = 0; i < 4; i++) {
+      const next = rotateGenericOAuthAccountOn429(cfg, "xai", current, null);
+      expect(next).not.toBeNull();
+      visited.push(next!);
+      current = next!;
+    }
+    expect(new Set(visited).size).toBe(5);
+    expect(visited).toEqual(ids);
+    expect(rotateGenericOAuthAccountOn429(cfg, "xai", current, null)).toBeNull();
   });
 
   test("rotation continues AFTER the failed account, not from the top of the roster", async () => {
@@ -341,7 +361,7 @@ describe("sidecar on429 wiring", () => {
     // The gate is a POSITIVE else-if, not an early return: an early bare return here made the
     // Anthropic arm below unreachable, because Anthropic never has a genericFailoverAccountId.
     expect(body).toContain("genericFailoverAccountId");
-    expect(body).toContain("genericFailovers < GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST");
+    expect(body).toContain("genericFailovers < genericOAuthFailoverLimit(config, route.providerName)");
     expect(body).toContain("isGenericOAuthFailoverEnabled(config, route.providerName)");
 
     // Anthropic's pool is excluded from generic failover, so it needs its own arm here or a 429
