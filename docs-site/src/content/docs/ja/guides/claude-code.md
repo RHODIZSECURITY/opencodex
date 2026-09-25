@@ -23,9 +23,10 @@ ocx claude
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自動コンテキスト圧縮のしきい値(デフォルト `829800`)。自動コンテキストがオンのときのみ注入します |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (任意) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (任意、従来の `ANTHROPIC_SMALL_FAST_MODEL` もサポート) |
-| `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (任意) |
+| `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*`（サブスクリプション起動で未設定の場合はネイティブの `claude-opus-5-5[1m]` / `claude-sonnet-5[1m]` / `claude-fable-5-1[1m]`） |
 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` | `alwaysEnableEffort` がオンなら `1` (条件付き) |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | `maxContextTokens` が設定された場合の従来コンテキスト上書き値 (条件付き) |
+| `ENABLE_TOOL_SEARCH` | `claudeCode.toolSearch` が設定されている場合 (条件付き、既定はオフ) |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `maxContextTokens` が設定された場合の従来コンテキスト上書き値 (条件付き) |
 直接 export した変数が常に優先します。追加引数はそのまま渡されます: `ocx claude -p "hello"`。
 
 ### Claude ルーティングが無効なときのネイティブフォールバック
@@ -91,33 +92,185 @@ hook を削除します。Claude Desktop は独立した profile を使用し、
 では専用プロキシ admission ヘッダーも有効であること。そのため `ocx claude` を
 使うとき "claude.ai connectors are disabled" 警告ももう表示されません。
 
+本文で変更するのはツール呼び出し ID だけです。Anthropic が拒否する `tool_use.id` や `tool_result.tool_use_id`(`a-zA-Z0-9_-` 以外の文字を含むもの、または 64 文字を超えるもの。セッション中にルーティングモデルが作った ID など)は、呼び出しと結果の対応を保ったまま適合する ID に書き換えます。適合する ID はそのまま送り、空の ID にはローカルで 400 を返します。
+
 `claudeCode.nativePassthrough: false` でオフにでき、`claudeCode.anthropicBaseUrl` で別のアドレスを
 指定できます。
+
+## Claude Desktop のモード: ゲートウェイ（デフォルト）と 1P
+
+ダッシュボードの **Claude → Desktop → 接続モード**、または
+`ocx claude desktop apply --first-party|--gateway` で排他的なモードを選びます。
+
+### ゲートウェイ（デフォルト）
+
+新規インストールではゲートウェイプロファイルが適用され、Chat タブを含むアプリ全体が
+OpenCodex を使います。claude.ai 専用の機能は利用できません。従来の `--static`、`--hybrid`、
+`--discovery-only` もゲートウェイを選びます。
+
+### 1P（オプトイン）
+
+:::caution[アカウントのリスク]
+1P モードでは Claude サブスクリプションの通信がローカルのインターセプトプロキシを通ります。
+Anthropic がこれを利用規約違反とみなし、アカウントを停止する可能性があります。デフォルトは
+ゲートウェイです。このリスクを受け入れる場合にのみ 1P を選んでください。
+:::
+
+Desktop 本体は claude.ai に接続したままで、Chat、コネクタ、リモート操作も使えます。
+OpenCodex が書くのは `~/.claude/settings.json`（`CLAUDE_CONFIG_DIR` に対応）の `env` にある
+`HTTPS_PROXY` と `NODE_EXTRA_CA_CERTS` だけです。Code タブが起動する Claude Code、
+サブエージェント、ターミナルの `claude` CLI がローカルプロキシを通ります。プロキシのアドレスは
+`http://opencodex:<インストールごとのトークン>@127.0.0.1:<ポート>` の形で、トークンは
+所有者だけが読める `~/.opencodex/claude-intercept/proxy-token` に保管され、プロキシは
+すべての CONNECT をこのトークンで認証します。その他の
+`api.anthropic.com` パスは Anthropic に中継されます。CA は OS の信頼ストアに入れず、
+`NODE_EXTRA_CA_CERTS` を読む Node プロセスだけが信頼します。
+
+モードは `claudeCode.desktopMode` に保存されます。明示的に、またはこの更新以前に 1P を
+適用した環境は 1P を維持し、既存のゲートウェイも維持します。明示設定がない場合は、
+OpenCodex 所有の選択済みゲートウェイ行、保存済みのゲートウェイ指紋、所有する
+`settings.json` の 1P 設定の順に判定し、証拠がなければゲートウェイです。
+カタログ同期やモデル一覧の更新が 1P 環境にゲートウェイプロファイルを書くことはありません。
+`claudeCode.intercept.enabled: false` なら既存の 1P 環境での適用は
+`intercept_disabled` で拒否され、新規環境はゲートウェイを適用します。外部の企業プロキシ
+設定は上書きしません。モード変更後は Desktop を完全に終了して開き直してください。
+
+### Picker モード: 1P の Code タブで opencodex モデルを表示する
+
+Picker モードは 1P モードの一部です。macOS で 1P を選ぶとデフォルトで有効になりますが、
+`claudeCode.intercept.picker: false` を設定した場合は無効です。1P の Desktop の Code タブにある
+モデルピッカーを書き換え、利用できる opencodex モデルを名前付きで表示します。初回の有効化時は、
+macOS がログインキーチェーン内のローカル証明書認証局を信頼するよう求めることがあります。この認証局の
+制約は `claude.ai` とそのサブドメインに限られ、このダイアログはこのローカル CA に対する一度だけの
+信頼操作です。
+
+Picker モードが有効な間、Claude Desktop のネットワークは OpenCodex を経由します。OpenCodex が停止
+すると、Picker モードをオフにするか Desktop を完全に再起動するまで Desktop はオフラインになります。
+状態は `ocx claude desktop picker status`、信頼操作は `ocx claude desktop picker trust` で確認・実行できます。
+`ocx claude desktop picker off` またはダッシュボードの **Claude → Desktop** の切り替えでオフにできます。
+Picker プロファイルを選択した後は、Claude Desktop を完全に終了して開き直してください。
+
+Picker モードは 1P の一部なので、[1P のアカウントリスク](#1pオプトイン)も同じように適用されます。
+
+### Code タブで opencodex モデルを使う（1P バインディング）
+
+1P モードでは、Code タブのモデルピッカーは claude.ai が提供します。各行（Opus 5.5、Sonnet 5、
+Haiku 4.5、**More models** 以下の旧モデル）はアカウントから来るもので、ローカル設定で
+opencodex の行を追加することはできません。OpenCodex に届くのは、リクエストごとのピッカーの
+Anthropic モデル ID なので、代わりにピッカーの行を opencodex のルートにバインドします。
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+ダッシュボードの **Claude → Desktop → Code タブのモデルバインディング** からも同じ操作ができます。
+こうすると Code タブで **Sonnet 4.6** を選んだとき `xai/grok-4.7` が応答します。ピッカーには
+Anthropic の名前がそのまま表示され、Claude Code のシステムプロンプトもモデルにその Claude モデルだと
+伝えるため、普段使わない行（**More models** の項目が候補）を選ぶのがおすすめです。バインディングは
+次のリクエストから有効になり、Desktop の再起動は不要です。
+
+- ルートは Desktop のルート表記を使います: `provider/model`、ネイティブ OpenAI プールは
+  `native/<slug>`。ダッシュボードで利用可能と表示されているルートのみ指定できます。
+- 日付付きのピッカー ID（`claude-haiku-4-5-20251001`）は日付なしのバインディング
+  （`claude-haiku-4-5`）にマッチし、`[1m]` とファストモードの選択も同じバインディングに従います。
+- バインディングは `claudeCode.intercept.modelMap` に保存され、ローカルのインターセプトプロキシを
+  通る Claude Code トラフィック（1P モードの Desktop Code タブとターミナルの `claude` CLI）にのみ
+  適用されます。`ocx claude` セッションと公開 `/v1/messages` エンドポイントはこれを無視します。
+  グローバルな `claudeCode.modelMap` は引き続き全体に適用され、同じ ID ではバインディングが優先します。
+- 有効なバインディングは `ocx claude desktop status --json` の `firstParty.modelBindings` で確認できます。
+
+## リモートハブに接続した Claude Desktop
+
+接続中のマシンで `ocx claude desktop apply` または `ocx claude desktop` を実行すると、
+ハブの Desktop スナップショットを取得し、ハブの origin と発行済みモデル ID をそのまま
+ローカル Desktop 設定に書き込みます。ローカルの別名は生成しません。static/hybrid は
+モデル一覧もコピーし、discovery-only は一覧を埋め込まずハブの origin を使います。
+
+プロファイル、ファミリー、デフォルトはハブ側で管理します。ハブで変更してからクライアントで
+再適用し、Desktop でモデルを選び直してください。以前クライアントだけで作成した別名も
+再適用・再選択が必要です。`show`、ローカル編集、import/export はローカル設定だけを扱います。
+接続中の `ocx claude desktop import <path> --apply` は未対応で、保存前に拒否します。
+`--apply` なしの import はローカル操作のままです。
+
+取得には既存の接続のデータ用認証情報を使い、管理者トークンもプロファイルのアップロードも
+不要です。古いハブが未対応の場合、不正な応答や空の Desktop 一覧の場合は適用に失敗します。
+ローカル一覧やループバック URL への代替は行いません。ハブを更新・設定して再適用してください。
+
+この別名変更では、[#3719](https://github.com/lidge-jun/opencodex/issues/3719) の `thinking` / `redacted_thinking` 再送とプロンプトキャッシュの
+別件は修正しません。プロキシの接続認証だけではネイティブ Anthropic パススルーは有効に
+なりませんが、変換された Anthropic ルートでもキャッシュは利用できます。再送の保持と
+キャッシュヒットの比較は別の作業です。
+
+### キーのローテーション、復旧、切断
+
+キーのローテーションと復旧では、ローカル接続の認証情報とともに接続管理下の Desktop
+プロファイルのキーも更新します。キー移行のための手動再適用は不要です。モデル ID、
+ファミリー、デフォルト、現在のプロファイル選択は維持し、管理プロファイルの再選択や無効な
+統合の再有効化は行いません。CLI JSON の `rotation: "committed"` は新しいキーが有効に
+なったことを示します。`rotation: "rolled_back"` は以前のキーを保持または復元したことを
+示し、新しいキーの確定や以前のキーの失効を意味しません。不確実・未完了の復旧は成功として
+報告しません。
+
+最初の接続中の適用で、復元対象の元の管理設定と選択を保存します。再適用やキー更新で
+この最初の記録を置き換えません。`ocx disconnect` は接続が管理する設定を復元し、ユーザーが
+追加したフィールドや他のプロファイルを保持します。管理プロファイルがまだ選択されている
+場合だけ元の選択に戻し、その後選んだ別の有効なプロファイルは変更しません。新規プロファイルに
+ユーザー設定が追加されていれば削除せず、読み込み可能な標準モードで残します。
+`--keep-catalog` が保持するのはカタログであり、Desktop の接続キーではありません。
+
+元の設定記録がない旧管理プロファイルも、現在のハブと認識済みの接続キーへの所属が明確なら
+移行できます。apply、ローテーション・復旧、直接の disconnect で処理でき、新しいフラグや
+事前の再適用は不要です。元の設定が未記録のため切断時に標準モードを使うという警告を表示します。
+接続所有のゲートウェイ設定だけを除去し、ユーザーフィールドと別の有効な選択は保持します。
+この結果は元の復元ではなく標準モードへのフォールバックとして報告します。
+
+管理設定の競合、不明な認証情報、破損した復元記録は上書きせず報告します。中断した処理は
+同じ接続について再開でき、新しい接続を消したり復元前に完了と報告したりしません。
+切断前に保留中のキー復旧を完了し、切断を再試行するときは同じカタログ保持設定を使ってください。
+
+適用、ローテーション・復旧、復元後は Claude Desktop を完全に終了して開き直してください。
+ディスク上の更新では実行中のアプリが保持するキーは変わらず、自動終了・再起動もしません。
+ローカルの切断はハブのキーや外部コピーを自動失効・削除しません。必要ならハブで別途失効させてください。
 
 ## /model ピッカー("From gateway")
 
 Claude Code 2.1.129 以降は `GET /v1/models?limit=1000` でゲートウェイモデルを探し、デフォルトの `/model`
-ピッカーの "From gateway" 項目に表示します。ピッカーは `claude` または `anthropic` で始まる ID のみ
-受け付けるため、opencodex はルーティングモデルを安定で元に戻せるエイリアスとして公開します。
+ピッカーに表示します。`description` のない行は "From gateway" と表示されます。opencodex は Claude Code CLI
+向けの各行に `description`（`Routed by OpenCodex to <provider>/<model>`、ネイティブ行は `Routed by OpenCodex to native <model>`、Fast 行は末尾に ` · Fast`、1M 行は元の説明のまま）を送り、Claude Code 2.1.257 以降は
+その内容を代わりに表示します。Claude Code 2.1.278 のピッカーは `claude` または `anthropic` を含む ID を受け付けます。`claude-` で始まる未知の ID は compact を無効にしない限り 200k として計算されるため、opencodex はルーティングモデルを `claude` を含みつつ `claude-` で始まらない安定した可逆エイリアスとして公開します。
 
 | 画面 | 形式 | 例 |
 | --- | --- | --- |
-| Claude Code CLI | `claude-ocx-<provider>--<model>` (plain) または `claude-ocx2-…` (escaped) | `claude-ocx-native--gpt-5.6-sol` |
+| Claude Code CLI | `ocx-claude-<provider>--<model>` (plain) または `ocx-claude2-…` (escaped) | `ocx-claude-native--gpt-5.6-sol` |
 | Claude Desktop 3P | `claude-opus-4-8-<code>` (3 桁の base36 ハッシュ) | `claude-opus-4-8-ncb` |
 
 プロキシはリクエストごとに系列を選びます。`?ids=cli` または `?ids=desktop` が優先し、指定しないと
 `claude-code/*` user-agent には読みやすい CLI 形式を、他のクライアントには Desktop ハッシュを
 提供します。両系列は継続してデコードできるため、どちらの形式でも `settings.json` に保存したモデルは
-引き続き動作します。
+引き続き動作します。古い設定の `claude-ocx-<provider>--<model>` / `claude-ocx2-<provider>--<model>` も
+引き続き解決されますが、保存済みの旧 ID はルーティングされても Claude Code 側では 200k として計算されます。
+保存済みの `claude-ocx-` は `ocx-claude-` に、エスケープ付きの `claude-ocx2-` は `ocx-claude2-` に一度選び直すと、
+実際のコンテキストウィンドウと compact が両方とも適用されます。
 
-Claude Desktop のフッターピッカーで実行中の 3P 会話のモデルが切り替わらない場合は、その会話で
-`/model <id>` を使用してください。OpenCodex はピッカーの状態を直接参照できず、各リクエストに
-含まれるモデル ID をルーティングします。結果は **Logs → requestedModel** で確認できます。
+Claude Desktop のフッターピッカーで実行中の 3P 会話のモデルが切り替わらない場合は、
+`/model <id>` を試せますが、影響を受ける Desktop ビルドではこの回避策も失敗することがあります。
+[Issue #3782](https://github.com/lidge-jun/opencodex/issues/3782) では、Windows 上の
+Claude Desktop 1.46388.4 で、フッターピッカーと `/model` のどちらで変更しても、会話が最初の
+モデルを使い続けると報告されています。この報告だけでは、クライアントやルーティングのどの
+コンポーネントがこの動作の原因なのかは確定できません。
+
+OpenCodex の Claude Desktop プロファイルで希望するデフォルトモデルを選択し、プロファイルを
+再適用して、新しい会話を開始することも試せます。これはトラブルシューティングの手順であり、
+解決を保証するものではありません。OpenCodex はピッカーの状態を参照できず、各リクエストに
+含まれるモデル ID をルーティングします。クライアントが何を送信しているかは
+**Logs → requestedModel** で確認してください。
 
 **エイリアス構文ルール:** provider には `/` や `--` を含められず `native` と同じでもいけません。
-`/` も `~` も含まない plain な model ID は v1 接頭辞 `claude-ocx-…` のままです。`/` または `~` を含む
-model ID は v2 接頭辞 `claude-ocx2-…` で発行し、エスケープします(`/` → `~s`、`~` → `~t`)。例:
-`openrouter/anthropic/claude-opus-4-8` → `claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`。
+`/` も `~` も含まない plain な model ID は v1 接頭辞 `ocx-claude-…` のままです。`/` または `~` を含む
+model ID は v2 接頭辞 `ocx-claude2-…` で発行し、エスケープします(`/` → `~s`、`~` → `~t`)。例:
+`openrouter/anthropic/claude-opus-4-8` → `ocx-claude2-openrouter--anthropic~sclaude-opus-4-8`。
 v1 エイリアスはリテラルにデコードします(歴史的に model ID に含まれていた 2 文字列 `~s` / `~t` も保持)。
 v2 エイリアスはエスケープを展開します。読みやすい形式で表現できないルートはハッシュエイリアスに
 置き換えます。モデル ID には `--` を含め**られます**(解析時は最初の `--` だけを基準に分割します)。
@@ -125,6 +278,14 @@ v2 エイリアスはエスケープを展開します。読みやすい形式�
 
 **モデル解決順序:** `[1m]` 標識の削除 → 読みやすいエイリアスのデコード → Desktop ハッシュエイリアスのデコード →
 `modelMap` の完全一致 → 日付を削除した値との一致(`-20250514` 削除) → パススルー順です。
+
+解決できない日付形式の Desktop ID は、モデル検出に含まれていない実際のネイティブモデル
+かもしれません。判断材料が足りず ID を解決できない場合、Messages と count-tokens は固定エラー
+`desktop_model_mapping_unavailable`と HTTP 503 を返します。これはモデルが無効だという判定ではありません。
+不明な旧ハッシュ別名は引き続き HTTP 400 で拒否します。どちらも日付を除去したり別ルートへ
+フォールバックしたりしません。既知の ID、登録済みマッピング、正確な `modelMap` 一致、
+認識済みの実ネイティブ ID の処理は変わりません。モデル検出を更新するか接続先ハブの
+プロファイルを再適用してから試してください。再試行だけで解決する保証はありません。
 
 各項目には `gemini-3-pro (gemini)` のような表示名と公式 `ModelInfo` 形式の完全なモデル能力
 (推論負荷段階、thinking 型)が含まれます。実際の Anthropic モデルは両画面で正式 ID を維持します。
@@ -165,6 +326,8 @@ Claude ページで圧縮値を調整できます。**警告:** モデルの実�
 `ANTHROPIC_SMALL_FAST_MODEL` です。実際の Haiku 値は `tierModels.haiku ?? smallFastModel` で、
 両 Haiku 変数に入ります。
 
+`ocx claude` をサブスクリプションモードで起動すると、Claude Code 自身のログインが `claude-sonnet-5` のような素の Claude ID をそのまま Anthropic に送ります。そのため、これらの ID のコンテキストウィンドウは、別のプロバイダーが同じ ID に何を載せていてもプロバイダーレジストリから取ります。未設定の Opus / Sonnet / Fable スロットには、Claude Code がそのエイリアスを解決するネイティブ ID が `[1m]` マーカー付きで入ります。ゲートウェイ越しの Claude Code は、マーカーのない ID を 200k として数えるためです。1M 未満に上限を設定した `anthropic` 行や `claudeCode.modelMap` のエントリがある ID にはマーカーを付けず、Haiku は埋めることもマーカーを付けることもありません。プロキシ認証で起動した場合や `nativePassthrough` がオフの場合はルーターが決め、ルーティングされた行のウィンドウだけが使われます。システム環境とシェルファイルは、ハブ経由の起動にも値が届くため、未設定のスロットを空のままにします。
+
 `tierModels.haiku` と `smallFastModel` の両方がない場合、OpenCodex は 2 つのヘルパーモデル変数を未設定のままにします。その後 Claude Code がネイティブのヘルパーモデル（現在は Sonnet）を選択し、ネイティブプロバイダーで料金が発生する可能性があります。
 
 ## ロスターエージェント(injectAgents)
@@ -200,6 +363,7 @@ Anthropic パススルーはそのまま維持します。
    含まれる場合、対になる `tool_result` 本体をスタブに差し替えます。
 2. **テキストブロック配信:** `Base directory for this skill: ` で始まる 10,000 文字以上のユーザー
    テキストブロックでディレクトリ basename がブロック名と一致するか確認します(大文字小文字区別なし)。
+   ディレクトリ行は UTF-16 コード単位で 4,096 までしか調べません。それより長い行は、末尾に改行がない場合も含めてそのまま送られます。
 
 `claudeCode.blockedSkills` で設定できます(デフォルト `["claude-api"]`、`[]` で省略機能を完全に
 オフ)。スタブはツール呼び出しと結果の対を維持します。
@@ -220,6 +384,14 @@ Anthropic パススルーはそのまま維持します。
 ```
 
 照合順序: 検索エイリアス → 完全一致 ID → 日付接尾辞を削除した ID(`-20250514`) → パススルー順です。
+
+解決できない日付形式の Desktop ID は、モデル検出に含まれていない実際のネイティブモデル
+かもしれません。判断材料が足りず ID を解決できない場合、Messages と count-tokens は固定エラー
+`desktop_model_mapping_unavailable`と HTTP 503 を返します。これはモデルが無効だという判定ではありません。
+不明な旧ハッシュ別名は引き続き HTTP 400 で拒否します。どちらも日付を除去したり別ルートへ
+フォールバックしたりしません。既知の ID、登録済みマッピング、正確な `modelMap` 一致、
+認識済みの実ネイティブ ID の処理は変わりません。モデル検出を更新するか接続先ハブの
+プロファイルを再適用してから試してください。再試行だけで解決する保証はありません。
 
 ## サイドカーマトリクス: ウェブ検索と画像理解
 
@@ -268,7 +440,7 @@ ChatGPT bearer はメインルーティングプロバイダーには転送し�
 モデル、detail、画像バイト、リクエストコンテキストを基準にキャッシュし、同じ画像とコンテキストを毎回再説明
 しません。内容が変わり得るリモート `https:` 画像はキャッシュしません。
 
-全設定キーは[設定リファレンス](/ja/reference/configuration/#sidecars)で確認できます。
+全設定キーは[設定リファレンス](/ja/reference/configuration/server/#サイドカー)で確認できます。
 Anthropic OAuth のウェブ検索と画像説明は保存所ですでに使っている Claude Code OAuth
 fingerprint 方式をそのまま踏襲しますが、長時間の無人作業に使う前に自身のアカウントと実際の作業で
 十分 soak test するのが無難です。
@@ -299,11 +471,15 @@ Claude Code の `/effort` 設定はアダプターでも維持されます。
 | Assistant テキスト | `output_text` |
 | Assistant `tool_use` | `function_call`(`input` → JSON 文字列に変換した `arguments`) |
 | ユーザー `tool_result` | `function_call_output`(`is_error` → `[tool error]` 接頭辞) |
-| `thinking` / `redacted_thinking` 再生 | 破棄 |
+| `thinking` / `redacted_thinking` 再生 | シグネチャと秘匿ペイロードを境界付き `ocxr1` エンベロープに保持した `reasoning` 項目 |
 | Function ツール | `{type: "function"}`(`web_search*` → `{type: "web_search"}`) |
 | `tool_choice` | `auto`→`auto`、`none`→`none`、`any`→`required`、名前指定関数→`{type:"function",name}`、ホスト型 WebSearch/web_search→`{type:"web_search"}` |
 | `max_tokens` | `max_output_tokens` |
 | `stop_sequences` | `stop` |
+
+Claude Codeの自動モードは常に`stop_sequences`を送ります。ルーティング先プロバイダーの`noStopModels`リストにあるモデルでは、OpenCodexはChat CompletionsとResponsesの両方のワイヤーで`stop`を省きます。そのため、grok-4.7やgrok-4.6などのxAI推論モデルが`400 invalid-argument`を返したり、一時的に利用不可と判定されたりしません。[`noStopModels`](/ja/reference/configuration/providers/)を参照してください。
+
+意図した Anthropic アダプターでは、非表示でない署名付きブロック（空の thinking を含む）と不透明な redacted ブロックを保持します。`hideThinkingSummary` は変更しません。ローカルで隠した署名付きテキストは Claude クライアントに公開せず、この非表示境界での無損失再生は未確認です。旧形式の結合エンベロープは、テキスト送信後に元のブロック順を復元できません。`claudeCode.compatibility: "enforce"` は引き続き thinking 再生を拒否します。実際の Anthropic 受理やキャッシュ改善の証明ではなく、[#3719](https://github.com/lidge-jun/opencodex/issues/3719) は未解決です。
 
 **エラー条件(400):** 不正な JSON、欠落または空の `model`、欠落または空の `messages`、未サポートの
 role、`tool_use_id` のない `tool_result`、id/name のない `tool_use`、name のない名前指定 `tool_choice` です。
@@ -315,7 +491,8 @@ role、`tool_use_id` のない `tool_result`、id/name のない `tool_use`、na
 | `response.created` | `message_start` + `ping` |
 | Heartbeat | `ping` |
 | テキスト delta | `content_block_start` → `content_block_delta`(text) → `content_block_stop` |
-| 推論要約/テキスト | 合成シグネチャ付きの `thinking` ブロック |
+| 推論要約/テキスト | 再生されたシグネチャ、または境界付き `ocxr1` フォールバックを持つ `thinking` ブロック |
+| 秘匿化された推論 | 推論エンベロープから再生される `redacted_thinking` ブロック |
 | Function-call フレーム | `input_json_delta` を持つ `tool_use` ブロック |
 | 終了イベント | `message_delta` → `message_stop` |
 | 終了前に EOF | 502 形式 `api_error` |
@@ -413,3 +590,7 @@ Anthropic バックエンドを明示すると意図的に失敗後停止しま�
 **サブエージェントが誤ったモデルにディスパッチされる** — ロスターエージェント(`ocx-*`)は Agent ツールの `model`
 引数ではなく `<!-- ocx-route: ... -->` ディレクティブを使います。ディレクティブが希望ルートと一致するか確認し、
 モデルプレースホルダとして `"haiku"` を渡してください。
+
+`config.json` の `claudeCode.stabilizePromptCache` を `true` にすると、変換ルートのシステム指示末尾にある対応済み Claude 通知を最後のユーザーメッセージへ移します。既定値は `false` です。このロール変更が適切なクライアントでのみ有効にしてください。コードフェンス内の例と一致しない本文は保持され、Anthropic のネイティブ転送は変わりません。メタデータがない場合のキャッシュキーは安定化した指示から計算されます。会話 ID の生成やキャッシュヒットの保証は行いません。
+
+変換されたすべての Chat ルートで、タイムライン上のリマインダーは保留中のツール結果の後、会話内の元の位置を保ちます。これにより、新しいリマインダーを追加しても先頭のシステムプロンプトが書き換わらず、会話の途中に置かれた指示がそれより前のターンの前に移動することもありません。そのスロットが運ぶロールは別に決まります。プロバイダーが `foldDeveloperRoleToSystem: false` を記録していないかぎり、リマインダーは `system` として送られます。この記録は上流が `developer` ロールを受け付けることを表し、その場合は同じ位置のまま転送します。受け付けない上流は `400 role 'developer' is not allowed` を返してターンが始まらないため、記録のない宛先は畳む側になります。`stabilizePromptCache` の設定にかかわらず適用され、Anthropic のネイティブ転送は変わりません。キャッシュの再利用には、安定したセッション ID と上流キャッシュの利用可能性が引き続き必要です。過去の指示やツールの変更、会話の圧縮もキャッシュヒットに影響します。リマインダーの順序を保つだけで再利用が保証されるわけではありません。

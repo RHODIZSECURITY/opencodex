@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
-  GAJAE_API_KEY_ENV,
   HERMES_API_KEY_ENV_REF,
   LOOPBACK_API_KEY_PLACEHOLDER,
   OPENCLAW_API_KEY_ENV_REF,
@@ -17,6 +16,7 @@ import {
   type OpenclawGeneratedConfig,
 } from "../../src/clients/config-export";
 import { serializeDocument } from "../../src/integrations/serialize";
+import { readPath } from "../../src/integrations/state";
 import type { OcxConfig } from "../../src/types";
 
 /**
@@ -59,12 +59,12 @@ describe("no client config ever carries a credential", () => {
     expect(doc.providers[OPENCODE_PROVIDER_ID]!.api_key).toBe(LOOPBACK_API_KEY_PLACEHOLDER);
   });
 
-  test("gajae uses apiKeyEnv, not the apiKey footgun", () => {
+  test("gajae can use loopback without a separately populated environment variable", () => {
     const doc = buildClientConfig("gajae", ctx()) as GajaeGeneratedConfig;
     const provider = doc.providers[OPENCODE_PROVIDER_ID]!;
-    expect(provider.apiKeyEnv).toBe(GAJAE_API_KEY_ENV);
-    // `apiKey` would fall back to treating the literal name as the token.
-    expect(provider).not.toHaveProperty("apiKey");
+    expect(provider.apiKey).toBe(LOOPBACK_API_KEY_PLACEHOLDER);
+    expect(provider).not.toHaveProperty("apiKeyEnv");
+    expect(EXPORT_CLIENTS.gajae.apiKeyEnv).toBe("");
   });
 });
 
@@ -107,6 +107,25 @@ describe("openclaw", () => {
   });
 });
 
+describe("interpolation-capable clients", () => {
+  test("omit provider-controlled model text that could expand an environment variable", () => {
+    const models: ExportModel[] = [
+      ...MODELS,
+      { namespaced: "evil/${SENSITIVE_ENV}", provider: "evil", id: "${SENSITIVE_ENV}" },
+      { namespaced: "safe/id", provider: "safe", id: "id", displayName: "${SENSITIVE_ENV}" },
+    ];
+    const maliciousContext = { ...ctx(), models };
+
+    const hermes = buildClientConfig("hermes", maliciousContext) as HermesGeneratedConfig;
+    expect(Object.keys(hermes.providers[OPENCODE_PROVIDER_ID]!.models)).not.toContain("evil/${SENSITIVE_ENV}");
+
+    const openclaw = buildClientConfig("openclaw", maliciousContext) as OpenclawGeneratedConfig;
+    expect(openclaw.models.providers[OPENCODE_PROVIDER_ID]!.models.map(model => model.id)).toEqual(
+      MODELS.map(model => model.namespaced).sort(),
+    );
+  });
+});
+
 describe("kimi", () => {
   test("omits a model with no authoritative context window entirely", () => {
     const doc = buildClientConfig("kimi", ctx()) as KimiGeneratedConfig;
@@ -120,11 +139,10 @@ describe("kimi", () => {
     expect(doc.providers[OPENCODE_PROVIDER_ID]!.type).toBe("openai");
   });
 
-  test("never asserts capabilities it cannot know", () => {
+  test("asserts image input only when the catalog declares it", () => {
     const doc = buildClientConfig("kimi", ctx()) as KimiGeneratedConfig;
-    for (const model of Object.values(doc.models)) {
-      expect(model).not.toHaveProperty("capabilities");
-    }
+    expect(doc.models[kimiModelAlias("anthropic/claude-opus-4-8")]?.capabilities).toEqual(["image_in"]);
+    expect(doc.models[kimiModelAlias("gpt-5.5")]).not.toHaveProperty("capabilities");
   });
 
   test("its document round-trips through the TOML parser", () => {
@@ -137,7 +155,7 @@ describe("gajae", () => {
   test("emits only schema-known fields, because unknown ones fail validation", () => {
     const doc = buildClientConfig("gajae", ctx()) as GajaeGeneratedConfig;
     const provider = doc.providers[OPENCODE_PROVIDER_ID]!;
-    expect(Object.keys(provider).sort()).toEqual(["api", "apiKeyEnv", "baseUrl", "models"]);
+    expect(Object.keys(provider).sort()).toEqual(["api", "apiKey", "baseUrl", "models"]);
     for (const model of provider.models) {
       for (const key of Object.keys(model)) {
         expect(["id", "name", "input", "contextWindow", "maxTokens"]).toContain(key);
@@ -159,14 +177,11 @@ describe("contributions describe what a writer would own", () => {
 
   test("every client's fragments point at real entries in its own document", () => {
     for (const clientId of EXPORT_CLIENT_IDS) {
-      const document = buildClientConfig(clientId, ctx()) as Record<string, unknown>;
+      const document = buildClientConfig(clientId, ctx());
       for (const fragment of EXPORT_CLIENTS[clientId].buildContribution(ctx()).fragments) {
-        let cursor: unknown = document;
-        for (const key of fragment.path) {
-          expect(cursor && typeof cursor === "object").toBe(true);
-          cursor = (cursor as Record<string, unknown>)[key];
-        }
-        expect(cursor).toEqual(fragment.value);
+        // Read through the writer's own segment grammar: Raycast's path holds
+        // a `[id=opencodex]` selector into a sequence, not a map key.
+        expect(readPath(document, fragment.path)).toEqual(fragment.value);
       }
     }
   });

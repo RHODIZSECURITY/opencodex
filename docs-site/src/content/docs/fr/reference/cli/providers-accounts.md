@@ -14,7 +14,7 @@ Gestion des fournisseurs non interactive. Les entrées de registre sont classée
 
 | Sous-commande | Drapeaux pris en charge | Actions |
 | --- | --- | --- |
-| `list` | `--json` | Répertoriez les fournisseurs configurés et les entrées de registre restantes. |
+| `list` | `--json`, `--jsonl` | Répertoriez les fournisseurs configurés et les entrées de registre restantes. `--jsonl` émet un objet JSON par fournisseur configuré et par ligne. |
 | `add <name>` | `--adapter <adapter>`, `--base-url <url>`, `--api-key <key>`, `--default-model <model>`, `--set-default`, `--force`, `--json`, `--sync` | Ajoutez un fournisseur registry/custom. `--force` écrase ; `--sync` actualise un proxy en cours d'exécution en mode sortie humaine. |
 | `edit <name>` | indicateurs de champ du fournisseur, `--headers <json>`, `--json` | Modifiez les champs de fournisseur en direct validés sans remplacer les pools de clés. `--headers` fusionne les en-têtes de requête personnalisés ; passez `{}` ou `-` pour les effacer. |
 | `test <name>` | `--json` | Sondez le véritable point de terminaison du modèle en amont. |
@@ -28,6 +28,7 @@ Gestion des fournisseurs non interactive. Les entrées de registre sont classée
 
 ```bash
 ocx provider list --json
+ocx provider list --jsonl
 ocx provider test ark
 ocx provider add anthropic --api-key sk-ant-... --set-default --sync
 ocx provider add local-dev --adapter openai-chat --base-url http://localhost:11434/v1
@@ -35,6 +36,8 @@ ocx provider show anthropic --json
 ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
+
+`--jsonl` écrit uniquement les fournisseurs configurés, un objet JSON par ligne. Chaque objet contient les mêmes champs qu’un élément du tableau `configured` de `--json`, sans le résumé `registryCount`. Les scripts peuvent traiter les objets ligne par ligne. `--json` et `--jsonl` ne peuvent pas être combinés.
 
 :::caution[Les en-têtes personnalisés ne sont pas un canal d'identification]
 `--headers` est destiné aux métadonnées de requête non secrètes : conseils de routage, locataire ou
@@ -67,9 +70,11 @@ de fournisseurs OAuth et à clé API actuellement acceptés.
 
 Utilisez la même commande pour **réauthentifier** après `ocx status` / `ocx doctor` rapports
 réauthentification requise ou échec de l'actualisation du terminal (ou utilisez Réauthentifier dans le tableau de bord).
-Les comptes du groupe Codex ne constituent pas un fournisseur public pour `ocx login` : réauthentifiez-vous
-plutôt depuis le groupe de comptes Codex du tableau de bord (**Réauthentifier**) ou avec le flux non
-interactif `ocx account reauth`.
+Les comptes du pool Codex ne font pas partie des fournisseurs OAuth ou API-key ci-dessus, mais
+`ocx login codex` les atteint : la commande est routée vers la connexion au pool de comptes, si bien que
+`ocx login codex --reauth` équivaut à `ocx account reauth codex`. Le pool de comptes Codex du tableau de
+bord (**Réauthentifier**) fait de même. Cette route s'exécute dans le proxy, elle en exige donc un en
+cours d'exécution.
 
 ```bash
 ocx login xai
@@ -100,23 +105,35 @@ Répertoriez et changez de compte de fournisseur et de pools de clés API via le
 la surface est :
 
 ```text
-Usage: ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits> ...
+Usage: ocx account <list|history|current|use|refresh|auto-switch|alias|priority|pause|resume|pause-exhausted|strategy|sticky|remove|clear-cooldown|add-key|import|import-orca|login|reauth|code|cancel|reset-credits|grok-reset-coupons|main> ...
 
 list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).
+history openai <pool-account-id> [--limit <1-200>]  Recent routing decisions for one Codex pool account.
 current <provider>  Show the active account or key.
-use <provider> <id> Switch the active credential; 'main' selects the Codex App login.
+use <provider> <id|alias|main|auto> Switch the active credential; 'main' selects the Codex App login, 'auto' clears the selection.
 refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
-priority <provider> <id|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.
-remove <provider> <id> --yes  Remove a stored account or key after an existence check.
+alias <provider> <id|alias> <display-name|->  Set or clear an account's display name; '-' clears it.
+pause <provider> <id|alias|main>  Hold an account out of automatic selection.
+resume <provider> <id|alias|main>  Return a paused account to automatic selection.
+pause-exhausted <provider>  Pause every account whose quota is spent.
+clear-cooldown <provider> <id|alias|main>  Drop a cooldown the proxy set after an upstream failure.
+strategy <provider> [<quota|round-robin|fill-first|reset-first>]  Pool placement strategy; omit the value to read it.
+sticky <provider> [<1-100>]  Requests a bound thread keeps on one account; omit the value to read it.
+priority <provider> <id|alias|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.
+remove <provider> <id|alias|main> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
 reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.
+grok-reset-coupons [<id>] [--consume --yes] [--token-id <token-id>] [--operation-id <uuid>]  Inspect or redeem Grok reset coupons.
+import <provider> --format <format> (--file <path>|--stdin)  Import credentials from a named external format.
+import-orca --source <dir> --registry <file> [--apply]  Preview or apply imports from Orca-managed Codex homes.
+main <doctor|list|register|add|reauth|switch|recover>  Manage the Codex App login the pool calls 'main'.
 Switching the active account takes effect immediately; running threads move on their next request, and in-flight requests keep the account they captured.
 A selection-order change applies from the next unbound request and never moves a bound thread.
 ```
 
-Toutes les sous-commandes nécessitent que le proxy soit en cours d'exécution ; le CLI résout automatiquement son port d'exécution enregistré.
+Les sous-commandes nécessitent que le proxy soit en cours d'exécution et résolvent automatiquement son port d'exécution enregistré, sauf `import-orca` : l'aperçu est purement local, et `import-orca --apply` exige que le proxy soit arrêté.
 Les opérations réussies se terminent 0. Utilisation invalide, un fournisseur ou un identifiant inconnu, un
 proxy, ou un échec API se termine 1. Les champs d'informations d'identification sont affichés exactement comme la gestion API
 les renvoie (y compris son masquage) ; Les clés API brutes et les jetons OAuth ne sont jamais restitués. Affichage
@@ -167,7 +184,9 @@ cet état et quitte toujours 0. `--json` renvoie :
 { provider, type, activeId: string | null, autoSwitchThreshold?: number, account: AccountRow | null }
 ```
 
-### `ocx account use <provider> <account-or-key-id|main> [--json]`
+### `ocx account use <provider> <account-or-key-id|alias|main|auto> [--json]`
+
+`auto` efface la sélection manuelle pour que le pool place à nouveau le travail selon sa propre stratégie. Un compte Codex peut être désigné par l'alias défini avec `ocx account alias` au lieu de son id ; cela vaut aussi pour `priority`, `pause`, `resume`, `clear-cooldown`, `remove` et `alias`. Pour les comptes Codex, `auto`, `main` et `__main__` sont réservés sans distinction de casse et ne peuvent pas être attribués comme alias. Les noms affichés des comptes OAuth et des clés API conservent leurs règles existantes.
 
 Sélectionne un compte Codex, un compte OAuth ou une clé API existant. Pour `openai`, `main` sélectionne la
 connexion Codex App. Une sélection en mode Codex Pool efface l'affinité locale du processus et s'applique à la requête suivante,
@@ -203,15 +222,14 @@ renvoient 1 ; une sonde de quota en amont qui échoue ou expire produit plutôt 
 
 ### `ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]`
 
-Contrôle uniquement le groupe de comptes Codex `openai`. `on` règle 80 %, `off` règle 0 %, `status` lit la
-valeur actuelle et `threshold <n>` accepte un entier de 0 à 100. Les autres fournisseurs et les valeurs
-invalides entraînent le code de sortie 1. `--json` renvoie :
+Contrôle le seuil du pool Codex `openai`, ou enregistre celui d’un pool OAuth générique. `on` enregistre 80 %, `off` 0 % et `threshold <n>` accepte 0–100. Un seuil générique n’oriente la sélection que si `pool.kernel` est activé avec `strategy: "fill-first"` ; le drapeau désactivé, sa sauvegarde n’active pas le basculement par seuil. Dans les deux cas, elle ne change ni l’activation du fournisseur, ni la rotation réactive après une erreur 429. Pour les pools génériques, les sorties utilisent la réponse confirmée du serveur. Pour un pool générique, `poolEnabled` est le réglage enregistré (`null` signifie non spécifié), pas l’état effectif hérité. `inert: true` indique un seuil enregistré mais non appliqué, `inert: false` un seuil que le pool applique réellement. L’absence d’`inert` signale une capacité inconnue, qui ne produit jamais `enabled: true`. Les fournisseurs à clé API, Anthropic et les valeurs invalides sont refusés.
 
 ```text
-{ provider, autoSwitchThreshold: number, enabled: boolean }
+openai: { provider, autoSwitchThreshold: number, enabled: boolean }
+generic OAuth: { provider, autoSwitchThreshold: number | null, enabled: boolean, poolEnabled: boolean | null, inert: boolean | null }
 ```
 
-### `ocx account priority <provider> <account-id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]`
+### `ocx account priority <provider> <account-id|alias|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]`
 
 Lit ou définit l’ordre de sélection d’un compte du groupe Codex : **une priorité plus élevée est utilisée plus tôt**.
 La valeur par défaut est `0` et la plage va de `-100` à `100`. Seul le groupe Codex `openai` peut être ordonné ;
@@ -224,9 +242,8 @@ entrée. **L'omission de la valeur lit** la commande actuelle au lieu d'en écri
 comptes éligibles, en prenant le niveau de commande le plus élevé qui dispose encore d'une marge de quota et en laissant
 `accountPoolStrategy` pour choisir à l'intérieur. La pause, le temps de recharge et la réauthentification ne sont pas affectés.
 Les modifications s'appliquent à partir de la **prochaine requête non liée**, et pas seulement à partir des sessions nouvellement démarrées : mouvements de préemption
-une demande non liée augmente dès qu'un ordre supérieur retrouve de la marge. Sujets déjà liés à un compte
-conservez-le normalement jusqu’à ce que ce compte soit vidé ; un échec de réauthentification, un temps de recharge du quota ou un
-une séquence de défaillances transitoires libère la liaison avant cela. Toute écriture acceptée publie également un manuel
+une demande non liée augmente dès qu'un ordre supérieur retrouve de la marge. Les fils déjà liés à un compte
+le conservent normalement jusqu’à ce que ce compte soit vidé ; un échec de réauthentification ou un temps de recharge du quota libère encore la liaison avant cela. Une séquence de défaillances transitoires (5xx et autres échecs hors quota atteignant `upstreamFailoverThreshold`, 3 par défaut) ne supprime pas une liaison active : la requête est servie par un autre compte, puis le fil y revient dès que le sien sert à nouveau ; si le compte échoue encore après 10 minutes, la liaison est libérée normalement. Toute écriture acceptée publie également un manuel
 épingle "utiliser ce compte maintenant", sur le compte qui le détenait, y compris une écriture qui stocke le
 commander un compte déjà possédé — c'est le seul moyen d'effacer un code PIN tout en conservant le compte
 qui est actuellement sélectionné. (La compensation du compte actif via la gestion API libère un
@@ -245,7 +262,7 @@ l'actualisation de son catalogue de modèles reste en attente, la sortie humaine
 `ocx sync` conseils de récupération sur stderr. `--json` garde la sortie standard analysable et transporte
 `catalogRefreshPending: true` dans l'état de connexion terminé sans avertissement humain.
 
-### `ocx account remove <provider> <id|main> --yes [--json]`
+### `ocx account remove <provider> <id|alias|main> --yes [--json]`
 
 Cette suppression gardée et non interactive nécessite `--yes`. Avant de supprimer, il vérifie que l'identifiant
 existe; un identifiant manquant quitte 1 sans envoyer DELETE. La connexion principale Codex App ne peut pas être supprimée, donc
@@ -281,6 +298,26 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 Inspectez Codex réinitialiser les crédits d'un compte. Consommer un crédit est destructeur et nécessite à la fois
 `--consume` et `--yes`.
 
+### `ocx account grok-reset-coupons [<account-id>] [--consume --yes [--token-id <id>] [--operation-id <uuid>]] [--json]`
+
+Inspecte les coupons de réinitialisation restants ou en échange un pour un compte xAI / Grok.
+
+Sans `--consume`, la commande renvoie les jetons de coupon disponibles et leurs fenêtres de validité :
+
+```bash
+ocx account grok-reset-coupons
+ocx account grok-reset-coupons acc_xai_01 --json
+```
+
+Échanger un coupon de réinitialisation modifie l'état de facturation et épuise définitivement un jeton de coupon. `--consume` exige strictement `--yes` :
+
+```bash
+ocx account grok-reset-coupons --consume --yes
+ocx account grok-reset-coupons --consume --yes --token-id <token-id>
+```
+
+Passez `--operation-id <uuid>` (doit être un UUIDv4 valide) pour garantir une règlement idempotent. En cas de coupure réseau ou de nouvelle tentative, des identifiants d'opération identiques rejouent le résultat enregistré de manière durable au lieu de consommer un second coupon.
+
 ### `ocx account main <subcommand>`
 
 Gérez les profils de connexion principale natifs nommés Codex sans modifier le routage du groupe de comptes OpenCodex :
@@ -290,9 +327,14 @@ ocx account main doctor [--json]
 ocx account main list [--json]
 ocx account main register <label> [--json]
 ocx account main add <label>
+ocx account main reauth --device [--no-wait] [--json]
+ocx account main reauth status --flow <id> [--json]
+ocx account main reauth cancel --flow <id> [--json]
 ocx account main switch <profile-id-or-label> --yes [--json]
 ocx account main recover [--rollback --yes] [--json]
 ```
+
+En cas de succès, `ocx account main reauth --device --no-wait --json` écrit un seul objet JSON sur stdout, sans la ligne destinée à la lecture humaine `follow up:`. Utilisez son `flowId` avec `ocx account main reauth status --flow <id> --json` pour suivre la progression.
 
 Chaque commande de mutation rapporte le `CODEX_HOME` effectif canonique renvoyé par le proxy en cours d'exécution.
 Ce chemin peut différer du `CODEX_HOME` de l'appelant ; les commandes qui prennent en charge JSON exposent le même

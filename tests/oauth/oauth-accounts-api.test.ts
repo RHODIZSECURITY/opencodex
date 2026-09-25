@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { managementFetch as fetch } from "../helpers/management-auth";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +14,35 @@ import { withStubbedProviderFetch } from "../helpers/catalog-provider-fetch";
 import { getAccountSet } from "../../src/oauth/store";
 import { ACCOUNT_IMPORT_DEADLINE_MS, ACCOUNT_IMPORT_MAX_BYTES, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../../src/oauth/account-import/types";
 import { handleOauthAccountRoutes } from "../../src/server/management/oauth-account-routes";
+import { createManagementSessionControl, requireManagementAuth, type ManagementAuthState } from "../../src/server/management-auth";
+import { handleSessionRoutes } from "../../src/server/management/session-routes";
+import type { ManagementContext } from "../../src/server/management/context";
+import { publishAccountSelection } from "../../src/lib/account-selection-events";
+
+function selectionSessionFixture() {
+  const origin = "http://127.0.0.1:10100";
+  const token = "ocx_session_selection_liveness_test";
+  const state: Extract<ManagementAuthState, { available: true }> = {
+    available: true, token: "ocx_admin_selection_test", source: "environment",
+    sessions: new Map([[token, {
+      serverOrigin: origin, browserOrigin: origin, csrfToken: "selection-csrf",
+      expiresAt: Date.now() + 60_000, issuance: "loopback",
+    }]]), pairingGrants: new Map(),
+  };
+  const req = new Request(`${origin}/api/accounts/events`, { headers: {
+    Host: "127.0.0.1:10100", Origin: origin, "x-opencodex-gui-origin": origin,
+    "x-opencodex-api-key": token, "x-opencodex-csrf-token": "selection-csrf",
+  } });
+  const ctx: ManagementContext = {
+    req, url: new URL(req.url), config: baseConfig(), deps: {}, version: "test",
+    principal: "gui-session", sessionControl: createManagementSessionControl(state),
+    convergeCodexCatalog: async () => ({ status: "failed", reason: "disk" }),
+    syncClaudeAgentDefsBestEffort: async () => {},
+  };
+  // Cache this Request's original admission: subsequent stream checks must ignore it.
+  expect(requireManagementAuth(req, state, ctx.config)).toBeNull();
+  return { ctx, state, token };
+}
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -66,6 +95,168 @@ afterEach(() => {
 });
 
 describe("multiauth accounts API", () => {
+  test("selection events require management authentication", async () => {
+    const server = startServer(0);
+    try {
+      const response = await originalFetch(new URL("/api/accounts/events", server.url));
+      expect(response.status).toBe(401);
+      await response.body?.cancel();
+    } finally { await server.stop(true); }
+  });
+
+  test("selection event streams bound subscribers and release cancelled connections", async () => {
+    const { accountSelectionStream } = await import("../../src/server/management/account-selection-stream");
+    const streams: Response[] = [];
+    try {
+      for (let i = 0; i < 64; i++) {
+        const response = accountSelectionStream(new Request("http://localhost/api/accounts/events"), () => true);
+        expect(response.status).toBe(200);
+        streams.push(response);
+      }
+      expect(accountSelectionStream(new Request("http://localhost/api/accounts/events"), () => true).status).toBe(429);
+    } finally {
+      await Promise.all(streams.map(response => response.body!.cancel()));
+    }
+    const response = accountSelectionStream(new Request("http://localhost/api/accounts/events"), () => true);
+    expect(response.status).toBe(200);
+    await response.body!.cancel();
+  });
+
+  test("selection event route denies admission without a current session validator", async () => {
+    const { ctx } = selectionSessionFixture();
+    const response = await handleOauthAccountRoutes({ ...ctx, sessionControl: undefined });
+    try { expect(response?.status).toBe(401); }
+    finally { await response?.body?.cancel(); }
+  });
+
+  test.each(["false", "throw"] as const)("selection stream denies an initial validator result of %s", async result => {
+    const { accountSelectionStream } = await import("../../src/server/management/account-selection-stream");
+    const response = accountSelectionStream(new Request("http://localhost/api/accounts/events"), () => {
+      if (result === "throw") throw new Error("validator unavailable");
+      return false;
+    });
+    try { expect(response.status).toBe(401); }
+    finally { await response.body?.cancel(); }
+  });
+
+  test.each(["logout", "expiry"] as const)("selection stream stops publishing after GUI %s despite cached request admission", async change => {
+    const { ctx, state, token } = selectionSessionFixture();
+    const response = await handleOauthAccountRoutes(ctx);
+    expect(response?.status).toBe(200);
+    const reader = response!.body!.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("event: ready");
+      if (change === "logout") {
+        const req = new Request(new URL("/api/session/logout", ctx.req.url), { method: "POST", headers: ctx.req.headers });
+        expect(requireManagementAuth(req, state, ctx.config)).toBeNull();
+        expect(handleSessionRoutes({ ...ctx, req, url: new URL(req.url) })?.status).toBe(200);
+      } else {
+        state.sessions.get(token)!.expiresAt = Date.now() - 1;
+      }
+      expect(requireManagementAuth(ctx.req, state, ctx.config)).toBeNull(); // Deliberately memoized.
+      const pending = reader.read();
+      publishAccountSelection("private-provider", "oauth");
+      // Nothing was queued before revocation, so the stream closes quietly instead of
+      // erroring; the pending read resolves done and the post-revocation frame is never sent.
+      await expect(pending).resolves.toMatchObject({ done: true });
+    } finally { await reader.cancel().catch(() => undefined); }
+  });
+
+  test("selection heartbeat revalidates expiry without extending a remote session", async () => {
+    const { ctx, state, token } = selectionSessionFixture();
+    const session = state.sessions.get(token)!;
+    session.issuance = "pairing";
+    const expiresAt = session.expiresAt;
+    const interval = spyOn(globalThis, "setInterval");
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await handleOauthAccountRoutes(ctx);
+      reader = response!.body!.getReader();
+      await reader.read();
+      const tick = interval.mock.calls.find(call => call[1] === 15_000)?.[0];
+      if (typeof tick !== "function") throw new Error("selection heartbeat not registered");
+      tick();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(": heartbeat");
+      expect(session.expiresAt).toBe(expiresAt);
+      session.expiresAt = Date.now() - 1;
+      const pending = reader.read();
+      tick();
+      await expect(pending).resolves.toMatchObject({ done: true });
+    } finally {
+      await reader?.cancel().catch(() => undefined);
+      interval.mockRestore();
+    }
+  });
+
+  test("selection stream discards frames queued before revocation instead of draining them", async () => {
+    const { ctx, state, token } = selectionSessionFixture();
+    const interval = spyOn(globalThis, "setInterval");
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await handleOauthAccountRoutes(ctx);
+      expect(response?.status).toBe(200);
+      reader = response!.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("event: ready");
+      // No pending read: this event stays queued in the controller when the session expires.
+      publishAccountSelection("queued-provider", "oauth");
+      state.sessions.get(token)!.expiresAt = Date.now() - 1;
+      const tick = interval.mock.calls.find(call => call[1] === 15_000)?.[0];
+      if (typeof tick !== "function") throw new Error("selection heartbeat not registered");
+      tick();
+      // A non-empty queue still takes the error path: the queued frame is discarded and the
+      // revoked consumer rejects instead of ever draining it.
+      await expect(reader.read()).rejects.toMatchObject({ name: "NotAllowedError" });
+    } finally {
+      await reader?.cancel().catch(() => undefined);
+      interval.mockRestore();
+    }
+  });
+
+  test("management session liveness rereads revoked sessions and the current admin token", () => {
+    const { ctx, state, token } = selectionSessionFixture();
+    const control = ctx.sessionControl!;
+    expect(control.isCurrent(ctx.req, ctx.config)).toBe(true);
+    expect(control.revokeCurrent(ctx.req)).toBe(true);
+    expect(control.isCurrent(ctx.req, ctx.config)).toBe(false);
+    expect(state.sessions.has(token)).toBe(false);
+    const adminReq = new Request(ctx.req.url, { headers: { "x-opencodex-api-key": state.token } });
+    expect(requireManagementAuth(adminReq, state, ctx.config)).toBeNull();
+    expect(control.isCurrent(adminReq, ctx.config)).toBe(true);
+    state.token = "ocx_admin_rotated_selection_test";
+    expect(control.isCurrent(adminReq, ctx.config)).toBe(false);
+    expect(createManagementSessionControl({ available: false, reason: "test" }).isCurrent(adminReq, ctx.config)).toBe(false);
+  });
+
+  test("selection events notify only after the new active account is committed", async () => {
+    const server = startServer(0);
+    const abort = new AbortController();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await fetch(new URL("/api/accounts/events", server.url), { signal: abort.signal });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      reader = response.body!.getReader();
+      const ready = new TextDecoder().decode((await reader.read()).value);
+      expect(ready).toContain("event: ready");
+      const eventRead = reader.read();
+      const selected = await fetch(new URL("/api/oauth/accounts/active", server.url), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "anthropic", accountId: "bbbb2222" }),
+      });
+      expect(selected.status).toBe(200);
+      const notification = new TextDecoder().decode((await eventRead).value);
+      expect(notification).toContain("event: account-selection");
+      expect(notification).toContain('"provider":"anthropic"');
+      expect(notification).not.toContain("bbbb2222");
+      expect(notification).not.toContain("t2");
+      expect(getAccountSet("anthropic")?.activeAccountId).toBe("bbbb2222");
+    } finally {
+      await reader?.cancel();
+      abort.abort();
+      await server.stop(true);
+    }
+  });
+
   test("GET lists masked accounts with active flag", async () => {
     const server = startServer(0);
     try {
@@ -156,6 +347,44 @@ describe("multiauth accounts API", () => {
       expect(account.healthSummary).not.toContain("aaaa1111");
       expect(account.healthSummary).not.toContain("first@example.com");
       expect(account.healthAction).toContain("ocx login anthropic");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("GET reports an explicit null plan for an Anthropic account", async () => {
+    writeFileSync(join(testDir, "auth.json"), JSON.stringify({
+      anthropic: {
+        activeAccountId: "aaaa1111",
+        accounts: [
+          {
+            id: "aaaa1111",
+            credential: {
+              access: "t1",
+              refresh: "r1",
+              expires: 9999999999999,
+              email: "first@example.com",
+              accountId: "acct-1",
+            },
+          },
+        ],
+      },
+    }), { mode: 0o600 });
+
+    const server = startServer(0);
+    try {
+      const res = await fetch(new URL("/api/oauth/accounts?provider=anthropic", server.url));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { accounts: Array<{ id: string; plan?: string | null }> };
+      const account = body.accounts[0]!;
+
+      // The key must be PRESENT and null, not omitted. A consumer weighting a pool by seat size
+      // has to tell "this version looked and upstream did not say" apart from "this proxy is too
+      // old to report a tier"; omitting the key collapses those and invites assuming a tier
+      // (#3777). Anthropic's usage endpoint carries no subscription field, so null is the only
+      // truthful answer available today.
+      expect("plan" in account).toBe(true);
+      expect(account.plan).toBeNull();
     } finally {
       await server.stop(true);
     }
@@ -597,6 +826,48 @@ describe("multiauth accounts API", () => {
       expect(after.activeAccountId).toBe("bbbb2222");
     } finally {
       await server.stop(true);
+    }
+  });
+});
+
+
+describe("Antigravity quota diagnosis projection", () => {
+  let savedProxyEnv: Record<string, string | undefined>;
+  const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+  beforeEach(() => {
+    savedProxyEnv = Object.fromEntries(proxyKeys.map(key => [key, process.env[key]]));
+    for (const key of proxyKeys) delete process.env[key];
+  });
+  afterEach(() => {
+    for (const key of proxyKeys) {
+      if (savedProxyEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedProxyEnv[key];
+    }
+  });
+  test("authenticated account reads expose only the current safe failure category", async () => {
+    const { saveCredential } = await import("../../src/oauth/store");
+    const { clearAccountQuotaCache, setAntigravityAccountQuotaTransportForTests } = await import("../../src/providers/quota");
+    const cfg = baseConfig();
+    cfg.providers["google-antigravity"] = { adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authMode: "oauth" };
+    saveConfig(cfg);
+    await saveCredential("google-antigravity", { access: "private-diagnostic-access", refresh: "private-diagnostic-refresh", expires: Date.now() + 3600_000, projectId: "private-diagnostic-project", accountId: "diag-account" });
+    clearAccountQuotaCache();
+    setAntigravityAccountQuotaTransportForTests({
+      resolveAddresses: async () => ({ hostname: "daily-cloudcode-pa.googleapis.com", addresses: [{ address: "142.250.0.1", family: 4 }], privateNetwork: false }),
+      pinnedPost: async () => new Response(null, { status: 403 }),
+    });
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/oauth/accounts?provider=google-antigravity&quota=1&refresh=1", server.url));
+      expect(response.status).toBe(200);
+      const body = await response.json() as { accounts: Array<{ quotaFailure?: string; quotaUnavailable?: boolean }> };
+      expect(body.accounts[0]).toMatchObject({ quotaFailure: "access_denied", quotaUnavailable: true });
+      const text = JSON.stringify(body);
+      for (const secret of ["private-diagnostic-access", "private-diagnostic-refresh", "private-diagnostic-project", "quotaFailureIsCurrent"]) expect(text).not.toContain(secret);
+    } finally {
+      await server.stop(true);
+      clearAccountQuotaCache();
+      setAntigravityAccountQuotaTransportForTests(null);
     }
   });
 });

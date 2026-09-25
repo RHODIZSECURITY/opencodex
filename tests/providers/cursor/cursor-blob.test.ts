@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { create, fromBinary } from "@bufbuild/protobuf";
-import { toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   createCursorBlobRequestScope,
   cursorBlobMetrics,
@@ -35,6 +34,7 @@ import { resetDebugSettingsForTests } from "../../../src/lib/debug-settings";
 import {
   CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
   CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT,
+  CURSOR_EXTERNAL_CURRENT_REQUEST_GUIDANCE,
   CURSOR_EXTERNAL_ROOT_BLOB_LIMIT,
   CURSOR_ROUTING_LEVEL_PARAMETER_ID,
   encodeCursorRunRequest,
@@ -941,7 +941,7 @@ describe("Cursor blob handshake", () => {
 
   test("keeps ResumeAction for native-model tool-result continuations", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "composer-2.5-fast",
+      modelId: "composer-1",
       conversationId: "c1",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
@@ -949,7 +949,7 @@ describe("Cursor blob handshake", () => {
         { role: "user", content: "read a file", timestamp: 1 },
         {
           role: "assistant",
-          model: "cursor/composer-2.5-fast",
+          model: "cursor/composer-1",
           timestamp: 2,
           content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
         },
@@ -1054,7 +1054,7 @@ describe("Cursor blob handshake", () => {
 
     expect(run?.action?.action.case).toBe("userMessageAction");
     const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
-    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+    expect(value?.userMessage?.text).toBe(`${CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT}\n\n${CURSOR_EXTERNAL_CURRENT_REQUEST_GUIDANCE}\n\n[Current user request]\nread a file`);
     // Tool results are still replayed via history blobs.
     const roots = decodeRootMessages(bytes) as Array<{ role?: string }>;
     expect(JSON.stringify(roots)).toContain("contents");
@@ -1701,6 +1701,87 @@ describe("Cursor bounded blob store", () => {
     expect(cursorBlobRetainedStoreSnapshot().bytes).toBe(3 + 66);
     resetCursorBlobStateForTests();
     expect(cursorBlobMetrics()).toMatchObject({ count: 0, totalBytes: 0, localBytes: 0, pinnedBytes: 0 });
+  });
+
+  test("fresh blob inserts accumulate class bytes across remote and local entries", () => {
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      setCursorBlobLimitsForTests({ ttlMs: 50, maxEntryBytes: 8, maxTotalBytes: 64 });
+      const remoteId = sha256(bytes("rem"));
+      setBlobReply(remoteId, bytes("rem"));
+      expect(cursorBlobMetrics()).toMatchObject({
+        count: 1,
+        totalBytes: 3,
+        keyBytes: 66,
+        localBytes: 0,
+        pinnedBytes: 3 + 66,
+        oldestAt: null,
+      });
+      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({
+        count: 1,
+        bytes: 3 + 66,
+        evictableBytes: 0,
+        pinnedBytes: 3 + 66,
+        oldestAt: null,
+      });
+      now = 1_001;
+      const localId = storeCursorBlob(bytes("loc"));
+      expect(cursorBlobMetrics()).toMatchObject({
+        count: 2,
+        totalBytes: 6,
+        keyBytes: 132,
+        localBytes: 3,
+        pinnedBytes: 3 + 66,
+        oldestAt: 1_001,
+      });
+      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({
+        count: 2,
+        bytes: 6 + 132,
+        evictableBytes: 3 + 66,
+        pinnedBytes: 3 + 66,
+        oldestAt: 1_001,
+      });
+      expectBlobHit(remoteId, bytes("rem"));
+      expectBlobHit(localId, bytes("loc"));
+      expect(cursorBlobStoreDebugSnapshotForTests().map(row => row.provenance).sort()).toEqual([
+        "local-regenerated",
+        "remote-setBlobArgs",
+      ]);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("releasing an expired pin still TTL-purges that row on the next write", () => {
+    const originalNow = Date.now;
+    let now = 100;
+    Date.now = () => now;
+    try {
+      setCursorBlobLimitsForTests({ ttlMs: 10, maxEntryBytes: 8, maxTotalBytes: 64, maxEntries: 8 });
+      const scope = createCursorBlobRequestScope();
+      const pinnedId = sha256(bytes("pin"));
+      setBlobReply(pinnedId, bytes("pin"), 1, scope);
+      sealCursorBlobRequestScope(scope);
+      now = 105;
+      const liveId = sha256(bytes("live"));
+      setBlobReply(liveId, bytes("live"));
+      now = 111;
+      releaseCursorBlobRequestScope(scope);
+      const laterId = sha256(bytes("new"));
+      setBlobReply(laterId, bytes("new"));
+      // Observe before getBlob can lazily delete an expired entry itself.
+      expect(cursorBlobMetrics()).toMatchObject({ count: 2, totalBytes: 7, keyBytes: 132 });
+      expect(cursorBlobRetainedStoreSnapshot()).toMatchObject({
+        count: 2, bytes: 7 + 132, pinnedBytes: 7 + 132, evictableBytes: 0,
+      });
+      expectBlobMiss(pinnedId);
+      expectBlobHit(liveId, bytes("live"));
+      expectBlobHit(laterId, bytes("new"));
+    } finally {
+      Date.now = originalNow;
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,10 +15,12 @@ import {
 } from "../../src/codex/native-profile-store";
 import { NativeProfileError, type NativeProfileKey, type NativeProfileKeyProvider } from "../../src/codex/native-profile-types";
 import { codexCredentialMutationEpoch } from "../../src/codex/credential-mutation-epoch";
+import { COLD_SPAWN_WARMUP_HOOK_BUDGET_MS, warmModuleGraph } from "../helpers/cold-spawn-warmup";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { helperPath, repoRoot } from "../helpers/repo-root";
 import { INTERNAL_DEADLINE_MS, SPAWN_BUDGET_MS } from "../helpers/test-budget";
 
+const nativeProfileLockChildPath = helperPath("native-profile-lock-child.ts");
 const roots: string[] = [];
 
 afterEach(() => {
@@ -132,11 +134,12 @@ async function leavePendingJournal(f: Awaited<ReturnType<typeof enrolledFixture>
 }
 
 /**
- * The first Bun child a busy windows-latest shard spawns can take several seconds just to
- * boot the TS helper; on run 33595585136 that alone burned a private 5 s wait while the
- * child was healthy. The crash case, which is the first spawn in the file, gets a wait
- * sized inside its 15 s test budget. On timeout the child's stderr is part of the error so
- * a real crash is not mistaken for a slow start.
+ * Readiness includes booting the Bun child and its TypeScript graph. The first Windows
+ * spawn can outlast an internal-operation deadline, so the crash case reserves 30 s of
+ * its existing 45 s spawn budget, leaving 15 s for exit and successor checks.
+ * Controlled probe 34051272609 reproduced a healthy 17 s readiness delay and still
+ * rejected a successor-lock-denial mutation; no lock assertion or outer budget changed.
+ * On timeout the child's stderr distinguishes a reported crash from a missing marker.
  */
 // Gates on a spawned child reaching its marker: 8-19 s on windows-latest (run 33930757649).
 async function waitForPath(path: string, child?: ReturnType<typeof Bun.spawn>, waitMs = INTERNAL_DEADLINE_MS): Promise<void> {
@@ -158,7 +161,7 @@ function spawnLockHolder(
   releasePath: string,
   options: { crash?: boolean; contention?: string } = {},
 ): ReturnType<typeof Bun.spawn> {
-  return Bun.spawn([process.execPath, helperPath("native-profile-lock-child.ts")], {
+  return Bun.spawn([process.execPath, nativeProfileLockChildPath], {
     cwd: repoRoot(),
     env: {
       ...process.env,
@@ -179,7 +182,7 @@ function spawnLockProbe(
   f: ReturnType<typeof fixture>,
   resultPath: string,
 ): ReturnType<typeof Bun.spawn> {
-  return Bun.spawn([process.execPath, helperPath("native-profile-lock-child.ts")], {
+  return Bun.spawn([process.execPath, nativeProfileLockChildPath], {
     cwd: repoRoot(),
     env: {
       ...process.env,
@@ -194,11 +197,21 @@ function spawnLockProbe(
 }
 
 describe("native main profile transactions", () => {
+  // This describe's first spawned child pays the cold native-profile lock helper graph.
+  // Warm it in setup so the readiness deadline remains a bound on transaction behavior.
+  beforeAll(async () => {
+    await warmModuleGraph({ graph: "native-profile-lock-child", entry: nativeProfileLockChildPath });
+  }, COLD_SPAWN_WARMUP_HOOK_BUDGET_MS);
+
   test("an abruptly exited child releases the OS-backed profile transaction", async () => {
     const f = fixture();
     const readyPath = join(f.root, "crash-ready");
     const child = spawnLockHolder(f, readyPath, join(f.root, "unused-release"), { crash: true });
-    await waitForPath(readyPath, child, INTERNAL_DEADLINE_MS);
+    await waitForPath(
+      readyPath,
+      child,
+      process.platform === "win32" ? SPAWN_BUDGET_MS - INTERNAL_DEADLINE_MS : INTERNAL_DEADLINE_MS,
+    );
     expect(await child.exited).toBe(87);
 
     const successor = new NativeProfileManager({ ...f.options, lockWaitMs: 250 });

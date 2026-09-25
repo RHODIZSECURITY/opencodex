@@ -12,6 +12,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   ClientPathError,
+  clineConfigPath,
+  clineSettingsDir,
   EXPORT_CLIENTS,
   asideAccountDir,
   asideConfigPath,
@@ -26,6 +28,8 @@ import {
   kimiHomeDir,
   mcodeConfigPath,
   mcodeHomeDir,
+  omoAgentDir,
+  omoConfigPath,
   ompAgentDir,
   ompModelsConfigPath,
   opencodeGlobalConfigPath,
@@ -35,8 +39,15 @@ import {
   piConfigPath,
   primeAgentDir,
   primeConfigPath,
+  raycastAiDir,
+  raycastConfigPath,
   zcodeConfigPath,
   zcodeHomeDir,
+  zcodeProviderStorePath,
+  buildZcodeStoreContribution,
+  zcodeStoreSchemaEstablished,
+  type BuildContribution,
+  type ConfigFormat,
   type ExportClientId,
 } from "../clients/config-export";
 
@@ -52,6 +63,28 @@ export interface IntegrationClientSpec {
   configPath: (env?: NodeJS.ProcessEnv, home?: string) => string;
   /** Directory whose existence is the cheap "is it installed?" signal. */
   detectDir: (env?: NodeJS.ProcessEnv, home?: string) => string;
+  /**
+   * The provider store this client reads INSTEAD of `configPath`.
+   *
+   * A client that moves its store between releases usually keeps a one-shot
+   * import from the old location, and that import is exactly what makes the old
+   * write look like it still works: it runs once, on an install that has never
+   * created the new file, and never again. Everything after it lands in a file
+   * the client does not open.
+   *
+   * A declaration carries everything needed to write the store, not only its
+   * location: the text format, the contribution shape its reader understands,
+   * and the predicate that says whether a document on disk is a version whose
+   * shape has been observed. The last one is what keeps this honest — a store
+   * we cannot establish is reported as the reason the write cannot reach the
+   * client, never merged into on a guess.
+   */
+  currentStore?: {
+    path: (env?: NodeJS.ProcessEnv, home?: string) => string;
+    format: ConfigFormat;
+    establishes: (parsed: unknown) => boolean;
+    buildContribution: BuildContribution;
+  };
   /** Patch only this block-map YAML leaf; never re-render the shared file. */
   sourcePreservingYaml?: { path: readonly string[] };
   /** Coordinate the complete mutation through a sibling config lock. */
@@ -188,6 +221,7 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     id: "hermes",
     configPath: (env = process.env, home = homedir()) => hermesConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => hermesHomeDir(env, home),
+    sourcePreservingYaml: { path: ["providers", "opencodex"] },
   },
   openclaw: {
     id: "openclaw",
@@ -224,6 +258,17 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     id: "zcode",
     configPath: (env = process.env, home = homedir()) => zcodeConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => zcodeHomeDir(env, home),
+    /*
+     * ZCode 3.14 reads its providers from `v2/provider_config.json` and reaches
+     * `v2/config.json` only through the import that seeded it. Where the new
+     * file exists the import is spent, so our write is read by nobody (#5348).
+     */
+    currentStore: {
+      path: (env = process.env, home = homedir()) => zcodeProviderStorePath(env, home),
+      format: "json",
+      establishes: zcodeStoreSchemaEstablished,
+      buildContribution: buildZcodeStoreContribution,
+    },
   },
   prime: {
     id: "prime",
@@ -260,6 +305,45 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
      * look at.
      */
     unresolvedPathHint: (env = process.env, home = homedir()) => join(asideHomeDir(env, home), "u"),
+  },
+  raycast: {
+    id: "raycast",
+    configPath: (env = process.env, home = homedir()) => raycastConfigPath(env, home),
+    /*
+     * The `ai` directory, not `Raycast.app`. Raycast creates it only when the
+     * user clicks "Reveal Providers Config" in Settings > AI, which is exactly
+     * the signal that Custom Providers is reachable on this install; an app
+     * bundle alone says nothing about the plan or the feature.
+     *
+     * No `sourcePreservingYaml`: that patcher handles block-map leaves only,
+     * and our entry is a SEQUENCE item, so the file is re-rendered through
+     * `renderYaml` (block style). The `[id=opencodex]` selector keeps the user's
+     * other providers in place across that re-render.
+     */
+    detectDir: (env = process.env, home = homedir()) => raycastAiDir(env, home),
+  },
+  omo: {
+    id: "omo",
+    configPath: (env = process.env, home = homedir()) => omoConfigPath(env, home),
+    /*
+     * The AGENT directory, not `~/.omo`. The v4 launcher wrapper creates
+     * `~/.omo` to hold `binary-runtime` without ever creating `agent/`, so
+     * detecting on the parent reports an omo v5 install that is not there --
+     * and `installed` is what stops apply from writing a catalog for an engine
+     * that will never read it. Prime's agent directory and Aside's account
+     * directory are the same shape; Pi's parent-directory check is the odd one.
+     *
+     * No `sourcePreservingYaml` (JSON), no `writerLock` (single writer), and no
+     * `resolvePaths` -- unlike Aside, both omo paths are a pure function of env
+     * and home, so reading them in sequence cannot straddle a state change.
+     */
+    detectDir: (env = process.env, home = homedir()) => omoAgentDir(env, home),
+  },
+  cline: {
+    id: "cline",
+    configPath: (env = process.env, home = homedir()) => clineConfigPath(env, home),
+    detectDir: (env = process.env, home = homedir()) => clineSettingsDir(env, home),
+    writerLock: { suffix: ".lock" },
   },
 };
 

@@ -43,7 +43,7 @@ Etkinleştirildiğinde operasyonel sözleşme:
   `round-robin` ise `quotaWindow` ayarını yok sayar.
 
 Bkz.
-[Yapılandırma](/tr/reference/configuration/#anthropicaccountpool-experimental).
+[Yapılandırma](/tr/reference/configuration/providers/#anthropicaccountpool-deneysel).
 
 ## Hızlı Başlangıç
 
@@ -62,9 +62,10 @@ bağlanmış olarak Claude Code'u başlatır:
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Otomatik bağlam sıkıştırma eşiği (varsayılan `829800`); yalnızca otomatik bağlam etkinleştirildiğinde enjekte edilir |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (isteğe bağlı) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (isteğe bağlı; eski `ANTHROPIC_SMALL_FAST_MODEL` da geçerlidir) |
-| `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (isteğe bağlı) |
+| `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*`; abonelikle başlatmada ayarlanmamışsa yerel `claude-opus-5-5[1m]` / `claude-sonnet-5[1m]` / `claude-fable-5-1[1m]` |
 | `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` | `alwaysEnableEffort` açık olduğunda `1` (koşullu) |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `DISABLE_COMPACT` | `maxContextTokens` ayarlandığında eski bağlam geçersiz kılma (koşullu) |
+| `ENABLE_TOOL_SEARCH` | `claudeCode.toolSearch` ayarlandığında (koşullu; varsayılan olarak kapalı) |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `maxContextTokens` ayarlandığında eski bağlam geçersiz kılma (koşullu) |
 
 Kendi dışa aktardığınız değişkenler her zaman önceliklidir. Ekstra argümanlar
 doğrudan iletilir: `ocx claude -p "hello"`.
@@ -144,7 +145,62 @@ görüntüdür; `ocx claude` ise her zaman canlı olarak çözümler.
 
 ## Sistem ortamı entegrasyonu (macOS)
 
+## Claude Desktop modları: ağ geçidi (varsayılan) ve first-party
+
+Birbirini dışlayan modlardan birini **Claude → Desktop → Bağlantı modu** bölümünden veya
+`ocx claude desktop apply --first-party|--gateway` komutuyla seçin.
+
+### Ağ geçidi (varsayılan)
+
+Yeni kurulumlarda ağ geçidi profili uygulanır; Chat sekmesi dâhil tüm uygulama OpenCodex'i
+kullanır. Yalnızca claude.ai üzerinden sunulan özellikler kullanılamaz. Eski `--static`,
+`--hybrid` ve `--discovery-only` bayrakları da ağ geçidini seçer.
+
+### First-party (isteğe bağlı)
+
+:::caution[Hesap riski]
+First-party modunda Claude aboneliğinizin trafiği yerel bir müdahale vekilinden geçer.
+Anthropic bunu kullanım koşullarının ihlali sayıp hesabınızı askıya alabilir. Varsayılan mod
+ağ geçididir; bu riski kabul ediyorsanız first-party modunu seçin.
+:::
+
+Desktop claude.ai oturumunu korur; Chat, bağlayıcılar ve uzaktan kontrol çalışmaya devam eder.
+OpenCodex yalnızca `~/.claude/settings.json` dosyasındaki (`CLAUDE_CONFIG_DIR` desteklenir)
+`env` alanına `HTTPS_PROXY` ve `NODE_EXTRA_CA_CERTS` yazar. Code sekmesinin başlattığı
+Claude Code, alt ajanları ve bağımsız `claude` CLI yerel vekilden geçer; diğer
+`api.anthropic.com` yolları Anthropic'e iletilir. CA, işletim sisteminin güven deposuna
+kurulmaz; yalnızca `NODE_EXTRA_CA_CERTS` okuyan Node süreçleri ona güvenir.
+
+Mod `claudeCode.desktopMode` içinde saklanır. First-party modunu açıkça veya bu sürümden önce
+uygulayan kurulumlar bu modu korur; mevcut ağ geçidi de korunur. Açık mod yoksa önce OpenCodex'e
+ait seçili ağ geçidi satırı, sonra kayıtlı ağ geçidi parmak izi, ardından `settings.json`
+içindeki OpenCodex'e ait first-party ayarları değerlendirilir; hiçbiri yoksa ağ geçidi seçilir.
+Katalog eşitlemesi ve model listesi güncellemesi, first-party kurulumunun üstüne ağ geçidi
+profili yazmaz. `claudeCode.intercept.enabled: false` olduğunda mevcut first-party kurulumunda
+apply işlemi `intercept_disabled` ile reddedilir; yeni kurulum ağ geçidini uygular. Başka bir
+vekilin ayarları üzerine yazılmaz. Mod değiştirince Desktop'ı tamamen kapatıp yeniden açın.
+
+### Picker modu: first-party Code sekmesinde opencodex modelleri
+
+Picker modu first-party modunun bir parçasıdır. macOS'ta first-party seçildiğinde varsayılan olarak
+açıktır; `claudeCode.intercept.picker: false` ayarlanırsa kapalı kalır. First-party Desktop'ın Code
+sekmesindeki model seçiciyi değiştirerek kullanılabilir opencodex modellerini adlarıyla listeler.
+İlk etkinleştirmede macOS, giriş anahtar zincirinde yerel bir sertifika yetkilisine güvenmenizi isteyebilir.
+Bu yetkili `claude.ai` ve alt alan adlarıyla sınırlıdır; iletişim kutusu bu yerel CA için tek seferlik güven
+adımıdır.
+
+Picker modu açıkken Claude Desktop ağa OpenCodex üzerinden çıkar. OpenCodex durursa Desktop, tamamen yeniden
+başlatılana veya picker modu kapatılana kadar çevrimdışı kalır. Durumu `ocx claude desktop picker status`
+ile görün, güven adımını `ocx claude desktop picker trust` ile tekrarlayın veya `ocx claude desktop picker off`
+ile kapatın. Aynı açma-kapama denetimi **Claude → Desktop** kontrol panelinde de bulunur. Picker profili
+seçildikten sonra Claude Desktop'ı tamamen kapatıp yeniden açın.
+
+Picker modu first-party'nin parçasıdır; bu nedenle [first-party hesap riski](#first-party-isteğe-bağlı)
+aynı şekilde geçerlidir.
+
 ## Claude Desktop profili
+
+Bu profil yalnızca ağ geçidi modunda Desktop'a yazılır.
 
 Claude Desktop, Claude Code'dan ayrı bir profil kullanır. Mevcut her rotayı dört
 aileden birine (Opus, Fable, Sonnet veya Haiku) yerleştirmek için kontrol
@@ -161,6 +217,8 @@ ailedeki ilk kullanılabilir rota kullanılır.
 
 Aynı profili komut satırından da yönetebilirsiniz:
 
+Aşağıdaki profil düzenleme yönergeleri yerel profil içindir. Bağlı uzak hub üzerinden uygulama aşağıda ayrıca açıklanır.
+
 ```bash
 ocx claude desktop [apply]
 ocx claude desktop show [--json]
@@ -170,7 +228,8 @@ ocx claude desktop export <path|->
 ocx claude desktop import <path> [--apply]
 ```
 
-`ocx claude desktop` ve `apply`, geçerli profili Claude Desktop'a yazar. `show`
+`ocx claude desktop` ve `apply` seçili modu uygular: first-party Claude Code vekilinin
+ortam ayarlarını, ağ geçidi ise Desktop profilini yazar. `show`
 okunabilir bir özet sunar; betikler için `--json` ekleyin. `export -`, standart
 çıktıya sürümlenmiş JSON yazar. İçe aktarma, kaydetmeden önce dosyanın tamamını
 doğrular, böylece geçersiz bir dosya geçerli profili değiştirmeden bırakır.
@@ -187,13 +246,47 @@ alternatif bir Desktop kullanıcı verisi kökü için `CLAUDE_USER_DATA_DIR`
 değerini ayarlayın. Eski `Claude-3p` dizini otomatik olarak okunmaz veya
 silinmez.
 
-Anthropic harici rotalar, `claude-opus-4-8-2026MMDD` gibi kararlı takma adlar
-alır. Tarih benzeri kısım, modelin çıkış tarihi değil, sentetik bir rota
-yuvasıdır. Gerçek Anthropic Claude rotaları kendi gerçek kimliklerini korur.
+Anthropic harici rotalar, `claude-opus-4-8-YYYYMMDD` gibi kararlı takma adlar
+alır; yıl 2026 ile 2035 arasındadır. Tarih benzeri kısım, modelin çıkış tarihi
+değil, sentetik bir rota yuvasıdır. Önce 2026 yuvaları atanır, bu nedenle mevcut
+takma adlar kimliklerini korur; sonraki yıllara ancak 2026 dolduktan sonra
+geçilir. Gerçek Anthropic Claude rotaları kendi gerçek kimliklerini korur.
 Yeni rotalar varsayılan olarak Opus ailesine gider, ancak bir rotayı taşımak
 çağırdığı sağlayıcıyı veya modeli değiştirmez. Eski uygulama bayrakları
 `--static`, `--hybrid` ve `--discovery-only` mevcut betikler için kullanılabilir
 durumda kalır.
+
+### Desktop Code sekmesinden opencodex modellerini kullanma (first-party bağlantıları)
+
+First-party modunda Code sekmesinin model seçici claude.ai'ye aittir: satırları (Opus 5.5,
+Sonnet 5, Haiku 4.5 ve **More models** altındaki eski modeller) hesabınızdan gelir ve hiçbir yerel
+ayar opencodex satırı ekleyemez. OpenCodex'e ulaşan, her istekte seçicinin Anthropic model
+kimliğidir; bu yüzden bir seçici satırını bir opencodex rotasına bağlarsınız:
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+veya kontrol panelinde **Claude → Desktop → Code sekmesi model bağlantıları**'nı kullanın. Bundan
+sonra Code sekmesinde **Sonnet 4.6** seçildiğinde istek `xai/grok-4.7` tarafından sunulur. Seçicide
+Anthropic etiketi görünmeye devam eder ve Claude Code'un sistem istemi modelin kendisine hâlâ o
+Claude modeli olduğunu söyler; bu yüzden normalde kullanmadığınız satırları tercih edin
+(**More models** girdileri iyi adaylardır). Bağlantılar bir sonraki istekte geçerli olur; Desktop'ı
+yeniden başlatmak gerekmez.
+
+- Rotalar Desktop rota sözlüğünü kullanır: `provider/model` veya yerel OpenAI havuzu için
+  `native/<slug>`. Rota, kontrol panelinde kullanılabilir olarak listelenen bir rota olmalıdır.
+- Tarihli bir seçici kimliği (`claude-haiku-4-5-20251001`) tarihsiz bir bağlantıyla
+  (`claude-haiku-4-5`) eşleşir; `[1m]` ve hızlı mod seçimleri de aynı bağlantıyı izler.
+- Bağlantılar `claudeCode.intercept.modelMap`'te saklanır ve yalnızca yerel intercept proxy'sinden
+  geçen Claude Code trafiğine uygulanır: first-party modundaki Desktop Code sekmesi ve bağımsız
+  `claude` CLI'si. `ocx claude` oturumları ve genel `/v1/messages` uç noktası bunları yok sayar;
+  genel `claudeCode.modelMap` her yerde geçerli olmaya devam eder ve aynı kimlik için bağlantı
+  ona üstün gelir.
+- `ocx claude desktop status --json`, geçerli bağlantıları `firstParty.modelBindings` altında
+  raporlar.
 
 ## Sistem Ortamı Entegrasyonu
 
@@ -244,20 +337,84 @@ geri döngü olmayan bir bağlantıda özel proxy kabul başlığı geçerli old
 aynı zamanda "claude.ai connectors are disabled" uyarısının artık `ocx claude`
 ile görünmediği anlamına gelir.
 
+Gövdede yapılan tek değişiklik araç çağrısı kimlikleridir. Anthropic'in reddedeceği bir `tool_use.id`
+veya `tool_result.tool_use_id` (`a-zA-Z0-9_-` dışında karakter içeren ya da 64 karakteri aşan;
+örneğin oturumun başında yönlendirilen bir modelin ürettiği) çağrı/sonuç eşleşmesi korunarak uygun
+bir kimlikle yeniden yazılır. Uygun kimlikler değiştirilmeden gönderilir, boş bir kimliğe yerel olarak
+400 döner.
+
 `claudeCode.nativePassthrough: false` ile devre dışı bırakın;
 `claudeCode.anthropicBaseUrl` ile başka bir yeri işaret edin.
+
+## Uzak hub'a bağlı Claude Desktop
+
+Bağlı makinede `ocx claude desktop apply` veya `ocx claude desktop`, hub'ın Desktop anlık
+görüntüsünü alır ve hub origin'ini ve verdiği model kimliklerini yerel Desktop yapılandırmasına
+aynen yazar. Yerel takma ad üretmez. static/hybrid model listesini de kopyalar;
+discovery-only listeyi gömmeden hub origin'ini kullanır.
+
+Profil, aile atamaları ve varsayılanlar hub'da yönetilir. Hub'da değiştirin, istemcide yeniden
+uygulayın ve Desktop'ta modeli yeniden seçin. Yalnızca istemcide oluşturulmuş eski takma adlar
+için de yeniden uygulama/seçim gerekir. `show`, yerel düzenleme ve import/export yerel kalır.
+Bağlıyken `ocx claude desktop import <path> --apply` desteklenmez ve kaydetmeden reddedilir;
+`--apply` olmadan import yerel bir işlemdir.
+
+Okuma, mevcut bağlantının veri erişim kimlik bilgilerini kullanır; yönetici belirteci veya profil
+yüklemesi gerekmez. Eski hub desteği yoksa, yanıt geçersizse veya Desktop listesi boşsa uygulama
+başarısız olur; yerel katalog ya da loopback adresi kullanılmaz. Hub'ı güncelleyin veya
+yapılandırın, ardından yeniden uygulayın.
+
+Bu takma ad değişikliği, [#3719](https://github.com/lidge-jun/opencodex/issues/3719)'daki ayrı `thinking` / `redacted_thinking` yeniden gönderim ve
+istem önbelleği talebini çözmez. Proxy erişimi tek başına yerel Anthropic geçişini etkinleştirmez;
+çevrilen Anthropic rotaları yine de önbellek kullanabilir. Yeniden gönderim doğruluğu ve önbellek
+isabetlerinin karşılaştırılması ayrı iş olarak kalır.
+
+### Anahtar döndürme, kurtarma ve bağlantıyı kesme
+
+Anahtar döndürme ve kurtarma, yerel bağlantı kimlik bilgileriyle birlikte bağlantının yönettiği
+Desktop profilindeki anahtarı da günceller. Yalnızca anahtarı taşımak için elle apply gerekmez.
+Model kimlikleri, aileler, varsayılanlar ve geçerli profil seçimi korunur; yönetilen profil tekrar
+seçilmez veya kapalı entegrasyon açılmaz. CLI JSON'unda `rotation: "committed"` yeni anahtarın
+etkin olduğunu, `rotation: "rolled_back"` önceki anahtarın korunduğunu ya da geri yüklendiğini
+belirtir. Geri alma, yeni anahtarın kesinleştiği veya öncekinin iptal edildiği anlamına gelmez.
+Belirsiz veya eksik kurtarma başarılı döndürme olarak bildirilmez.
+
+İlk bağlı uygulama, geri yüklemek için önceki yönetilen ayarları ve seçimi kaydeder. Tekrar
+uygulama ve döndürme bu ilk kaydı değiştirmez. `ocx disconnect`, kullanıcı alanlarını ve diğer
+profilleri koruyarak bağlantıya ait ayarları geri yükler. Önceki seçim yalnızca yönetilen profil
+hâlâ seçiliyse geri gelir; kullanıcının sonradan seçtiği başka geçerli profil korunur. Yeni
+oluşturulmuş profile kullanıcı eklemeleri yapılmışsa silinmez, okunabilir standart modda kalır.
+`--keep-catalog`, Desktop bağlantı anahtarını değil kataloğu tutar.
+
+İlk ayar kaydı olmayan eski yönetilen profil, geçerli hub'a ve tanınan bağlantı anahtarına açıkça
+aitse taşınabilir. Apply, döndürme/kurtarma veya doğrudan disconnect bunu yeni bayrak ya da önceden
+apply gerektirmeden yapar. Önceki ayarlar kaydedilmediği için bağlantı kesildiğinde standart moda
+geçileceği uyarısı gösterilir. Yalnızca bağlantıya ait ağ geçidi ayarları kaldırılır; kullanıcı
+alanları ve ayrı geçerli seçim korunur. Sonuç özgün ayarların geri yüklenmesi değil standart
+moda dönüş olarak bildirilir.
+
+Yönetilen ayar çatışmaları, tanınmayan kimlik bilgileri ve bozuk geri yükleme kayıtları korunup
+bildirilir. Kesilen temizlik yalnızca aynı bağlantı için sürdürülür; yeni bağlantı silinmez ve
+eksik geri yükleme tamamlanmış sayılmaz. Bağlantıyı kesmeden bekleyen döndürme kurtarmasını bitirin;
+yeniden denerken katalog saklama tercihini değiştirmeyin.
+
+Uygulama, döndürme/kurtarma veya geri yükleme sonrası Claude Desktop'ı tamamen kapatıp yeniden
+açın; disk değişikliği çalışan uygulamanın anahtarını değiştirmez. Uygulama otomatik yeniden
+başlatılmaz. Yerel bağlantı kesme hub anahtarını iptal etmez veya dış kopyaları silmez;
+gerekirse anahtarı hub'da ayrıca iptal edin.
 
 ## /model seçici ("From gateway")
 
 Claude Code 2.1.129+, `GET /v1/models?limit=1000` aracılığıyla ağ geçidi
-modellerini keşfeder ve bunları yerel `/model` seçicisinde "From gateway"
-etiketiyle listeler. Seçici yalnızca `claude` veya `anthropic` ile başlayan
-kimlikleri kabul ettiğinden, opencodex yönlendirilen modelleri kararlı, tersine
+modellerini keşfeder ve bunları yerel `/model` seçicisinde listeler. `description`
+alanı olmayan bir satır "From gateway" olarak görünür; opencodex her Claude Code CLI
+satırı için bir tane gönderir (`Routed by OpenCodex to <provider>/<model>`; yerel satırlarda `Routed by OpenCodex to native <model>`, Fast satırları sona ` · Fast` ekler, 1M satırları temel açıklamayı korur) ve Claude Code
+2.1.257+ onun yerine bunu gösterir. Claude Code 2.1.278, `claude` veya `anthropic` içeren bir kimliği kabul eder. `claude-` ile başlayan tanınmayan bir kimlik, compact kapatılmadıkça 200k sayılır. opencodex yönlendirilen modelleri `claude` içeren ama `claude-` ile başlamayan kararlı, tersine
 çevrilebilir takma adlar olarak sunar:
 
 | Yüzey | Format | Örnek |
 | --- | --- | --- |
-| Claude Code CLI | `claude-ocx-<provider>--<model>` (düz) veya `claude-ocx2-…` (kaçışlı) | `claude-ocx-openai--gpt-5.6-sol` |
+| Claude Code CLI | `ocx-claude-<provider>--<model>` (düz) veya `ocx-claude2-…` (kaçışlı) | `ocx-claude-openai--gpt-5.6-sol` |
 | Claude Desktop 3P | `claude-opus-4-8-<code>` (3 karakterli base36 karması) | `claude-opus-4-8-ncb` |
 
 Proxy, istek başına aileyi seçer: `?ids=cli` veya `?ids=desktop` kazanır; aksi
@@ -270,12 +427,26 @@ ModelInfo biçiminde tam model yeteneklerini (akıl yürütme çabası merdiveni
 düşünme türleri) taşır. Gerçek Anthropic modelleri kurallı kimliklerini korur.
 Sentetik 2026 tarihi bir çıkış tarihi değil, dahili bir yuvadır. Eski karma
 takma adlar ve eski yapılandırmalardan gelen `claude-ocx-<provider>--<model>`
-kimlikleri hala çözümlenir.
+kimlikleri hala çözümlenir; kaçışlı `claude-ocx2-<provider>--<model>` kimlikleri de
+çözümlenir. Kayıtlı eski bir kimlik yine yönlendirilir, ancak Claude Code o kimlik için
+200k hesabını sürdürür. Gerçek bağlam penceresi ve compact birlikte uygulansın diye
+kayıtlı `claude-ocx-` yerine bir kez `ocx-claude-`, kaçışlı `claude-ocx2-` yerine
+`ocx-claude2-` seçin.
 
 Claude Desktop'ın altbilgi seçicisi zaten çalışan bir 3P görüşmesi için modeli
-değiştirmezse, o görüşmede `/model <id>` komutunu kullanın. OpenCodex seçici
-durumunu gözlemleyemez; her isteğin taşıdığı model kimliğini yönlendirir. Sonucu
-**Logs → requestedModel** altında onaylayın.
+değiştirmezse, `/model <id>` komutunu deneyebilirsiniz; ancak bu geçici çözüm de
+etkilenen Desktop derlemelerinde başarısız olabilir.
+[Sorun #3782](https://github.com/lidge-jun/opencodex/issues/3782), Windows üzerinde
+Claude Desktop 1.46388.4 ile hem altbilgi seçicisi hem de `/model` üzerinden yapılan
+değişikliklerden sonra görüşmenin ilk modelini kullanmaya devam ettiğini bildiriyor.
+Bu bildirim, davranışa hangi istemci veya yönlendirme bileşeninin neden olduğunu
+ortaya koymuyor.
+
+OpenCodex Claude Desktop profilinde istediğiniz varsayılan modeli seçmeyi, profili
+yeniden uygulamayı ve yeni bir görüşme başlatmayı da deneyebilirsiniz. Bu bir sorun
+giderme adımıdır; kesin çözüm değildir. OpenCodex seçici durumunu gözlemleyemez;
+her isteğin taşıdığı model kimliğini yönlendirir. İstemcinin ne gönderdiğini
+**Logs → requestedModel** altında kontrol edin.
 
 Yetkili 1M bağlam penceresine sahip modeller fazladan bir `…[1m]` seçici satırı
 alır: bunu seçmek Claude Code'un bu model için tam 1M bağlam hesabı yapmasını
@@ -289,10 +460,10 @@ Code dizeleri doğrudan iletir).
 
 **Takma ad dilbilgisi kuralları:** sağlayıcı `/` veya `--` içeremez veya
 `native` değerine eşit olamaz. Düz model kimlikleri (`/` veya `~` içermeyen) v1
-önekini `claude-ocx-…` korur. `/` veya `~` içeren model kimlikleri, kaçışlarla
-(`/` → `~s`, `~` → `~t`) v2 önekini `claude-ocx2-…` basar, örn.
+önekini `ocx-claude-…` korur. `/` veya `~` içeren model kimlikleri, kaçışlarla
+(`/` → `~s`, `~` → `~t`) v2 önekini `ocx-claude2-…` basar, örn.
 `openrouter/anthropic/claude-opus-4-8` →
-`claude-ocx2-openrouter--anthropic~sclaude-opus-4-8`. v1 takma adları harfi
+`ocx-claude2-openrouter--anthropic~sclaude-opus-4-8`. v1 takma adları harfi
 harfine çözülür (böylece `~s` / `~t` iki karakterli dizilerini içeren geçmiş bir
 model kimliği korunur); v2 takma adları kaçışları genişletir. Okunabilir formun
 ifade edemediği rotalar karma takma ada geri döner. Model kimlikleri `--`
@@ -302,6 +473,15 @@ slug'lar karma forma geri döner.
 **Model çözümleme sırası:** `[1m]` işaretçisi kaldırılır → okunabilir takma ad
 çözülür → Desktop karma takma adı çözülür → `modelMap` tam eşleşmesi → tarih
 kaldırılmış eşleşme (`-20250514` kaldırılır) → doğrudan geçiş.
+
+Çözümlenemeyen tarih biçimli bir Desktop kimliği, keşifte yer almayan gerçek bir yerel model
+kimliği de olabilir. Mevcut bilgi kimliği çözmeye yetmiyorsa Messages ve count-tokens sabit
+`desktop_model_mapping_unavailable` hatasıyla HTTP 503 döndürür; bu, modelin geçersiz olduğunu kanıtlamaz.
+Bilinmeyen eski hash takma adları HTTP 400 ile reddedilmeye devam eder. Her iki durumda da tarih
+kaldırılmaz ve başka rotaya geçilmez. Bilinen kimlikler, kayıtlı eşlemeler, tam `modelMap`
+eşleşmeleri ve tanınan gerçek yerel kimlikler aynı şekilde işlenir. Yeniden denemeden önce model
+keşfini yenileyin veya bağlı hub profilini yeniden uygulayın; yalnızca tekrar denemek çözümü
+garanti etmez.
 
 Her girdi, `gemini-3-pro (gemini)` gibi bir görünen adın yanı sıra resmi
 `ModelInfo` biçiminde tam model yeteneklerini (akıl yürütme çabası merdiveni,
@@ -352,6 +532,8 @@ enjekte edilen altı yuvayı hesaplar: `ANTHROPIC_MODEL`, dört
 `ANTHROPIC_SMALL_FAST_MODEL`. Geçerli Haiku, her iki Haiku değişkenine beslenen
 `tierModels.haiku ?? smallFastModel` değeridir.
 
+`ocx claude` abonelik modunda başlatıldığında Claude Code'un kendi oturumu, `claude-sonnet-5` gibi yalın bir Claude kimliğini doğrudan Anthropic'e gönderir; bu yüzden bu kimlikler, başka bir sağlayıcı aynı kimlik için ne listelerse listelesin, bağlam pencerelerini sağlayıcı kayıt defterinden alır. Ayarlanmamış bir Opus, Sonnet veya Fable yuvası, Claude Code'un o takma adı çözdüğü yerel kimliği `[1m]` işaretiyle alır; çünkü bir ağ geçidinin arkasında Claude Code işaretsiz bir kimliği 200k olarak sayar. 1M'nin altında sınırlanmış bir `anthropic` satırı veya bir `claudeCode.modelMap` girdisi kimliğini işaretsiz bırakır ve Haiku hiçbir zaman doldurulmaz ya da işaretlenmez. Proxy kimlik doğrulamasıyla başlatıldığında veya `nativePassthrough` kapalıyken yönlendirici karar verir ve yalnızca yönlendirilen satırın penceresi dikkate alınır. Sistem ortamı ve kabuk dosyası, değerleri bir hub üzerinden geçen başlatmalara da ulaştığı için ayarlanmamış yuvaları boş bırakır.
+
 Hem `tierModels.haiku` hem de `smallFastModel` bulunmadığında, OpenCodex her iki
 yardımcı değişkeni de ayarlanmamış bırakır; Claude Code daha sonra yerel
 sağlayıcı ücretlerine neden olabilecek yerel yardımcı modelini (şu anda Sonnet)
@@ -397,7 +579,9 @@ Anthropic doğrudan geçişine dokunulmaz.
    `tool_result` gövdesi bir taslakla değiştirilir.
 2. **Metin bloğu taşıyıcısı:** `Base directory for this skill: ` ile başlayan
    ≥10.000 karakterlik bir kullanıcı metin bloğu — dizin temel adı engellenen
-   bir ada eşit olduğunda eşleşir (büyük/küçük harfe duyarsız).
+   bir ada eşit olduğunda eşleşir (büyük/küçük harfe duyarsız). Dizin satırı
+   yalnızca 4.096 UTF-16 kod birimine kadar incelenir; daha uzun bir satır,
+   sonunda satır sonu olmasa bile değiştirilmeden gönderilir.
 
 `claudeCode.blockedSkills` ile yapılandırın (varsayılan `["claude-api"]`; `[]`
 atlamayı tamamen devre dışı bırakır). Taslak, araç çağrısı/sonuç eşleşmesini
@@ -421,6 +605,15 @@ yeniden yazar:
 
 Arama sırası: keşif takma adı → tam kimlik → tarih soneki kaldırılmış kimlik
 (`-20250514` kaldırılır) → doğrudan geçiş.
+
+Çözümlenemeyen tarih biçimli bir Desktop kimliği, keşifte yer almayan gerçek bir yerel model
+kimliği de olabilir. Mevcut bilgi kimliği çözmeye yetmiyorsa Messages ve count-tokens sabit
+`desktop_model_mapping_unavailable` hatasıyla HTTP 503 döndürür; bu, modelin geçersiz olduğunu kanıtlamaz.
+Bilinmeyen eski hash takma adları HTTP 400 ile reddedilmeye devam eder. Her iki durumda da tarih
+kaldırılmaz ve başka rotaya geçilmez. Bilinen kimlikler, kayıtlı eşlemeler, tam `modelMap`
+eşleşmeleri ve tanınan gerçek yerel kimlikler aynı şekilde işlenir. Yeniden denemeden önce model
+keşfini yenileyin veya bağlı hub profilini yeniden uygulayın; yalnızca tekrar denemek çözümü
+garanti etmez.
 
 ## Sidecar matrisi: web araması ve görsel anlama
 
@@ -474,7 +667,7 @@ görsel baytları ve istek bağlamına göre önbelleğe alınır; böylece ayn�
 bağlam çifti her tekrarda tekrar açıklanmaz. Uzak `https:` görselleri asla
 önbelleğe alınmaz çünkü içerikleri değişebilir.
 
-Her anahtar için [yapılandırma referansı](/tr/reference/configuration/#sidecars)
+Her anahtar için [yapılandırma referansı](/tr/reference/configuration/server/#sidecarlar)
 bölümüne bakın. Anthropic-OAuth web araması ve görsel açıklaması, deponun mevcut
 Claude Code OAuth parmak izi emsalini yeniden kullanır, ancak uzun gözetimsiz
 çalıştırmalar için bunlara güvenmeden önce hesabınız ve iş yükünüzle kapsamlı
@@ -505,11 +698,15 @@ dönüştürür:
 | Asistan metni | `output_text` |
 | Asistan `tool_use` | `function_call` (`input` → JSON dizgeleştirilmiş `arguments`) |
 | Kullanıcı `tool_result` | `function_call_output` (`is_error` → `[tool error]` öneki) |
-| `thinking` / `redacted_thinking` tekrarı | Bırakılır |
+| `thinking` / `redacted_thinking` tekrarı | İmzaları ve gizli yükleri sınırlı `ocxr1` zarflarında taşıyan `reasoning` öğeleri |
 | Fonksiyon araçları | `{type: "function"}` (`web_search*` → `{type: "web_search"}`) |
 | `tool_choice` | `auto`→`auto`, `none`→`none`, `any`→`required`, adlandırılmış fonksiyon→`{type:"function",name}`, barındırılan WebSearch/web_search→`{type:"web_search"}` |
 | `max_tokens` | `max_output_tokens` |
 | `stop_sequences` | `stop` |
+
+Claude Code otomatik modu her zaman `stop_sequences` gönderir. Yönlendirilen sağlayıcının `noStopModels` listesindeki modeller için OpenCodex `stop` alanını hem Chat Completions hem de Responses hattında göndermez; böylece grok-4.7 ve grok-4.6 gibi xAI akıl yürütme modelleri `400 invalid-argument` döndürmez ve geçici olarak kullanılamaz diye işaretlenmez. Bkz. [`noStopModels`](/tr/reference/configuration/providers/).
+
+Hedeflenen Anthropic adaptöründe gizlenmemiş imzalı bloklar (boş thinking dahil) ve opak redacted blokları korunur. `hideThinkingSummary` değişmez: yerel olarak gizlenen imzalı metin Claude istemcilerine gösterilmez; bu sınır üzerinden kayıpsız yeniden oynatma doğrulanmamıştır. Eski birleşik zarflarda metin akışla gönderildikten sonra özgün blok sırası geri getirilemez. `claudeCode.compatibility: "enforce"` thinking yeniden oynatmasını hâlâ reddeder. Bu, gerçek Anthropic kabulünü veya önbellek iyileşmesini kanıtlamaz; [#3719](https://github.com/lidge-jun/opencodex/issues/3719) açık kalır.
 
 **Hata durumları (400):** hatalı biçimlendirilmiş JSON; eksik/boş `model`;
 eksik/boş `messages`; desteklenmeyen rol; `tool_use_id` içermeyen `tool_result`;
@@ -522,7 +719,8 @@ kimlik/ad içermeyen `tool_use`; ad içermeyen adlandırılmış `tool_choice`.
 | `response.created` | `message_start` + `ping` |
 | Kalp atışı (Heartbeat) | `ping` |
 | Metin farkları | `content_block_start` → `content_block_delta` (metin) → `content_block_stop` |
-| Akıl yürütme özeti/metni | Sentetik imzalı `thinking` bloğu |
+| Akıl yürütme özeti/metni | Tekrarlanan imzayı veya sınırlı bir `ocxr1` yedeğini taşıyan `thinking` bloğu |
+| Gizli akıl yürütme | Akıl yürütme zarfından yeniden oynatılan `redacted_thinking` blokları |
 | Fonksiyon çağrısı çerçeveleri | `input_json_delta` ile `tool_use` bloğu |
 | Terminal olayı | `message_delta` → `message_stop` |
 | Terminalden önce EOF | 502 tarzı `api_error` |
@@ -642,3 +840,7 @@ modellerde opencodex varsayılan olarak bunu taslakla değiştirir (`blockedSkil
 aracının `model` argümanını değil, `<!-- ocx-route: ... -->` yönergelerini
 kullanır. Yönergenin hedeflenen rotayla eşleştiğinden emin olun. Model yer
 tutucusu olarak `"haiku"` iletin.
+
+`config.json` içindeki `claudeCode.stabilizePromptCache: true`, dönüştürülen rotalarda sistem talimatlarının sonundaki desteklenen Claude bildirimlerini son kullanıcı mesajına taşır. Varsayılan değer `false` olur. Yalnızca bu rol değişikliği istemcileriniz için uygunsa etkinleştirin. Kod bloklarındaki örnekler ve eşleşmeyen metin korunur; yerel Anthropic aktarımı değişmez. Meta veri yoksa önbellek anahtarı kararlı talimatlardan hesaplanır. Bu seçenek konuşma kimliği oluşturmaz veya üst hizmette önbellek isabeti garanti etmez.
+
+Dönüştürülen tüm Chat rotalarında zaman çizelgesi hatırlatmaları, bekleyen araç sonuçlarından sonra konuşmadaki konumlarını korur. Böylece yeni bir hatırlatma eklenmesi baştaki sistem istemini yeniden yazmaz ve konuşmanın ortasındaki bir yönerge, izlemesi gereken turların önüne geçmez. O konumun hangi rolü taşıdığı ayrı bir karardır: sağlayıcı `foldDeveloperRoleToSystem: false` kaydetmedikçe hatırlatma `system` olarak gönderilir; bu kayıt, üst hizmetin `developer` rolünü kabul ettiğini belirtir ve rol aynı konumda iletilir. Kabul etmeyen bir üst hizmet `400 role 'developer' is not allowed` yanıtı verir ve tur hiç başlamaz; kaydı olmayan hedefin katlanmasının nedeni budur. Bu davranış `stabilizePromptCache` açık veya kapalıyken geçerlidir; yerel Anthropic aktarımı değişmez. Önbelleğin yeniden kullanımı için kararlı bir oturum kimliği ve kullanılabilir üst hizmet önbelleği hâlâ gereklidir. Önceki talimatların veya araçların değişmesi ve konuşmanın sıkıştırılması da önbellek isabetini etkileyebilir; hatırlatma sırasını korumak tek başına yeniden kullanımı garanti etmez.

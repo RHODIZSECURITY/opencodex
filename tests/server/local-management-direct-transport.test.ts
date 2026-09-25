@@ -1,14 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { lookup } from "node:dns/promises";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { createConnection, createServer as createTcpServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { directLocalHttpFetch } from "../../src/server/direct-local-http";
 import { repoPath, repoRoot } from "../helpers/repo-root";
+import { watchdogMs } from "../helpers/ci-watchdog";
 
 const PID = 4242;
 const SECRET = "A".repeat(43);
+const CONTROL_TIMEOUT_MS = 2_000;
+// Startup/imports + control + two liveness probes + capability read + process exit.
+const DIRECT_CHILD_BUDGET_MS = watchdogMs(3_000 + CONTROL_TIMEOUT_MS + 750 + 750 + 2_000 + 1_000);
 
 async function listen(server: Server, hostname = "127.0.0.1"): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
@@ -146,6 +151,142 @@ describe("local management direct transport", () => {
     }
   });
 
+  test("an aborted request releases its client socket before it settles", async () => {
+    let accept!: () => void;
+    const accepted = new Promise<void>(resolve => { accept = resolve; });
+    const sockets = new Set<Socket>();
+    const server = createTcpServer(socket => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      accept();
+    });
+    const controller = new AbortController();
+    let client: Socket | undefined;
+    let clientClosed = false;
+    try {
+      const port = await listen(server);
+      const pending = directLocalHttpFetch(`http://127.0.0.1:${port}/healthz`, {
+        signal: controller.signal,
+      }, {
+        connect(hostname, selectedPort) {
+          client = createConnection({ host: hostname, port: selectedPort });
+          client.once("close", () => { clientClosed = true; });
+          return client;
+        },
+      });
+      await accepted;
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(clientClosed).toBe(true);
+      expect(client?.destroyed).toBe(true);
+    } finally {
+      client?.destroy();
+      for (const socket of sockets) socket.destroy();
+      await close(server);
+    }
+  });
+
+  test("a never-connected socket without close still settles by its deadline", async () => {
+    const socket = Object.assign(new EventEmitter(), {
+      setTimeout() { return this; },
+      destroy() { return this; },
+    }) as unknown as Socket;
+    let deadlineActive = false;
+    let scheduledMs: number | undefined;
+    await expect(directLocalHttpFetch("http://127.0.0.1:9/healthz", {}, {
+      timeoutMs: 20,
+      connect: () => socket,
+      scheduleDeadline: (onTimeout, delayMs) => {
+        scheduledMs = delayMs;
+        deadlineActive = true;
+        const timer = setTimeout(() => { deadlineActive = false; onTimeout(); }, delayMs);
+        return () => { clearTimeout(timer); deadlineActive = false; };
+      },
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(scheduledMs).toBe(20);
+    expect(deadlineActive).toBe(false);
+  });
+
+  test("an external deadline settles a socket that never closes and clears the local timer", async () => {
+    const socket = Object.assign(new EventEmitter(), {
+      setTimeout() { return this; },
+      destroy() { return this; },
+    }) as unknown as Socket;
+    const controller = new AbortController();
+    let localDeadlineActive = false;
+    let localDeadlineFired = false;
+    const pending = directLocalHttpFetch("http://127.0.0.1:9/healthz", {
+      signal: controller.signal,
+    }, {
+      timeoutMs: 1_000,
+      connect: () => socket,
+      scheduleDeadline: (onTimeout, delayMs) => {
+        localDeadlineActive = true;
+        const timer = setTimeout(() => { localDeadlineFired = true; onTimeout(); }, delayMs);
+        return () => { clearTimeout(timer); localDeadlineActive = false; };
+      },
+    });
+    const exchangeTimer = setTimeout(() => controller.abort(new DOMException("exchange deadline", "TimeoutError")), 20);
+    try {
+      await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+      expect(localDeadlineFired).toBe(false);
+      expect(localDeadlineActive).toBe(false);
+    } finally {
+      clearTimeout(exchangeTimer);
+    }
+  });
+
+  test("an exchange deadline still cancels teardown after response framing completes", async () => {
+    const socket = Object.assign(new EventEmitter(), {
+      setTimeout() { return this; },
+      destroy() { return this; },
+    }) as unknown as Socket;
+    const controller = new AbortController();
+    let localDeadlineActive = false;
+    let localDeadlineFired = false;
+    const pending = directLocalHttpFetch("http://127.0.0.1:9/healthz", {
+      signal: controller.signal,
+    }, {
+      timeoutMs: 1_000,
+      connect: () => socket,
+      scheduleDeadline: (onTimeout, delayMs) => {
+        localDeadlineActive = true;
+        const timer = setTimeout(() => { localDeadlineFired = true; onTimeout(); }, delayMs);
+        return () => { clearTimeout(timer); localDeadlineActive = false; };
+      },
+    });
+    socket.emit("data", Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+    controller.abort(new DOMException("exchange deadline", "TimeoutError"));
+    await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(localDeadlineFired).toBe(false);
+    expect(localDeadlineActive).toBe(false);
+  });
+
+  test("destroy failure settles an aborted request without waiting for close", async () => {
+    const socket = Object.assign(new EventEmitter(), {
+      setTimeout() { return this; },
+      destroy() { throw new Error("destroy failed"); },
+    }) as unknown as Socket;
+    const controller = new AbortController();
+    let deadlineActive = false;
+    let deadlineFired = false;
+    const pending = directLocalHttpFetch("http://127.0.0.1:9/healthz", {
+      signal: controller.signal,
+    }, {
+      timeoutMs: 200,
+      connect: () => socket,
+      scheduleDeadline: (onTimeout, delayMs) => {
+        deadlineActive = true;
+        const timer = setTimeout(() => { deadlineFired = true; onTimeout(); }, delayMs);
+        return () => { clearTimeout(timer); deadlineActive = false; };
+      },
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(deadlineFired).toBe(false);
+    expect(deadlineActive).toBe(false);
+  });
+
   test("times out an accepted silent socket without an AbortSignal", async () => {
     let accept!: () => void;
     const accepted = new Promise<void>(resolve => { accept = resolve; });
@@ -242,11 +383,11 @@ describe("local management direct transport", () => {
     ) => {
       const pathname = new URL(rawPath, "http://127.0.0.1").pathname;
       if (pathname === "/healthz") {
-        write(200, { service: "opencodex", status: "ok", version: "test", uptime: 1, pid: PID, port: targetPort });
+        write(200, { service: "opencodex", status: "ok", version: "1.2.3-test", uptime: 1, pid: PID, port: targetPort });
         return;
       }
       if (pathname === "/readyz") {
-        write(200, { service: "opencodex", status: "ready", version: "test", uptime: 1, pid: PID, port: targetPort });
+        write(200, { service: "opencodex", status: "ready", version: "1.2.3-test", uptime: 1, pid: PID, port: targetPort });
         return;
       }
       if (pathname === "/api/system/memory") {
@@ -299,14 +440,22 @@ describe("local management direct transport", () => {
       const localClientUrl = pathToFileURL(repoPath("src", "server", "local-management-read-client.ts")).href;
       const capabilityUrl = pathToFileURL(repoPath("src", "lib", "local-management-capability.ts")).href;
       const childSource = `
+        const phase = name => console.error("DIRECT_PHASE:" + name);
+        phase("imports");
         const liveness = await import(${JSON.stringify(proxyLivenessUrl)});
         const client = await import(${JSON.stringify(localClientUrl)});
         const capability = await import(${JSON.stringify(capabilityUrl)});
         const port = ${targetPort};
         const pid = ${PID};
-        const control = await fetch(\`http://127.0.0.1:\${port}/__proxy-control\`).then(response => response.json());
+        phase("control");
+        const control = await fetch(\`http://127.0.0.1:\${port}/__proxy-control\`, {
+          signal: AbortSignal.timeout(${CONTROL_TIMEOUT_MS}),
+        }).then(response => response.json());
+        phase("identity");
         const identity = await liveness.proxyIdentityAt(port, { hostname: "127.0.0.1", expectedPid: pid });
+        phase("readiness");
         const readiness = await liveness.probeReadiness(port, { hostname: "127.0.0.1", expectedPid: pid });
+        phase("memory");
         const read = await client.fetchBoundLocalManagementRead(
           { hostname: "127.0.0.1", port, pid, source: "runtime" },
           capability.LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
@@ -319,6 +468,7 @@ describe("local management direct transport", () => {
         const memory = read.kind === "response" ? await read.response.json() : null;
         const result = { control, identity, readiness, readKind: read.kind, memory };
         console.log(JSON.stringify(result));
+        phase("complete");
         if (control?.via !== "proxy" || identity?.pid !== pid || readiness?.ready !== true || read.kind !== "response" || memory?.pid !== pid) {
           process.exitCode = 2;
         }
@@ -341,13 +491,14 @@ describe("local management direct transport", () => {
       const childWatchdog = setTimeout(() => {
         childTimedOut = true;
         child.kill();
-      }, 3_000);
+      }, DIRECT_CHILD_BUDGET_MS);
       const [exitCode, stdout, stderr] = await Promise.all([
         child.exited,
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
       ]).finally(() => clearTimeout(childWatchdog));
-      if (childTimedOut) throw new Error("direct-transport child timed out");
+      const phase = [...stderr.matchAll(/DIRECT_PHASE:(imports|control|identity|readiness|memory|complete)/g)].at(-1)?.[1] ?? "startup";
+      if (childTimedOut) throw new Error(`direct-transport child timed out (phase=${phase}; targetRequests=${targetPaths.length}; proxyRequests=${proxyPaths.length})`);
       if (exitCode !== 0) {
         throw new Error(`direct-transport child failed (${exitCode}): ${stderr.trim()}\n${stdout.trim()}`);
       }
@@ -357,10 +508,10 @@ describe("local management direct transport", () => {
         control: { via: "proxy" },
         // `version` rides back with the identity probe now that the CLI reports version
         // skew against the running proxy (#2701). The healthz fixture above already serves
-        // `version: "test"`, so asserting it here pins that the field is threaded through
+        // valid semver `version: "1.2.3-test"`, so asserting it here pins that the field is threaded through
         // the direct transport rather than dropped -- an exact-match assertion is the point
         // of this test, so it is widened deliberately, not loosened to a subset match.
-        identity: { pid: PID, version: "test" },
+        identity: { pid: PID, version: "1.2.3-test" },
         readiness: { ready: true, status: "ready", pid: PID, port: targetPort },
         readKind: "response",
         memory: { pid: PID },
@@ -375,5 +526,5 @@ describe("local management direct transport", () => {
       if (proxyPort !== 0) await close(proxy);
       if (targetPort !== 0) await close(target);
     }
-  });
+  }, DIRECT_CHILD_BUDGET_MS + 1_000);
 });

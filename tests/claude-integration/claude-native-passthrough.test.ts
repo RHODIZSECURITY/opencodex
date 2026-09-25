@@ -5,6 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../../src/config";
+import { buildDesktop3pRegistry } from "../../src/claude/desktop-3p";
+import { SERVER_BUDGET_MS } from "../helpers/test-budget";
 import { startServer } from "../../src/server";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
@@ -206,6 +208,50 @@ test("count_tokens passes through with native credentials", async () => {
   }
 });
 
+// The legacy claude-ocx spelling is what a picker saved before the ocx-claude aliases.
+test.each([
+  "ocx-claude-native--claude-fable-5-1",
+  "claude-ocx-native--claude-fable-5-1",
+])("Fable 1M picker alias %s preserves native passthrough on both Messages endpoints", async pickerModel => {
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const messagesWithoutMarker = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: OAUTH_HEADERS,
+      body: JSON.stringify({ ...claudeBody(), model: pickerModel }),
+    });
+    expect(messagesWithoutMarker.status).toBe(200);
+    await messagesWithoutMarker.text();
+
+    const messagesWithMarker = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: OAUTH_HEADERS,
+      body: JSON.stringify({ ...claudeBody(), model: `${pickerModel}[1m]` }),
+    });
+    expect(messagesWithMarker.status).toBe(200);
+    await messagesWithMarker.text();
+
+    const countTokens = await fetch(new URL("/v1/messages/count_tokens", server.url), {
+      method: "POST",
+      headers: OAUTH_HEADERS,
+      body: JSON.stringify({ model: `${pickerModel}[1m]`, messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(countTokens.status).toBe(200);
+    expect(await countTokens.json()).toEqual({ input_tokens: 4242 });
+
+    expect(captured).toHaveLength(3);
+    expect(captured[0]!.body.model).toBe("claude-fable-5-1");
+    expect(captured[1]!.body.model).toBe("claude-fable-5-1");
+    expect(captured[2]!.body.model).toBe("claude-fable-5-1");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("exposed native passthrough requires dedicated admission and never forwards admission credentials", async () => {
   const admissionSecret = "sk-ant-api03-key";
   const providerBearer = "sk-ant-oat01-provider";
@@ -298,6 +344,56 @@ test("exposed native passthrough requires dedicated admission and never forwards
   }
 });
 
+test.each([false, true])("Desktop mapping errors follow admission on both endpoints (fastRows=%s)", async fastRows => {
+  const admissionSecret = "desktop-admission-fixture";
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  const config = cfg(upstream.url.origin);
+  config.hostname = "0.0.0.0";
+  config.fastRows = fastRows;
+  config.apiKeys = [{ id: "desktop", name: "desktop", key: admissionSecret, createdAt: "2026-09-06" }];
+  // Any default-provider fallback is observable at the same upstream as native dispatch.
+  config.providers.mock!.baseUrl = new URL("/v1", upstream.url).href;
+  saveConfig(config);
+  const server = startServer(0);
+  buildDesktop3pRegistry([], []);
+  try {
+    for (const path of ["/v1/messages", "/v1/messages/count_tokens"]) {
+      for (const model of ["claude-opus-4-8-20260202", "claude-opus-4-8-20260202--fast[1m]", "claude-opus-4-8-zzz"]) {
+        for (const credential of [undefined, "wrong-admission-fixture", admissionSecret]) {
+          const headers = new Headers(OAUTH_HEADERS);
+          if (credential !== undefined) headers.set("x-opencodex-api-key", credential);
+          const response = await globalThis.fetch(`http://127.0.0.1:${server.port}${path}`, {
+            method: "POST", headers, signal: AbortSignal.timeout(5_000),
+            body: JSON.stringify({ ...claudeBody(), model }),
+          });
+          const body = await response.json() as { type: string; error: { type: string; code?: string; message: string } };
+          expect(body.type).toBe("error");
+          if (credential !== admissionSecret) {
+            expect(response.status).toBe(401);
+            expect(body.error.type).toBe("authentication_error");
+            expect(body.error.code).not.toBe("desktop_model_mapping_unavailable");
+            expect(response.headers.get("retry-after")).toBeNull();
+          } else if (model === "claude-opus-4-8-zzz") {
+            expect(response.status).toBe(400);
+            expect(body.error.type).toBe("invalid_request_error");
+            expect(response.headers.get("retry-after")).toBeNull();
+          } else {
+            expect(response.status).toBe(503);
+            expect(body.error).toMatchObject({ type: "api_error", code: "desktop_model_mapping_unavailable" });
+            expect(response.headers.get("retry-after")).toBe("1");
+          }
+          expect(captured).toEqual([]);
+        }
+      }
+    }
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+    buildDesktop3pRegistry([], []);
+  }
+}, { timeout: SERVER_BUDGET_MS });
+
 test("alias/mapped models and non-anthropic credentials do NOT pass through", async () => {
   const captured: Captured[] = [];
   const upstream = mockAnthropicUpstream(captured);
@@ -316,7 +412,7 @@ test("alias/mapped models and non-anthropic credentials do NOT pass through", as
     const alias = await fetch(new URL("/v1/messages", server.url), {
       method: "POST",
       headers: OAUTH_HEADERS,
-      body: JSON.stringify({ model: "claude-ocx-mock--test-model", max_tokens: 10, messages: [{ role: "user", content: "x" }] }),
+      body: JSON.stringify({ model: "ocx-claude-mock--test-model", max_tokens: 10, messages: [{ role: "user", content: "x" }] }),
     });
     expect(alias.status).not.toBe(200);
 
@@ -488,6 +584,205 @@ test("P5: Files API image source passes through untouched", async () => {
     expect(res.status).toBe(200);
     const [img] = capturedBlocks(captured).filter(b => b.type === "image");
     expect(img.source).toEqual({ type: "file", file_id: "file_abc123" });
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+
+test.each([false, true])("catalog-published native dates retain identity while unknown dates are unavailable (fastRows=%s)", async fastRows => {
+  const published = "claude-opus-4-8-20260402";
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  const config = cfg(upstream.url.origin, { desktopNativeModels: false });
+  config.fastRows = fastRows;
+  config.providers.anthropic = {
+    adapter: "anthropic", baseUrl: upstream.url.origin, apiKey: "test-native-key",
+    allowPrivateNetwork: true, liveModels: false, models: [published],
+  };
+  saveConfig(config);
+  buildDesktop3pRegistry([], []);
+  const server = startServer(0);
+  try {
+    // Publish the fixture's genuine identity through the real hub catalog path.
+    const catalog = await fetch(new URL("/v1/models?ids=desktop", server.url), {
+      headers: { "anthropic-version": "2023-06-01" }, signal: AbortSignal.timeout(5_000),
+    });
+    expect(catalog.status).toBe(200);
+    const list = await catalog.json() as { data: Array<{ id: string }> };
+    expect(list.data.some(row => row.id === published)).toBe(true);
+    for (const model of [published, `${published}[1m]`, "claude-opus-4-8", "claude-haiku-4-5"]) {
+      for (const path of ["/v1/messages", "/v1/messages/count_tokens"]) {
+        const response = await fetch(new URL(path, server.url), {
+          method: "POST", headers: OAUTH_HEADERS, signal: AbortSignal.timeout(5_000),
+          body: JSON.stringify({ ...claudeBody(), model }),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+        expect(captured.at(-1)!.body.model).toBe(model.replace("[1m]", ""));
+        expect(captured.at(-1)!.path).toBe(path);
+      }
+    }
+    expect(captured).toHaveLength(8);
+    for (const path of ["/v1/messages", "/v1/messages/count_tokens"]) {
+      const response = await fetch(new URL(path, server.url), {
+        method: "POST", headers: OAUTH_HEADERS, signal: AbortSignal.timeout(5_000),
+        body: JSON.stringify({ ...claudeBody(), model: "claude-opus-4-8-20260403" }),
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("1");
+      expect((await response.json() as { error: { type: string; code: string } }).error).toMatchObject({
+        type: "api_error", code: "desktop_model_mapping_unavailable",
+      });
+    }
+    expect(captured).toHaveLength(8);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+    buildDesktop3pRegistry([], []);
+  }
+}, { timeout: SERVER_BUDGET_MS });
+
+// --- tool_use.id wire-contract sanitize on the native branch ---
+// The Anthropic adapter normalizes tool call ids (#1780), but this branch bypasses that
+// adapter, so third-party ids like Devin's `Bash:0#<hex>` would reach api.anthropic.com
+// verbatim and 400 on `^[a-zA-Z0-9_-]+$`. The passthrough sanitizes before serialize.
+
+test("non-conforming tool_use ids are rewritten on the wire, pairing preserved, conforming ids untouched", async () => {
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const pollutedA = "Bash:0#abcdef1234567890";
+    const pollutedB = "Read:7#fedcba0987654321";
+    const conforming = "toolu_01KeepMeVerbatim";
+    const body = {
+      model: "claude-fable-5",
+      max_tokens: 1000,
+      messages: [
+        { role: "user", content: "run them" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: pollutedA, name: "Bash", input: { cmd: "a" } },
+            { type: "server_tool_use", id: pollutedB, name: "web_search", input: { q: "b" } },
+            { type: "tool_use", id: conforming, name: "Read", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: pollutedA, content: "ok-a" },
+            { type: "web_search_tool_result", tool_use_id: pollutedB, content: [] },
+            { type: "tool_result", tool_use_id: conforming, content: "ok-c" },
+          ],
+        },
+        { role: "user", content: "go on" },
+      ],
+    };
+    const res = await postNative(String(server.url), "/v1/messages", body);
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const msgs = captured[0].body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    const callBlocks = msgs[1].content;
+    const resultBlocks = msgs[2].content;
+    const wireA = callBlocks[0].id as string;
+    const wireB = callBlocks[1].id as string;
+    for (const wire of [wireA, wireB]) {
+      expect(wire).toMatch(/^[a-zA-Z0-9_-]+$/);
+      expect(wire.length).toBeLessThanOrEqual(64);
+    }
+    expect(wireA).not.toBe(pollutedA);
+    expect(wireB).not.toBe(pollutedB);
+    expect(wireA).not.toBe(wireB);
+    expect(resultBlocks[0].tool_use_id).toBe(wireA);
+    expect(resultBlocks[1].tool_use_id).toBe(wireB);
+    expect(callBlocks[2].id).toBe(conforming);
+    expect(resultBlocks[2].tool_use_id).toBe(conforming);
+
+    // count_tokens shares the branch; the allocator is deterministic per raw id.
+    const res2 = await postNative(String(server.url), "/v1/messages/count_tokens", body);
+    expect(res2.status).toBe(200);
+    const msgs2 = captured[1].body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(msgs2[1].content[0].id).toBe(wireA);
+    expect(msgs2[2].content[0].tool_use_id).toBe(wireA);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+function toolRoundTrip(callId: string, extraCallId?: string) {
+  const calls: Array<Record<string, unknown>> = [{ type: "tool_use", id: callId, name: "Bash", input: { cmd: "a" } }];
+  const results: Array<Record<string, unknown>> = [{ type: "tool_result", tool_use_id: callId, content: "ok" }];
+  if (extraCallId !== undefined) {
+    calls.push({ type: "tool_use", id: extraCallId, name: "Read", input: {} });
+    results.push({ type: "tool_result", tool_use_id: extraCallId, content: "ok-2" });
+  }
+  return {
+    model: "claude-fable-5",
+    max_tokens: 1000,
+    messages: [
+      { role: "user", content: "run" },
+      { role: "assistant", content: calls },
+      { role: "user", content: results },
+    ],
+  };
+}
+
+test("an empty tool_use id fails locally with 400 and never reaches the upstream", async () => {
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const res = await postNative(String(server.url), "/v1/messages", toolRoundTrip(""));
+    expect(res.status).toBe(400);
+    const payload = await res.json() as { type?: string; error?: { type?: string } };
+    expect(payload.error?.type).toBe("invalid_request_error");
+    expect(captured).toHaveLength(0);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("an overlength id is rewritten within 64 characters and a colliding valid id stays byte-identical", async () => {
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig(cfg(upstream.url.toString().replace(/\/$/, "")));
+  const server = startServer(0);
+  try {
+    const overlength = "toolu_" + "x".repeat(80);
+    const polluted = "call:a";
+    const res = await postNative(String(server.url), "/v1/messages", toolRoundTrip(overlength));
+    expect(res.status).toBe(200);
+    await res.text();
+    const msgs = captured[0].body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    const wire = msgs[1].content[0].id as string;
+    expect(wire).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(wire.length).toBeLessThanOrEqual(64);
+    expect(msgs[2].content[0].tool_use_id).toBe(wire);
+
+    // A valid id that equals the polluted id's rewritten form keeps its bytes; the
+    // rewrite moves aside so the two calls never share a wire id.
+    const res2 = await postNative(String(server.url), "/v1/messages", toolRoundTrip(polluted, "placeholder"));
+    await res2.text();
+    const rewritten = (captured[1].body.messages as Array<{ content: Array<Record<string, unknown>> }>)[1].content[0].id as string;
+    const res3 = await postNative(String(server.url), "/v1/messages", toolRoundTrip(polluted, rewritten));
+    expect(res3.status).toBe(200);
+    await res3.text();
+    const msgs3 = captured[2].body.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(msgs3[1].content[1].id).toBe(rewritten);
+    expect(msgs3[2].content[1].tool_use_id).toBe(rewritten);
+    const moved = msgs3[1].content[0].id as string;
+    expect(moved).not.toBe(rewritten);
+    expect(moved).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(moved.length).toBeLessThanOrEqual(64);
+    expect(msgs3[2].content[0].tool_use_id).toBe(moved);
   } finally {
     await server.stop(true);
     upstream.stop(true);

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { shouldShowLoginHint } from "../../gui/src/components/provider-catalog/login-hint-visibility";
+import { repoPath } from "../helpers/repo-root";
 
 /**
  * A first-time provider add is the one moment the operator has no other way in.
@@ -44,4 +46,12 @@ describe("first-add login hint visibility", () => {
     // Key rows have no login button at all.
     expect(shouldShowLoginHint({ id: "xai", kind: "key" }, "xai", hint)).toBe(false);
   });
+});
+
+test("device OAuth does not ask for a callback while polling and can replace the hint later", () => {
+  const hintSource = readFileSync(repoPath("gui/src/components/login-url-block.tsx"), "utf8");
+  const hookSource = readFileSync(repoPath("gui/src/components/use-add-provider-oauth.ts"), "utf8");
+  expect(hintSource).toContain("paste && !deviceCode");
+  expect(hookSource).toContain("deviceCode?: string");
+  expect(hookSource).toContain("setOauthUrl(s.url ?? \"\", providerId, s.deviceCode, s.instructions)");
 });

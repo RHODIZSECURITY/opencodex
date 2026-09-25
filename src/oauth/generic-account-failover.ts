@@ -16,13 +16,72 @@
  */
 import { getAccountSet } from "./store";
 import { getValidAccessSnapshotForAccount, type OAuthAccessSnapshot } from "./index";
-import { exhaustedCooldownMs, hasHeadroomEvidence, rankAccountsByHeadroom } from "./account-quota-rank";
+import {
+  accountHeadroomPercent,
+  exhaustedCooldownMs,
+  hasHeadroomEvidence,
+  isAccountQuotaExhausted,
+  rankAccountsByHeadroom,
+  classifyModelFamilyForQuota,
+  type QuotaModelFamily,
+} from "./account-quota-rank";
+import {
+  genericPoolKey,
+  normalizeAccountPoolStickyLimit,
+  notePoolRotationSuccess,
+  peekRoundRobinAccount,
+  pickRoundRobinAccount,
+  seedPoolRotationAccount,
+} from "./pool-kernel";
 import { parseRetryAfterMs } from "../combos/failover";
+import { TRANSIENT_RETRY_MAX_ATTEMPTS } from "../lib/upstream-retry";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 
-/** Cap same-request rotations so a short Retry-After cannot spin. Mirrors the Anthropic bound. */
+/** Legacy baseline retained for compatibility/tests; live generic OAuth rotation is roster-sized. */
 export const GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST = 3;
+
+/**
+ * Maximum same-request account rotations for this provider.
+ *
+ * The roster itself is the bound: every usable stored account may be tried at most once after
+ * the initial account. Cooldowns applied by each 429 prevent cycling back inside the request.
+ */
+export function genericOAuthFailoverLimit(
+  config: OcxConfig,
+  providerName: string,
+  _now = Date.now(),
+): number {
+  const provider = config.providers?.[providerName];
+  if (!provider || !isGenericFailoverProvider(providerName, provider)) return 0;
+  const set = getAccountSet(providerName);
+  if (!set) return 0;
+  // This is a same-request ceiling, so it must not shrink as that very request cools accounts.
+  // The rotation selector still filters cooldowns before each hop; this cap only says how many
+  // distinct usable stored credentials could ever be visited before the request began.
+  const usableStoredAccounts = set.accounts.filter(account => account.needsReauth !== true).length;
+  return Math.max(0, usableStoredAccounts - 1);
+}
+
+/**
+ * Additional request-send allowance needed to preserve the platform retry contract across a
+ * multi-account OAuth pool.
+ *
+ * OpenCodex gives one credential up to TRANSIENT_RETRY_MAX_ATTEMPTS physical sends before a
+ * credential hop. Each additional eligible account must therefore add the same bounded ladder;
+ * otherwise the first account can spend the shared request budget on valid same-account retries
+ * and starve later accounts before the combo is allowed to move on.
+ *
+ * This widens only the allowance. The roster-sized rotation limit still bounds how many accounts
+ * may be entered, and every physical send remains charged to the request/workflow ledger.
+ */
+export function genericOAuthFailoverBudgetExtension(
+  config: OcxConfig,
+  providerName: string,
+  now = Date.now(),
+): number {
+  return genericOAuthFailoverLimit(config, providerName, now) * TRANSIENT_RETRY_MAX_ATTEMPTS;
+}
 
 const DEFAULT_COOLDOWN_MS = 60_000;
 const MAX_COOLDOWN_MS = 15 * 60_000;
@@ -61,36 +120,20 @@ interface PresenceEntry {
   readAt: number;
 }
 
-/**
- * Ordered roster plus the active id, for the pre-dispatch preference.
- *
- * Same reasoning as the presence cache: `getAccountSet` reads through `loadAuthStore`,
- * which chmods and re-parses the whole credential file on every call. Selection needs the
- * ORDER and the active id, which the presence count cannot supply, so it gets its own
- * TTL-bounded row. Ids and an active pointer only — never a credential.
- */
-interface RosterEntry {
-  ids: string[];
-  activeId: string | null;
-  readAt: number;
-}
-
 /** Process-local, like the Anthropic pool's: a restart is allowed to forget a cooldown. */
 const health = new Map<string, AccountHealth>();
 
 /** Provider -> recent eligible-account count. TTL-bounded; never holds credential material. */
 const presence = new Map<string, PresenceEntry>();
 
-/** Provider -> recently read roster. TTL-bounded; never holds credential material. */
-const roster = new Map<string, RosterEntry>();
+const healthKey = (provider: string, accountId: string, family?: QuotaModelFamily) =>
+  family ? `${provider}\u0000${accountId}\u0000${family}` : `${provider}\u0000${accountId}`;
 
-const healthKey = (provider: string, accountId: string) => `${provider}\u0000${accountId}`;
-
-function isCooled(provider: string, accountId: string, now: number): boolean {
-  const entry = health.get(healthKey(provider, accountId));
+function isCooled(provider: string, accountId: string, now: number, family?: QuotaModelFamily): boolean {
+  const entry = health.get(healthKey(provider, accountId, family));
   if (!entry) return false;
   if (entry.cooldownUntil <= now) {
-    health.delete(healthKey(provider, accountId));
+    health.delete(healthKey(provider, accountId, family));
     return false;
   }
   return true;
@@ -116,24 +159,6 @@ function eligibleAccountCount(providerName: string, now: number): number {
   const eligible = set ? set.accounts.filter(account => account.needsReauth !== true).length : 0;
   presence.set(providerName, { eligible, readAt: now });
   return eligible;
-}
-
-/**
- * Roster ids and the active pointer, read at most once per TTL window.
- *
- * `needsReauth` accounts are excluded for the same reason the presence count excludes
- * them: a revoked credential cannot serve the request we are about to send.
- */
-function cachedRoster(providerName: string, now: number): { ids: string[]; activeId: string | null } {
-  const cached = roster.get(providerName);
-  if (cached && now >= cached.readAt && now - cached.readAt < PRESENCE_CACHE_TTL_MS) {
-    return { ids: cached.ids, activeId: cached.activeId };
-  }
-  const set = getAccountSet(providerName);
-  const ids = set ? set.accounts.filter(a => a.needsReauth !== true).map(a => a.id) : [];
-  const activeId = set?.activeAccountId ?? null;
-  roster.set(providerName, { ids, activeId, readAt: now });
-  return { ids, activeId };
 }
 
 /**
@@ -192,18 +217,161 @@ function isProactivePreferenceEnabled(config: OcxConfig, providerName: string, n
   if (typeof perProvider === "boolean") {
     return perProvider && hasFailoverAccountQuorum(providerName, now);
   }
-  if (config.oauthAccountFailover?.enabled === false) return false;
-  return hasFailoverAccountQuorum(providerName, now);
+  return config.oauthAccountFailover?.enabled === true && hasFailoverAccountQuorum(providerName, now);
 }
 
 /** Accounts that may serve traffic right now: not cooled, not flagged for reauth. */
-export function eligibleFailoverAccounts(providerName: string, now = Date.now()): string[] {
-  const set = getAccountSet(providerName);
+export function eligibleFailoverAccounts(providerName: string, now = Date.now(), family?: QuotaModelFamily): string[] {
+  return eligibleIdsIn(getAccountSet(providerName), providerName, now, family);
+}
+
+function eligibleIdsIn(
+  set: ReturnType<typeof getAccountSet>,
+  providerName: string,
+  now: number,
+  family?: QuotaModelFamily,
+): string[] {
   if (!set) return [];
   return set.accounts
-    .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now))
+    .filter(account => account.needsReauth !== true && !isCooled(providerName, account.id, now, family))
     .map(account => account.id);
 }
+
+/**
+ * Whether reactive rotation has an alternate account it could select right now.
+ *
+ * Answers from the same live roster read and the same guards `rotateGenericOAuthAccountOn429`
+ * applies: a roster of fewer than two accounts has nowhere to go, even when a cached quorum
+ * count or a stale failed id would suggest otherwise. It applies no cooldown and advances no
+ * rotation state; like every eligibility read, it may prune an already-expired cooldown entry.
+ */
+export function hasEligibleGenericOAuthFailoverTarget(
+  providerName: string,
+  failedAccountId: string,
+  now = Date.now(),
+  requestedModelId?: string | null,
+): boolean {
+  const set = getAccountSet(providerName);
+  if (!set || set.accounts.length < 2) return false;
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  return eligibleIdsIn(set, providerName, now, family).some(id => id !== failedAccountId);
+}
+
+/** Generic pool strategies the kernel can actually run. `quota` IS the pre-kernel path. */
+type ActiveGenericStrategy = "round-robin" | "fill-first";
+
+/** Matches the Codex and Anthropic pools; the DTO still reports `null` for "not stored". */
+const DEFAULT_GENERIC_AUTO_SWITCH_THRESHOLD = 80;
+
+/**
+ * The strategy this provider's pool actually runs, or null for today's behaviour.
+ *
+ * Three different inputs answer null and they all mean the same thing to a caller: the flag is
+ * off, no strategy is stored, or the stored strategy is `quota` — which is precisely what the
+ * unflagged code already does. Collapsing them here is what keeps every call site a two-way
+ * branch instead of a four-way one.
+ */
+function activeGenericStrategy(config: OcxConfig, providerName: string): ActiveGenericStrategy | null {
+  if (config.pool?.kernel !== true) return null;
+  const raw = config.providers?.[providerName]?.oauthAccountFailover?.strategy;
+  return raw === "round-robin" || raw === "fill-first" ? raw : null;
+}
+
+function genericStickyLimit(config: OcxConfig, providerName: string): number {
+  return normalizeAccountPoolStickyLimit(config.providers?.[providerName]?.oauthAccountFailover?.stickyLimit);
+}
+
+/**
+ * The FULL roster in a stable order, not the eligible subset.
+ *
+ * Two load-bearing reasons. The store holds accounts in LOGIN order, so two operators who added
+ * the same accounts in a different sequence would otherwise rotate differently; sorting makes
+ * the ring a property of the accounts rather than of the history. And walking the eligible
+ * subset instead of the full roster changes the wrap order whenever an ineligible id sits
+ * between two eligible ones — the bug the Codex and Anthropic copies carry a `stableAll`
+ * argument to avoid.
+ */
+function stableGenericRoster(providerName: string): string[] {
+  const set = getAccountSet(providerName);
+  if (!set) return [];
+  return set.accounts.map(account => account.id).sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Has this account spent enough of its allowance for fill-first to move on?
+ *
+ * An unmeasured account reads as UNDER the threshold, matching the Codex pool: a threshold is a
+ * statement about observed usage, and treating "no observation" as "spent" would evacuate every
+ * quota-less provider off its active account on the very first request.
+ */
+function isOverAutoSwitchThreshold(providerName: string, accountId: string, threshold: number, requestedModelId?: string | null): boolean {
+  if (threshold <= 0) return false;
+  const headroom = accountHeadroomPercent(providerName, accountId, requestedModelId);
+  if (headroom === null) return false;
+  return 100 - headroom >= threshold;
+}
+
+/**
+ * Fill-first: stay on the active account until it crosses its threshold, then take the next
+ * eligible account in the stable ring. Null means "keep the active account".
+ */
+function pickFillFirstGenericAccount(
+  config: OcxConfig,
+  providerName: string,
+  activeId: string | undefined,
+  now: number,
+  requestedModelId?: string | null,
+): string | null {
+  const stableAll = stableGenericRoster(providerName);
+  if (stableAll.length < 2) return null;
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  const eligible = new Set(eligibleFailoverAccounts(providerName, now, family));
+  const stored = config.providers?.[providerName]?.oauthAccountFailover?.autoSwitchThreshold;
+  const threshold = typeof stored === "number" && Number.isInteger(stored) && stored >= 0 && stored <= 100
+    ? stored
+    : DEFAULT_GENERIC_AUTO_SWITCH_THRESHOLD;
+  if (activeId && eligible.has(activeId) && !isOverAutoSwitchThreshold(providerName, activeId, threshold, requestedModelId)) {
+    return null;
+  }
+  const start = activeId ? stableAll.indexOf(activeId) : -1;
+  const ring = start >= 0 ? [...stableAll.slice(start + 1), ...stableAll.slice(0, start)] : stableAll;
+  for (const id of ring) {
+    if (id !== activeId && eligible.has(id)) return id;
+  }
+  return null;
+}
+
+/**
+ * Advance the round-robin cursor once a dispatch has actually been admitted on this account.
+ *
+ * The early return is the whole safety story for the core path: this is reached on EVERY
+ * generic first dispatch, including quota pools and the fallback after a preferred account was
+ * dropped, so anything but round-robin must leave the cursor untouched.
+ *
+ * The live pick belongs here rather than in the proposal, and that is not stylistic.
+ * `peekRoundRobinAccount` never creates the pool state and `notePoolRotationSuccess` returns
+ * immediately when there is none, so a peek-only path would leave the ring with nothing to
+ * advance and round-robin would propose the same account forever. This is the same shape
+ * `commitAnthropicSelectionRouting` already commits with.
+ */
+export function noteGenericPoolSelection(
+  config: OcxConfig,
+  providerName: string,
+  accountId: string,
+  requestedModelId?: string | null,
+): void {
+  if (activeGenericStrategy(config, providerName) !== "round-robin") return;
+  const poolKey = genericPoolKey(providerName);
+  const limit = genericStickyLimit(config, providerName);
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  const picked = pickRoundRobinAccount(poolKey, eligibleFailoverAccounts(providerName, Date.now(), family), limit);
+  // The resolver may have admitted a different account than the ring proposed: a removal, a
+  // reauth verdict or a manual selection can land during credential resolution. Realign the
+  // cursor onto what actually served rather than leaving it on a road not taken.
+  if (picked !== accountId) seedPoolRotationAccount(poolKey, accountId);
+  notePoolRotationSuccess(poolKey, accountId, limit);
+}
+
 
 /**
  * Cool the account that actually 429'd and name the next eligible one, or null.
@@ -217,6 +385,7 @@ export function rotateGenericOAuthAccountOn429(
   failedAccountId: string,
   retryAfterHeader: string | null | undefined,
   now = Date.now(),
+  requestedModelId?: string | null,
 ): string | null {
   if (!isGenericOAuthFailoverEnabled(config, providerName)) return null;
   const set = getAccountSet(providerName);
@@ -229,19 +398,18 @@ export function rotateGenericOAuthAccountOn429(
   // A Retry-After from upstream still wins — it is the server's own instruction.
   const exhausted = parsed === undefined ? exhaustedCooldownMs(providerName, failedAccountId, now) : null;
   const cooldownMs = exhausted ?? Math.min(parsed ?? DEFAULT_COOLDOWN_MS, MAX_COOLDOWN_MS);
-  health.set(healthKey(providerName, failedAccountId), {
+  const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+  health.set(healthKey(providerName, failedAccountId, family), {
     cooldownUntil: now + cooldownMs,
     cooldownSource: parsed ? "retry-after" : "default",
   });
   sweepExpiredOnWrite(now);
 
-  const eligible = eligibleFailoverAccounts(providerName, now).filter(id => id !== failedAccountId);
+  const eligible = eligibleFailoverAccounts(providerName, now, family).filter(id => id !== failedAccountId);
   if (eligible.length === 0) return null;
   // A rotation means the roster in use just changed; do not answer the next activation question
   // from a count read before the failure.
   presence.delete(providerName);
-  // Same for the selection roster: the next request must not pick from a pre-failure read.
-  roster.delete(providerName);
   // Deterministic: start after the failed account so repeated 429s walk the roster instead of
   // hammering whichever id happens to sort first. The ring is built BEFORE ranking — ranking
   // the store's own order would change which account a quota-less provider rotates to.
@@ -250,9 +418,33 @@ export function rotateGenericOAuthAccountOn429(
   const ring = start >= 0 ? [...order.slice(start + 1), ...order.slice(0, start)] : order;
   const candidates = ring.filter(id => id !== failedAccountId && eligible.includes(id));
   if (candidates.length === 0) return null;
+  // The 429 path branches too. Leaving it on the quota ranking would make a configured
+  // strategy inert in practice the moment anything actually failed, which is the case the
+  // operator chose the strategy for.
+  const strategy = activeGenericStrategy(config, providerName);
+  if (strategy === "round-robin") {
+    // PICK here, not peek: the failure already happened and this answer is the one being used,
+    // so the ring genuinely advances.
+    return pickRoundRobinAccount(
+      genericPoolKey(providerName),
+      candidates,
+      genericStickyLimit(config, providerName),
+    );
+  }
+  if (strategy === "fill-first") {
+    // Not "keep the active account": the one that just 429'd is cooled, so fill-first takes
+    // the next eligible account in the stable ring rather than its usual hold.
+    const stableAll = stableGenericRoster(providerName);
+    const from = stableAll.indexOf(failedAccountId);
+    const walk = from >= 0 ? [...stableAll.slice(from + 1), ...stableAll.slice(0, from)] : stableAll;
+    for (const id of walk) {
+      if (id !== failedAccountId && candidates.includes(id)) return id;
+    }
+    return null;
+  }
   // With no quota evidence this returns the ring untouched, so providers without
   // per-account quota keep exactly the traversal they have today.
-  return rankAccountsByHeadroom(providerName, candidates)[0] ?? null;
+  return rankAccountsByHeadroom(providerName, candidates, requestedModelId)[0] ?? null;
 }
 
 /**
@@ -285,28 +477,59 @@ export function preferredInitialAccount(
   config: OcxConfig,
   providerName: string,
   now = Date.now(),
+  requestedModelId?: string | null,
 ): string | null {
   // The PROACTIVE predicate, not the reactive one: this steers a request upstream has not
   // refused, so `oauthAccountFailover.enabled: false` must still be able to refuse it.
   if (!isProactivePreferenceEnabled(config, providerName, now)) return null;
-  // This runs on the initial resolution of EVERY request, and `loadAuthStore` has no
-  // cache: each call chmods the config dir, chmods the secret, reads the whole file and
-  // normalizes it (store.ts:136-151). So the store is consulted at most ONCE here, behind
-  // the same TTL the presence check uses, and never at all for a single-account provider.
-  const { ids: order, activeId: active } = cachedRoster(providerName, now);
+  // Read the same authoritative selection the management writer commits. Caching the
+  // active id separately would delay manual selection and account removal.
+  const selected = getAccountSet(providerName);
+  if (!selected) return null;
+  const active = selected.activeAccountId;
+  const order = selected.accounts.filter(account => account.needsReauth !== true).map(account => account.id);
   if (order.length < 2) return null;
+
+  // A configured strategy answers this question itself. Both guards below exist to protect the
+  // QUOTA answer, and both are fatal to the other two: hasHeadroomEvidence refuses every
+  // provider with no quota data, which is exactly where round-robin is the point, and the
+  // healthy-active return fires before autoSwitchThreshold can ever be read, so fill-first
+  // would never reach its own test. Cooldowns and reauth are still honoured inside each pick.
+  const strategy = activeGenericStrategy(config, providerName);
+  if (strategy === "round-robin") {
+    const family = classifyModelFamilyForQuota(providerName, requestedModelId);
+    const eligibleNow = eligibleFailoverAccounts(providerName, now, family);
+    if (eligibleNow.length === 0) return null;
+    // PEEK, not pick: this proposal is discardable, and advancing the ring for an account the
+    // resolver then rejects would skip a turn for nothing. noteGenericPoolSelection commits.
+    const picked = peekRoundRobinAccount(
+      genericPoolKey(providerName),
+      eligibleNow,
+      genericStickyLimit(config, providerName),
+    );
+    return picked && picked !== active ? picked : null;
+  }
+  if (strategy === "fill-first") {
+    const picked = pickFillFirstGenericAccount(config, providerName, active, now, requestedModelId);
+    return picked && picked !== active ? picked : null;
+  }
+
+  const activeRow = selected.accounts.find(account => account.id === active);
+  if (activeRow && activeRow.needsReauth !== true
+    && !isCooled(providerName, activeRow.id, now, classifyModelFamilyForQuota(providerName, requestedModelId))
+    && !isAccountQuotaExhausted(providerName, activeRow.id, requestedModelId)) return null;
 
   // Evidence is required BEFORE eligibility narrows the field. Without this, a provider
   // with no quota data at all could still be redirected: cool the active account with a
   // 429 and the eligible list collapses to one candidate, which any ranking returns
   // unchanged — an answer that looks ranked but was never measured. The no-op guarantee
   // for quota-less providers has to be checked on the full roster.
-  if (!hasHeadroomEvidence(providerName, order)) return null;
+  if (!hasHeadroomEvidence(providerName, order, requestedModelId)) return null;
 
   // Cooldowns are respected here, unlike in the presence count: this picks the account to
   // send to right now, and one inside its 429 window is the single candidate we hold
   // positive evidence against.
-  const eligible = order.filter(id => !isCooled(providerName, id, now));
+  const eligible = order.filter(id => !isCooled(providerName, id, now, classifyModelFamilyForQuota(providerName, requestedModelId)));
   if (eligible.length === 0) return null;
 
   // Start the ring at the active account so an unranked outcome reproduces today's choice.
@@ -315,25 +538,20 @@ export function preferredInitialAccount(
   const candidates = ring.filter(id => eligible.includes(id));
   if (candidates.length === 0) return null;
 
-  const best = rankAccountsByHeadroom(providerName, candidates)[0] ?? null;
+  const best = rankAccountsByHeadroom(providerName, candidates, requestedModelId)[0] ?? null;
   // Nothing to do when the ranking agrees with the account we would have used anyway.
   //
-  // The roster may be up to PRESENCE_CACHE_TTL_MS old, so this answer is a PREFERENCE the
-  // caller must be able to abandon: it resolves the account with `requireUsableAccount`,
-  // which rejects a removed or reauth-flagged account inside the store read it was already
-  // performing, and falls back to the active account. Validating here instead would mean a
-  // second uncached read of the credential file on every redirected request.
+  // A proposal still needs guarded selection commit after credential resolution: a
+  // removal, reauth verdict, or manual choice can arrive during that await.
   return best && best !== active ? best : null;
 }
 
 /** Earliest remaining cooldown, for a client-facing Retry-After when every account is cooled. */
 export function genericFailoverRetryAfterSeconds(providerName: string, now = Date.now()): number | null {
-  const set = getAccountSet(providerName);
-  if (!set) return null;
+  const prefix = `${providerName}\u0000`;
   let earliest: number | null = null;
-  for (const account of set.accounts) {
-    const entry = health.get(healthKey(providerName, account.id));
-    if (!entry || entry.cooldownUntil <= now) continue;
+  for (const [key, entry] of health) {
+    if (!key.startsWith(prefix) || entry.cooldownUntil <= now) continue;
     if (earliest === null || entry.cooldownUntil < earliest) earliest = entry.cooldownUntil;
   }
   return earliest === null ? null : Math.max(1, Math.ceil((earliest - now) / 1000));
@@ -341,7 +559,6 @@ export function genericFailoverRetryAfterSeconds(providerName: string, now = Dat
 
 /** Test seam and manual-recovery hook. */
 export function forgetGenericFailoverRoster(providerName: string): void {
-  roster.delete(providerName);
   presence.delete(providerName);
 }
 
@@ -350,11 +567,9 @@ export function clearGenericFailoverHealth(providerName?: string): void {
   if (!providerName) {
     health.clear();
     presence.clear();
-    roster.clear();
     return;
   }
   presence.delete(providerName);
-  roster.delete(providerName);
   for (const key of [...health.keys()]) {
     if (key.startsWith(`${providerName}\u0000`)) health.delete(key);
   }

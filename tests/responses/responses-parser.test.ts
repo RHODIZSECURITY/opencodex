@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { buildResponseJSON } from "../../src/bridge";
 import { parseRequest } from "../../src/responses/parser";
+import { externalTaskInputContent } from "../../src/responses/task-input";
 import { buildTools } from "../../src/responses/parser-tools";
 import { parseTextFormat } from "../../src/responses/parser-text-format";
 import { buildToolBridgeMaps } from "../../src/server/responses";
@@ -192,15 +193,16 @@ describe("Responses parser", () => {
     expect([...maps.toolNsMap]).toEqual([
       ["mcp__tools__safe", { namespace: "mcp__tools", name: "safe" }],
       ["mcp__tools.safe", { namespace: "mcp__tools", name: "safe" }],
+      ["safe", { namespace: "mcp__tools", name: "safe" }],
     ]);
-    expect([...maps.declaredToolNames]).toEqual(["mcp__tools__safe", "mcp__tools.safe", "apply_patch"]);
+    expect([...maps.declaredToolNames]).toEqual(["mcp__tools__safe", "mcp__tools.safe", "safe", "apply_patch"]);
     expect([...maps.freeformToolNames]).toEqual(["apply_patch"]);
     expect([...maps.toolSearchToolNames]).toEqual([]);
 
     parsed.options.toolChoice = { allowedTools: ["mcp__tools__safe"], mode: "required" };
     maps = buildToolBridgeMaps(parsed);
-    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__tools__safe", "mcp__tools.safe"]);
-    expect([...maps.declaredToolNames]).toEqual(["mcp__tools__safe", "mcp__tools.safe"]);
+    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__tools__safe", "mcp__tools.safe", "safe"]);
+    expect([...maps.declaredToolNames]).toEqual(["mcp__tools__safe", "mcp__tools.safe", "safe"]);
     expect([...maps.freeformToolNames]).toEqual([]);
 
     parsed.options.toolChoice = { name: "tool_search" };
@@ -225,26 +227,26 @@ describe("Responses parser", () => {
       tools: [{
         type: "namespace",
         name: "mcp__functions",
-        tools: [{ type: "custom", name: "exec", description: "Run a command" }],
+        tools: [{ type: "custom", name: "run_command", description: "Run a command" }],
       }],
       tool_choice: {
         type: "allowed_tools",
         mode: "required",
-        tools: [{ type: "custom", name: "exec" }],
+        tools: [{ type: "custom", name: "run_command" }],
       },
     });
 
     let maps = buildToolBridgeMaps(parsed);
     expect([...maps.toolNsMap]).toEqual([
-      ["mcp__functions__exec", { namespace: "mcp__functions", name: "exec", freeform: true }],
-      ["mcp__functions.exec", { namespace: "mcp__functions", name: "exec", freeform: true }],
-      ["exec", { namespace: "mcp__functions", name: "exec", freeform: true }],
+      ["mcp__functions__run_command", { namespace: "mcp__functions", name: "run_command", freeform: true }],
+      ["mcp__functions.run_command", { namespace: "mcp__functions", name: "run_command", freeform: true }],
+      ["run_command", { namespace: "mcp__functions", name: "run_command", freeform: true }],
     ]);
-    expect([...maps.declaredToolNames]).toEqual(["mcp__functions__exec", "mcp__functions.exec", "exec"]);
-    expect([...maps.freeformToolNames]).toEqual(["exec"]);
+    expect([...maps.declaredToolNames]).toEqual(["mcp__functions__run_command", "mcp__functions.run_command", "run_command"]);
+    expect([...maps.freeformToolNames]).toEqual(["run_command"]);
 
     const bridged = buildResponseJSON([
-      { type: "tool_call_start", id: "call_exec", name: "exec" },
+      { type: "tool_call_start", id: "call_exec", name: "run_command" },
       { type: "tool_call_delta", arguments: '{"input":"pwd"}' },
       { type: "tool_call_end" },
       { type: "done" },
@@ -253,14 +255,37 @@ describe("Responses parser", () => {
     expect((bridged.output as Record<string, unknown>[])[0]).toMatchObject({
       type: "custom_tool_call",
       call_id: "call_exec",
-      name: "exec",
+      name: "run_command",
       input: "pwd",
       status: "completed",
     });
 
-    parsed.options.toolChoice = { name: "exec" };
+    parsed.options.toolChoice = { name: "run_command" };
     maps = buildToolBridgeMaps(parsed);
-    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__functions__exec", "mcp__functions.exec", "exec"]);
+    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__functions__run_command", "mcp__functions.run_command", "run_command"]);
+
+    // A code-mode helper spelling is the exception, and it is the spelling that decides -- not the
+    // namespace and not the fact that the caller selected it. Bare `exec` in the DECLARED set is
+    // what turns nested-helper normalization on, so the selector grants the identity alias that
+    // restores the call without granting the declaration that would rewrite helper names onto it.
+    const helperSelector = parseRequest({
+      model: "claude-opus-5",
+      input: "run it",
+      tools: [{
+        type: "namespace",
+        name: "mcp__functions",
+        tools: [{ type: "custom", name: "exec", description: "Run a command" }],
+      }],
+      tool_choice: {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "custom", name: "exec" }],
+      },
+    });
+    const helperMaps = buildToolBridgeMaps(helperSelector);
+    expect([...helperMaps.declaredToolNames]).toEqual(["mcp__functions__exec", "mcp__functions.exec"]);
+    expect(helperMaps.toolNsMap.get("exec"))
+      .toEqual({ namespace: "mcp__functions", name: "exec", freeform: true });
 
     expect(() => parseRequest({
       model: "claude-opus-5",
@@ -566,6 +591,62 @@ describe("Responses parser", () => {
       { type: "text", text: "Looked at Google Chrome" },
       { type: "image", imageUrl: "data:image/png;base64,aGVsbG8=", detail: "high" },
     ]);
+  });
+
+  test("repairs a history function_call that lost its JSON opening brace", () => {
+    const parsed = parseRequest({
+      model: "codebuddy-cn/glm-5.3",
+      input: [
+        { type: "function_call", call_id: "call_6c903fcfec9947a8b7aff270", name: "js", arguments: 'code":"let log = [];","timeout_ms":90000}' },
+        { type: "function_call_output", call_id: "call_6c903fcfec9947a8b7aff270", output: "" },
+      ],
+    });
+    const assistant = parsed.context.messages.find(m => m.role === "assistant");
+    const toolCall = assistant?.content.find(part => part.type === "toolCall") as
+      | { arguments: Record<string, unknown> }
+      | undefined;
+
+    expect(toolCall?.arguments).toEqual({ code: "let log = [];", timeout_ms: 90000 });
+  });
+
+  test("repairs the same missing opening brace for a non-CodeBuddy model", () => {
+    const parsed = parseRequest({
+      model: "test-model",
+      input: [{ type: "function_call", call_id: "call_other", name: "lookup", arguments: 'query":"status"}' }],
+    });
+    const assistant = parsed.context.messages.find(m => m.role === "assistant");
+    const toolCall = assistant?.content.find(part => part.type === "toolCall") as
+      | { arguments: Record<string, unknown> }
+      | undefined;
+    expect(toolCall?.arguments).toEqual({ query: "status" });
+  });
+
+  test.each(["freeform}", '{"query":"status"', "[1,2]"])("keeps {} for a different malformed argument shape: %s", argumentsText => {
+    const parsed = parseRequest({
+      model: "test-model",
+      input: [{ type: "function_call", call_id: "call_malformed", name: "lookup", arguments: argumentsText }],
+    });
+    const assistant = parsed.context.messages.find(m => m.role === "assistant");
+    const toolCall = assistant?.content.find(part => part.type === "toolCall") as
+      | { arguments: Record<string, unknown> }
+      | undefined;
+    expect(toolCall?.arguments).toEqual({});
+  });
+
+  test("keeps the tolerated-{} fallback for arguments that are not a repairable envelope", () => {
+    const parsed = parseRequest({
+      model: "codebuddy-cn/glm-5.3",
+      input: [
+        { type: "function_call", call_id: "call_freeform", name: "js", arguments: "not json at all" },
+        { type: "function_call_output", call_id: "call_freeform", output: "" },
+      ],
+    });
+    const assistant = parsed.context.messages.find(m => m.role === "assistant");
+    const toolCall = assistant?.content.find(part => part.type === "toolCall") as
+      | { arguments: Record<string, unknown> }
+      | undefined;
+
+    expect(toolCall?.arguments).toEqual({});
   });
 });
 
@@ -933,6 +1014,240 @@ describe("unpaired tool result boundary (#3259)", () => {
     expect(() => parseRequest(delegationHistory({
       type: "brand_new_item_2027", foo: 1,
     }))).not.toThrow();
+  });
+});
+
+describe("external task-input envelopes (#3735)", () => {
+  const parseFrozen = (input: unknown[], extra: Record<string, unknown> = {}) => {
+    const body = Object.freeze({
+      model: "test-model",
+      ...extra,
+      input: Object.freeze(input.map((item) => Object.freeze(item as object))),
+    });
+    const before = JSON.stringify(body);
+    const parsed = parseRequest(body);
+    expect(parsed._rawBody).toBe(body);
+    expect(JSON.stringify(body)).toBe(before);
+    return parsed;
+  };
+
+  test.each([
+    {
+      name: "arbitrary metadata names preserve output whitespace",
+      item: {
+        type: "function_call_output",
+        id: "rsrc.1",
+        name: "Launch Task",
+        namespace: "agent.workspace",
+        output: "  keep  ",
+      },
+      content: "  keep  ",
+    },
+    {
+      name: "ordered text and original image keep order and map detail to high",
+      item: {
+        type: "function_call_output",
+        id: "img_1",
+        name: "view",
+        namespace: "tools",
+        output: [
+          { type: "input_text", text: "caption" },
+          { type: "input_image", image_url: "https://example.com/a.png", detail: "original" },
+        ],
+      },
+      content: [
+        { type: "text", text: "caption" },
+        { type: "image", imageUrl: "https://example.com/a.png", detail: "high" },
+      ],
+    },
+    {
+      name: "output_text normalizes through input content parts",
+      item: {
+        type: "function_call_output",
+        id: "txt_1",
+        name: "note",
+        namespace: "ns",
+        output: [{ type: "output_text", text: "from output_text" }],
+      },
+      content: "from output_text",
+    },
+  ])("$name", ({ item, content }) => {
+    const parsed = parseFrozen([item]);
+    expect(parsed.context.messages).toMatchObject([{ role: "user", content }]);
+    expect(parsed.context.messages.some((message) => message.role === "toolResult")).toBe(false);
+  });
+
+  test("complete metadata with a valid call_id stays a tool result", () => {
+    const parsed = parseFrozen([{
+      type: "function_call_output",
+      call_id: "call_keep",
+      id: "task_1",
+      name: "Launch Task",
+      namespace: "agent.workspace",
+      output: "ok",
+    }]);
+    expect(parsed.context.messages).toMatchObject([{
+      role: "toolResult",
+      toolCallId: "call_keep",
+      content: "ok",
+    }]);
+  });
+
+  test.each([
+    { name: "missing id", item: { type: "function_call_output", name: "n", namespace: "ns", output: "ok" } },
+    { name: "blank id", item: { type: "function_call_output", id: "  ", name: "n", namespace: "ns", output: "ok" } },
+    { name: "missing name", item: { type: "function_call_output", id: "i", namespace: "ns", output: "ok" } },
+    { name: "blank name", item: { type: "function_call_output", id: "i", name: "", namespace: "ns", output: "ok" } },
+    { name: "missing namespace", item: { type: "function_call_output", id: "i", name: "n", output: "ok" } },
+    { name: "blank namespace", item: { type: "function_call_output", id: "i", name: "n", namespace: "\t", output: "ok" } },
+    { name: "number call_id", item: { type: "function_call_output", call_id: 1, id: "i", name: "n", namespace: "ns", output: "ok" } },
+    { name: "custom_tool_call_output", item: { type: "custom_tool_call_output", id: "i", name: "n", namespace: "ns", output: "ok" } },
+    {
+      name: "encrypted-only",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [{ type: "encrypted_content", encrypted_content: "blob" }],
+      },
+    },
+    {
+      name: "mixed unsupported",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [
+          { type: "input_text", text: "visible" },
+          { type: "encrypted_content", encrypted_content: "blob" },
+        ],
+      },
+    },
+    {
+      name: "malformed text",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [{ type: "input_text", text: 1 }],
+      },
+    },
+    {
+      name: "malformed image",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [{ type: "input_image", image_url: 1 }],
+      },
+    },
+    {
+      name: "invalid detail",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [{ type: "input_image", image_url: "https://example.com/a.png", detail: "ultra" }],
+      },
+    },
+    {
+      name: "file_id-only image",
+      item: {
+        type: "function_call_output",
+        id: "i",
+        name: "n",
+        namespace: "ns",
+        output: [{ type: "input_image", file_id: "file-1" }],
+      },
+    },
+    { name: "blank output", item: { type: "function_call_output", id: "i", name: "n", namespace: "ns", output: "   " } },
+    { name: "empty output", item: { type: "function_call_output", id: "i", name: "n", namespace: "ns", output: "" } },
+    { name: "empty array", item: { type: "function_call_output", id: "i", name: "n", namespace: "ns", output: [] } },
+  ])("$name stays off the user path", ({ item }) => {
+    const parsed = parseFrozen([item]);
+    expect(parsed.context.messages.some((message) => message.role === "user")).toBe(false);
+    expect(parsed.context.messages.some((message) => message.role === "toolResult")).toBe(true);
+  });
+
+  test.each([
+    { name: "empty call_id", callId: "" },
+    { name: "null call_id", callId: null },
+  ])("$name is a seed on the user path, not a tool result (#3807 supersedes)", ({ callId }) => {
+    // These rows asserted a toolResult until #3807: neither value can pair with a
+    // `function_call`, so a client that emits the field explicitly was carrying the same
+    // seed as the absent-field form and had it answered 400 downstream. A wrong-TYPED
+    // key ("number call_id" above) is malformed input and keeps its rejection.
+    //
+    // A whitespace-only `call_id` is deliberately absent from this table: it satisfies the
+    // schema's `z.string().min(1)`, so functionCallOutputItemSchema claims the item and
+    // strips id/name/namespace before the parser runs. The helper admits it (covered in
+    // responses-compaction-routing), but the envelope never survives to reach it here.
+    const parsed = parseFrozen([{
+      type: "function_call_output", call_id: callId,
+      id: "i", name: "n", namespace: "ns", output: "ok",
+    }]);
+    expect(parsed.context.messages).toMatchObject([{ role: "user", content: "ok" }]);
+    expect(parsed.context.messages.some((message) => message.role === "toolResult")).toBe(false);
+  });
+
+  test("own and inherited call_id properties are helper-ineligible", () => {
+    const base = {
+      type: "function_call_output",
+      id: "task_1",
+      name: "n",
+      namespace: "ns",
+      output: "ok",
+    };
+    expect(externalTaskInputContent(base)).toBe("ok");
+    expect(externalTaskInputContent({ ...base, call_id: undefined })).toBeUndefined();
+    expect(externalTaskInputContent(Object.assign(Object.create({ call_id: "proto" }), base))).toBeUndefined();
+  });
+
+  test("previous_response_id with only a valid envelope starts continuation at 0", () => {
+    const parsed = parseFrozen([{
+      type: "function_call_output",
+      id: "task_1",
+      name: "Launch Task",
+      namespace: "agent.workspace",
+      output: "next task",
+    }], { previous_response_id: "resp_1" });
+    expect(parsed._continuationConversationMessageIndex).toBe(0);
+    expect(parsed.context.messages).toMatchObject([{ role: "user", content: "next task" }]);
+  });
+
+  test("reasoning before a valid envelope does not leak into a later assistant", () => {
+    const parsed = parseFrozen([
+      {
+        type: "reasoning",
+        id: "rs_stale",
+        summary: [{ type: "summary_text", text: "stale thinking" }],
+      },
+      {
+        type: "function_call_output",
+        id: "task_1",
+        name: "Launch Task",
+        namespace: "agent.workspace",
+        output: "next task",
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "done" }],
+      },
+    ]);
+    expect(parsed.context.messages).toMatchObject([
+      { role: "user", content: "next task" },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+    const assistant = parsed.context.messages.find((message) => message.role === "assistant");
+    expect(assistant && "content" in assistant ? assistant.content : []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "thinking", thinking: "stale thinking" })]),
+    );
   });
 });
 

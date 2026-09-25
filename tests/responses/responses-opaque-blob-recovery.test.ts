@@ -14,11 +14,23 @@ import {
 } from "../../src/server/responses/core";
 import type { RequestLogContext } from "../../src/server/request-log";
 import type { OcxConfig } from "../../src/types";
+import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { markBodyNonPersistable, rememberResponseState, previousResponseProviderState } from "../../src/responses/state";
 
 const originalFetch = globalThis.fetch;
 const originalOpenCodexHome = process.env.OPENCODEX_HOME;
 const BLOB = "provider-minted-opaque-state";
+// Canonical key-independent Fernet structure; authenticity is deliberately not needed in tests.
+const FUNCTION_OUTPUT_BLOB = `${Buffer.concat([
+  Buffer.from([0x80]),
+  Buffer.alloc(8),
+  Buffer.alloc(16),
+  Buffer.alloc(16),
+  Buffer.alloc(32),
+]).toString("base64url")}==`;
+const FERNET_SHAPED_PLAINTEXT = `gAAAAA${"A".repeat(189)}`;
+const FUNCTION_OUTPUT_DECRYPT_MESSAGE = "Encrypted function output content could not be decrypted or decoded.";
 const OPENAI_BLOB_ERROR = JSON.stringify({
   error: {
     message: "The encrypted content could not be verified.",
@@ -34,6 +46,13 @@ const CHATGPT_UNVERIFIABLE_BLOB_ERROR = JSON.stringify({
     code: null,
   },
 });
+const CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR = JSON.stringify({
+  error: {
+    message: FUNCTION_OUTPUT_DECRYPT_MESSAGE,
+    type: "server_error",
+    code: null,
+  },
+});
 const XAI_DECODE_ERROR = JSON.stringify({
   code: "invalid-argument",
   error: "Could not decode the compaction blob: invalid payload",
@@ -42,17 +61,34 @@ const XAI_DECRYPT_ERROR = JSON.stringify({
   code: "invalid-argument",
   error: "Could not decrypt the provided encrypted_content: invalid payload",
 });
+// #4469: reasoning encrypted_content is minted per caller identity, so a replay under a
+// different caller is rejected with this exact invalid_request_error wording (backticks are
+// part of the upstream message). No dedicated code accompanies it.
+const CALLER_MISMATCH_BLOB_ERROR = JSON.stringify({
+  error: {
+    message: "reasoning `encrypted_content` was not issued to this caller",
+    type: "invalid_request_error",
+    param: "input",
+    code: null,
+  },
+});
 
 let testDir = "";
+let releaseSpendHome: (() => void) | undefined;
 
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-opaque-blob-recovery-"));
   process.env.OPENCODEX_HOME = testDir;
+  // Take the writer lease after this case installs its home so direct handler dispatch can open the spend journal.
+  releaseSpendHome = acquireOwnedSpendHome();
   clearReasoningReplayCacheForTests();
   resetThoughtSignatureReplayForTests();
 });
 
 afterEach(() => {
+  // Release before restoring or removing the home to prevent Windows removal failures and POSIX unlinked databases.
+  releaseSpendHome?.();
+  releaseSpendHome = undefined;
   globalThis.fetch = originalFetch;
   clearReasoningReplayCacheForTests();
   resetThoughtSignatureReplayForTests();
@@ -89,6 +125,90 @@ function reasoningReplayInput(): Array<Record<string, unknown>> {
 
 function serializedOutboundWithBlob(): string {
   return JSON.stringify({ model: "model-a", input: reasoningReplayInput() });
+}
+
+function functionOutputReplayInput(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "function_call",
+      call_id: "call-encrypted-output",
+      name: "browser_capture",
+      arguments: "{}",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "encrypted_content", encrypted_content: FUNCTION_OUTPUT_BLOB },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+    },
+  ];
+}
+
+function serializedOutboundWithEncryptedFunctionOutput(): string {
+  return JSON.stringify({ model: "model-a", input: functionOutputReplayInput() });
+}
+
+function agentMessageReplayInput(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "agent_message",
+      author: "/root/child_task",
+      recipient: "/root",
+      content: [
+        { type: "input_text", text: "Message Type: MESSAGE\nTask name: /root\nSender: /root/child_task\nPayload:" },
+        { type: "encrypted_content", encrypted_content: FUNCTION_OUTPUT_BLOB },
+      ],
+    },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+    },
+  ];
+}
+
+function serializedOutboundWithEncryptedAgentMessage(): string {
+  return JSON.stringify({ model: "model-a", input: agentMessageReplayInput() });
+}
+
+/**
+ * What a routed destination receives: the undecryptable part has been replaced with an omission
+ * marker, which leaves the item entirely plaintext, so the adapter converts it into the public
+ * user message a routed Responses schema can accept. Since #4454 that repair runs before the
+ * first dispatch rather than after an upstream rejection, so this is the FIRST body such a
+ * destination sees, not a retry.
+ */
+function recoveredAgentMessage(): Record<string, unknown> {
+  return {
+    type: "message",
+    role: "user",
+    content: [
+      { type: "input_text", text: 'Agent message {"author":"/root/child_task","recipient":"/root"}' },
+      { type: "input_text", text: "Message Type: MESSAGE\nTask name: /root\nSender: /root/child_task\nPayload:" },
+      { type: "input_text", text: "[encrypted content omitted]" },
+    ],
+  };
+}
+
+/** The function-output twin: the reactive repair still owns this item type. */
+function recoveredFunctionOutput(): Record<string, unknown> {
+  return {
+    type: "function_call_output",
+    call_id: "call-encrypted-output",
+    output: [
+      { type: "input_text", text: "[encrypted content omitted]" },
+      { type: "input_text", text: "visible tool output" },
+      { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+    ],
+  };
 }
 
 function config(): OcxConfig {
@@ -134,6 +254,149 @@ function requestWithIdentityHeaders(
       store: false,
       input: reasoningReplayInput(),
     }),
+  });
+}
+
+function functionOutputRequest(stream = false): Request {
+  return new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-codex-parent-thread-id": "thread-encrypted-function-output",
+    },
+    body: JSON.stringify({
+      model: "first/model-a",
+      stream,
+      store: false,
+      input: functionOutputReplayInput(),
+    }),
+  });
+}
+
+function agentMessageRequest(stream = false): Request {
+  return new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-codex-parent-thread-id": "thread-encrypted-agent-message",
+    },
+    body: JSON.stringify({
+      model: "first/model-a",
+      stream,
+      store: false,
+      input: agentMessageReplayInput(),
+    }),
+  });
+}
+
+/**
+ * The canonical Codex backend is exempt from the pre-dispatch repair (#4454), because it is the
+ * one destination that minted this ciphertext and can read it. That keeps
+ * `prepareOpaqueBlobRecovery`'s `agent_message` arm live exactly where it still makes sense: the
+ * backend failing to decrypt its own bytes.
+ */
+function nativeConfig(): OcxConfig {
+  return {
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig;
+}
+
+function nativeAgentMessageRequest(stream = false): Request {
+  return new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-codex-parent-thread-id": "thread-native-encrypted-agent-message",
+      authorization: "Bearer caller-codex-token",
+    },
+    body: JSON.stringify({
+      model: "gpt-5.5",
+      stream,
+      store: false,
+      input: agentMessageReplayInput(),
+    }),
+  });
+}
+
+function decryptStreamResponse(wire: string, contentType: string | null): Response {
+  // A string body would implicitly add text/plain even when headers are omitted.
+  const response = new Response(new TextEncoder().encode(wire), {
+    status: 200,
+    ...(contentType === null ? {} : { headers: { "content-type": contentType } }),
+  });
+  expect(response.headers.get("content-type")).toBe(contentType);
+  return response;
+}
+
+function streamedFunctionOutputDecryptFailure(contentType: string | null = "text/event-stream"): Response {
+  const failed = {
+    type: "response.failed",
+    response: {
+      id: "resp-function-output-failed",
+      status: "failed",
+      error: {
+        message: FUNCTION_OUTPUT_DECRYPT_MESSAGE,
+        type: "server_error",
+        code: "upstream_server_error",
+      },
+    },
+  };
+  return decryptStreamResponse(`event: response.failed\ndata: ${JSON.stringify(failed)}\n\ndata: [DONE]\n\n`, contentType);
+}
+
+// The observed ChatGPT production shape: response.created, then a bare error
+// event carrying the decryption rejection, then EOF with no terminal event.
+function streamedFunctionOutputDecryptErrorEvent(
+  flat = false,
+  contentType: string | null = "text/event-stream",
+): Response {
+  const created = {
+    type: "response.created",
+    response: { id: "resp-function-output-error-event", status: "in_progress" },
+  };
+  const error = {
+    type: "server_error",
+    code: "upstream_server_error",
+    message: FUNCTION_OUTPUT_DECRYPT_MESSAGE,
+  };
+  const errorEvent = flat ? { ...error, type: "error" } : {
+    type: "error",
+    error,
+  };
+  return decryptStreamResponse(
+    `event: response.created\ndata: ${JSON.stringify(created)}\n\nevent: error\ndata: ${JSON.stringify(errorEvent)}\n\n`,
+    contentType,
+  );
+}
+
+function streamedFunctionOutputDecryptDetailEvent(): Response {
+  return decryptStreamResponse(
+    `event: error\ndata: ${JSON.stringify({ type: "error", detail: FUNCTION_OUTPUT_DECRYPT_MESSAGE })}\n\n`,
+    "text/event-stream",
+  );
+}
+
+function streamedSuccess(id: string): Response {
+  const completed = {
+    type: "response.completed",
+    response: {
+      id,
+      status: "completed",
+      model: "model-a",
+      output: [],
+    },
+  };
+  return new Response(`event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
   });
 }
 
@@ -202,9 +465,680 @@ describe("opaque blob recovery trigger", () => {
       }),
     })).toBe(false);
   });
+
+  test("accepts the exact ChatGPT 502 rejection only when function output carries encrypted content", () => {
+    const base = {
+      status: 502,
+      adapterName: "openai-responses",
+      outboundBody: serializedOutboundWithEncryptedFunctionOutput(),
+      errorBody: CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR,
+      alreadyAttempted: false,
+    };
+
+    expect(shouldAttemptOpaqueBlobRecovery(base)).toBe(true);
+    expect(shouldAttemptOpaqueBlobRecovery({ ...base, status: 500 })).toBe(false);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({ error: { message: "Bad gateway" } }),
+    })).toBe(false);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      outboundBody: JSON.stringify({ model: "model-a", input: [{ type: "message", role: "user" }] }),
+    })).toBe(false);
+    expect(shouldAttemptOpaqueBlobRecovery({ ...base, alreadyAttempted: true })).toBe(false);
+  });
+
+  test("accepts the exact ChatGPT 502 rejection when an agent_message content part carries encrypted content", () => {
+    const base = {
+      status: 502,
+      adapterName: "openai-responses",
+      outboundBody: serializedOutboundWithEncryptedAgentMessage(),
+      errorBody: CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR,
+      alreadyAttempted: false,
+    };
+
+    expect(shouldAttemptOpaqueBlobRecovery(base)).toBe(true);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      outboundBody: JSON.stringify({
+        model: "model-a",
+        input: [{ type: "agent_message", content: [{ type: "input_text", text: "plain" }] }],
+      }),
+    })).toBe(false);
+  });
+
+  test("#4469 accepts the caller-mismatch reasoning blob rejection and still rejects unrelated prose", () => {
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: CALLER_MISMATCH_BLOB_ERROR,
+    })).toBe(true);
+    // The same identity without backticks and wrapped in a leading/trailing sentence.
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "Upstream rejected the replay: reasoning encrypted_content was not issued to this caller.",
+        },
+      }),
+    })).toBe(true);
+    // The flat stream-error envelope carries the same identity at the top level.
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({
+        type: "invalid_request_error",
+        message: "reasoning `encrypted_content` was not issued to this caller",
+      }),
+    })).toBe(true);
+    // Unrelated invalid_request_error prose must never gain a hidden resend: neither a
+    // caller-worded rejection without the anchor phrase nor the anchor without a
+    // reasoning/encrypted_content subject qualifies.
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "Encrypted content is not supported for this caller.",
+        },
+      }),
+    })).toBe(false);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "The credential was not issued to this caller.",
+        },
+      }),
+    })).toBe(false);
+  });
 });
 
 describe("opaque blob recovery through /v1/responses", () => {
+  test("lowers Fernet-shaped agent plaintext before native dispatch", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return success("resp-agent-plaintext");
+    }) as typeof fetch;
+
+    const request = new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-parent-thread-id": "thread-agent-plaintext",
+        authorization: "Bearer caller-codex-token",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        stream: false,
+        store: false,
+        input: [{
+          type: "agent_message",
+          author: "/root/child_task",
+          recipient: "/root",
+          content: [{ type: "encrypted_content", encrypted_content: FERNET_SHAPED_PLAINTEXT }],
+        }],
+      }),
+    });
+
+    const response = await handleResponses(request, nativeConfig(), { model: "", provider: "" });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]?.input).toEqual([{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: FERNET_SHAPED_PLAINTEXT }],
+    }]);
+  });
+
+  test("recovers a zero-output streamed function-output decrypt failure before client relay", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptFailure()
+        : streamedSuccess("resp-stream-function-output-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    const retriedInput = outbound.at(1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(retriedInput?.at(1)).toEqual({
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "input_text", text: "[encrypted content omitted]" },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    });
+  });
+
+  test("retries a ChatGPT function-output decrypt failure once with an omission marker", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length <= 3
+        ? new Response(CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR, {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        })
+        : success("resp-function-output-recovered");
+    }) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+
+    const response = await handleResponses(functionOutputRequest(), config(), logCtx);
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(outbound).toHaveLength(4);
+    const firstInput = outbound.at(0)?.input as Array<Record<string, unknown>> | undefined;
+    const retriedInput = outbound.at(3)?.input as Array<Record<string, unknown>> | undefined;
+    expect(firstInput?.at(1)).toEqual(functionOutputReplayInput().at(1));
+    expect(retriedInput?.at(0)).toEqual(functionOutputReplayInput().at(0));
+    expect(retriedInput?.at(1)).toEqual({
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "input_text", text: "[encrypted content omitted]" },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    });
+    expect(retriedInput?.at(2)).toEqual(functionOutputReplayInput().at(2));
+    expect(logCtx.activeAttempt?.sendCount).toBe(4);
+    expect(logCtx.activeAttempt?.recoveryKinds).toEqual(["transient-5xx", "opaque-blob-rejection"]);
+  });
+
+  test("surfaces a repeated function-output decrypt rejection after one sanitized rebuild", async () => {
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR, {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const response = await handleResponses(functionOutputRequest(), config(), logCtx);
+    expect(response.status).toBe(502);
+    const body = await response.json() as { error?: { message?: string } };
+    expect(body.error?.message).toBe(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+
+    // Three sends spend the request's transient budget, then the sanitized rebuild draws on what
+    // is LEFT of that same budget rather than a fresh allowance, so it sends once and stops.
+    // This used to be 6 (3 + 3), which is the per-leg multiplication #4546 measured.
+    expect(outbound).toHaveLength(4);
+    expect(logCtx.activeAttempt?.sendCount).toBe(4);
+    const initialInput = outbound.at(0)?.input as Array<Record<string, unknown>> | undefined;
+    const finalInput = outbound.at(-1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(initialInput?.at(1)).toEqual(functionOutputReplayInput().at(1));
+    expect(finalInput?.at(1)).toEqual({
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "input_text", text: "[encrypted content omitted]" },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    });
+  });
+
+  test("keeps a repeated streamed function-output rejection visible after one sanitized rebuild", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return streamedFunctionOutputDecryptFailure();
+    }) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+
+    const response = await handleResponses(functionOutputRequest(true), config(), logCtx);
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.failed");
+    expect(body).toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(logCtx.upstreamError).toBe(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    const finalInput = outbound.at(1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(finalInput?.at(1)).toEqual({
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "input_text", text: "[encrypted content omitted]" },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    });
+  });
+
+  test("omits agent-message ciphertext before the first dispatch, with no decrypt round trip", async () => {
+    // This used to send the blob, collect `502 could not be decrypted`, repair, and retry. A
+    // routed destination was never going to decrypt a ChatGPT-minted blob, so the repair now runs
+    // first and the rejection never happens (#4454). The transient-5xx retry below is unrelated
+    // and still carries the already-repaired body.
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length <= 1
+        ? new Response(CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR, {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        })
+        : success("resp-agent-message-recovered");
+    }) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+
+    const response = await handleResponses(agentMessageRequest(), config(), logCtx);
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(outbound).toHaveLength(2);
+    for (const sent of outbound) {
+      const input = sent.input as Array<Record<string, unknown>>;
+      expect(input.at(0)).toEqual(recoveredAgentMessage());
+      expect(JSON.stringify(sent)).not.toContain(FUNCTION_OUTPUT_BLOB);
+    }
+    expect((outbound.at(1)?.input as Array<Record<string, unknown>>).at(1))
+      .toEqual(agentMessageReplayInput().at(1));
+    expect(logCtx.activeAttempt?.recoveryKinds).toEqual(["transient-5xx"]);
+  });
+
+  test("omits agent-message ciphertext before the first streamed dispatch", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return streamedSuccess("resp-stream-agent-message-repaired");
+    }) as typeof fetch;
+
+    const response = await handleResponses(agentMessageRequest(true), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(outbound).toHaveLength(1);
+    const sentInput = outbound.at(0)?.input as Array<Record<string, unknown>> | undefined;
+    expect(sentInput?.at(0)).toEqual(recoveredAgentMessage());
+    expect(JSON.stringify(outbound.at(0))).not.toContain(FUNCTION_OUTPUT_BLOB);
+  });
+
+  test("still retries a ChatGPT agent-message decrypt failure on the canonical backend", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length <= 3
+        ? new Response(CHATGPT_FUNCTION_OUTPUT_DECRYPT_ERROR, {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        })
+        : success("resp-native-agent-message-recovered");
+    }) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+
+    const response = await handleResponses(nativeAgentMessageRequest(), nativeConfig(), logCtx);
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(outbound).toHaveLength(4);
+    // The blob reaches this destination, which is the point of the exemption, and only the
+    // post-rejection repair takes it back off the wire.
+    expect(JSON.stringify(outbound.at(0))).toContain(FUNCTION_OUTPUT_BLOB);
+    expect(JSON.stringify(outbound.at(3))).not.toContain(FUNCTION_OUTPUT_BLOB);
+    expect(JSON.stringify(outbound.at(3))).toContain("[encrypted content omitted]");
+    expect(logCtx.activeAttempt?.recoveryKinds).toEqual(["transient-5xx", "opaque-blob-rejection"]);
+  });
+
+  test("still hides a streamed agent-message decrypt failure from the client on the canonical backend", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptFailure()
+        : streamedSuccess("resp-native-stream-agent-message-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(nativeAgentMessageRequest(true), nativeConfig(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    expect(JSON.stringify(outbound.at(0))).toContain(FUNCTION_OUTPUT_BLOB);
+    expect(JSON.stringify(outbound.at(1))).not.toContain(FUNCTION_OUTPUT_BLOB);
+  });
+
+  test("recovers a zero-output error-event decrypt failure before client relay", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptErrorEvent()
+        : streamedSuccess("resp-stream-error-event-recovered");
+    }) as typeof fetch;
+
+    // Carried by the function-output fixture: an agent message reaches a routed destination with
+    // its ciphertext already omitted, so it no longer has a blob for the upstream to reject.
+    const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    const retriedInput = outbound.at(1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(retriedInput?.at(1)).toEqual(recoveredFunctionOutput());
+  });
+
+  test("recovers a WebSocket-style detail decrypt error before client relay", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptDetailEvent()
+        : streamedSuccess("resp-stream-detail-recovered");
+    }) as typeof fetch;
+
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+    const response = await handleResponses(functionOutputRequest(true), config(), logCtx);
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    expect(JSON.stringify(outbound[1])).not.toContain(FUNCTION_OUTPUT_BLOB);
+    expect(logCtx.activeAttempt?.recoveryKinds).toEqual(["opaque-blob-rejection"]);
+  });
+
+  for (const streamMode of ["legacy-tee", "eager-relay"] as const) {
+    test(`preserves non-decrypt failed SSE with encrypted history (${streamMode})`, async () => {
+      const failed = { type: "response.failed", response: {
+        id: "resp-other-failure", status: "failed", output: [],
+        error: { type: "server_error", code: "unrelated_failure", message: "Other upstream failure" },
+      } };
+      const wire = `event: response.failed\ndata: ${JSON.stringify(failed)}\n\ndata: [DONE]\n\n`;
+      let sends = 0;
+      globalThis.fetch = Object.assign(async () => {
+        sends += 1;
+        return new Response(wire, { headers: { "content-type": "text/event-stream" } });
+      }, { preconnect: originalFetch.preconnect });
+      const response = await handleResponses(agentMessageRequest(true), {
+        ...config(), streamMode,
+      }, { model: "", provider: "" });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(await response.text()).toBe(wire);
+      expect(sends).toBe(1);
+    });
+
+    for (const flat of [false, true]) {
+      test(`repeated bare decrypt errors terminate as failed (${streamMode}, flat=${flat})`, async () => {
+        let sends = 0;
+        globalThis.fetch = Object.assign(async () => {
+          sends += 1;
+          return streamedFunctionOutputDecryptErrorEvent(flat);
+        }, { preconnect: originalFetch.preconnect });
+        const logCtx: RequestLogContext = { model: "", provider: "" };
+        const terminals: string[] = [];
+        let markTerminal!: () => void;
+        const terminal = new Promise<void>(resolve => { markTerminal = resolve; });
+        const response = await handleResponses(functionOutputRequest(true), {
+          ...config(), streamMode,
+        }, logCtx, { onNativePassthroughTerminal: status => {
+          terminals.push(status);
+          markTerminal();
+        } });
+        const body = await response.text();
+        await terminal;
+        expect(terminals).toEqual(["failed"]);
+        expect(logCtx.activeAttempt).toBeDefined();
+        expect(logCtx.activeAttempt?.streamAborted).not.toBe(true);
+        expect(sends).toBe(2);
+        expect(body).toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+        expect(body).not.toContain("adapter_eof");
+        expect(body.match(/^event: response.failed$/gm)).toHaveLength(1);
+        expect(body.match(/^data: \[DONE\]$/gm)).toHaveLength(1);
+      });
+    }
+  }
+
+  test("recovers a flat error event once and preserves the marked raw body identity", async () => {
+    const definition = ADAPTER_REGISTRY["openai-responses"];
+    const originalCreate = definition.create;
+    const rawBodies: unknown[] = [];
+    const createSpy = spyOn(definition, "create").mockImplementation((provider, context) => {
+      const adapter = originalCreate(provider, context);
+      const buildRequest = adapter.buildRequest.bind(adapter);
+      adapter.buildRequest = (parsed, incoming) => {
+        rawBodies.push(parsed._rawBody);
+        if (rawBodies.length === 1) markBodyNonPersistable(parsed._rawBody);
+        return buildRequest(parsed, incoming);
+      };
+      return adapter;
+    });
+    let sends = 0;
+    globalThis.fetch = Object.assign(async () => {
+      sends += 1;
+      return sends === 1 ? streamedFunctionOutputDecryptErrorEvent(true) : streamedSuccess("resp-identity");
+    }, { preconnect: originalFetch.preconnect });
+    try {
+      const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+      const body = await response.text();
+      expect(body).toContain("response.completed");
+      expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+      expect(sends).toBe(2);
+      expect(rawBodies).toHaveLength(2);
+      expect(rawBodies[1]).toBe(rawBodies[0]);
+      rememberResponseState(rawBodies[1], { id: "resp-marked-identity", status: "completed", output: [] },
+        { cursor: { conversationId: "must-not-persist" } }, { force: true });
+      expect(previousResponseProviderState("resp-marked-identity")).toBeUndefined();
+    } finally {
+      createSpy.mockRestore();
+    }
+  });
+
+  test("recovers a missing-Content-Type streamed function-output decrypt failure before client relay", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptFailure(null)
+        : streamedSuccess("resp-missing-ct-function-output-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    const retriedInput = outbound.at(1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(retriedInput?.at(1)).toEqual({
+      type: "function_call_output",
+      call_id: "call-encrypted-output",
+      output: [
+        { type: "input_text", text: "[encrypted content omitted]" },
+        { type: "input_text", text: "visible tool output" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA", detail: "high" },
+      ],
+    });
+  });
+
+  test("recovers a missing-Content-Type error-event decrypt failure before client relay", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? streamedFunctionOutputDecryptErrorEvent(false, null)
+        : streamedSuccess("resp-missing-ct-error-event-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain("response.completed");
+    expect(body).not.toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(outbound).toHaveLength(2);
+    const retriedInput = outbound.at(1)?.input as Array<Record<string, unknown>> | undefined;
+    expect(retriedInput?.at(1)).toEqual(recoveredFunctionOutput());
+  });
+
+  test("absent Content-Type decrypt stream does not recover a non-stream request", async () => {
+    let sends = 0;
+    globalThis.fetch = Object.assign(async () => {
+      sends += 1;
+      return streamedFunctionOutputDecryptFailure(null);
+    }, { preconnect: originalFetch.preconnect });
+
+    const response = await handleResponses(functionOutputRequest(false), config(), { model: "", provider: "" });
+    const body = await response.text();
+
+    expect(sends).toBe(1);
+    expect(body).toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+    expect(body).not.toContain("response.completed");
+  });
+
+  for (const contentType of ["application/json", "text/plain"] as const) {
+    test(`refuses non-SSE ${contentType} streamed decrypt recovery`, async () => {
+      let sends = 0;
+      globalThis.fetch = Object.assign(async () => {
+        sends += 1;
+        return streamedFunctionOutputDecryptFailure(contentType);
+      }, { preconnect: originalFetch.preconnect });
+
+      const response = await handleResponses(functionOutputRequest(true), config(), { model: "", provider: "" });
+      const body = await response.text();
+
+      expect(sends).toBe(1);
+      expect(body).toContain(FUNCTION_OUTPUT_DECRYPT_MESSAGE);
+      expect(body).not.toContain("response.completed");
+    });
+  }
+
+  for (const streamMode of ["legacy-tee", "eager-relay"] as const) {
+    test(`created-then-reset streamed function-output does not sanitize or resend (${streamMode})`, async () => {
+      const created = {
+        type: "response.created",
+        response: { id: "resp-function-output-reset", status: "in_progress" },
+      };
+      const prefix = new TextEncoder().encode(
+        `event: response.created
+data: ${JSON.stringify(created)}
+
+`,
+      );
+      const readError = new Error("upstream stream reset");
+      const outbound: Array<Record<string, unknown>> = [];
+      globalThis.fetch = Object.assign(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        let sentPrefix = false;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!sentPrefix) {
+              sentPrefix = true;
+              controller.enqueue(prefix);
+              return;
+            }
+            return Promise.reject(readError);
+          },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }, { preconnect: originalFetch.preconnect }) as typeof fetch;
+
+      const logCtx: RequestLogContext = { model: "", provider: "" };
+      const terminals: string[] = [];
+      let markTerminal!: () => void;
+      const terminal = new Promise<void>(resolve => { markTerminal = resolve; });
+      const response = await handleResponses(functionOutputRequest(true), {
+        ...config(), streamMode,
+      }, logCtx, { onNativePassthroughTerminal: status => {
+        terminals.push(status);
+        markTerminal();
+      } });
+      const body = await response.text();
+      await terminal;
+      expect(terminals).toEqual(["failed"]);
+      expect(logCtx.activeAttempt?.streamAborted).toBe(true);
+      expect(response.status).toBe(200);
+      expect(body).toContain("response.failed");
+      expect(body).toContain('"code":"upstream_reset"');
+      expect(body).not.toContain('"reason":"adapter_eof"');
+      expect(outbound).toHaveLength(1);
+      const sentInput = outbound.at(0)?.input as Array<Record<string, unknown>> | undefined;
+      expect(sentInput?.at(1)).toEqual(functionOutputReplayInput().at(1));
+      expect(JSON.stringify(sentInput)).toContain("encrypted_content");
+    });
+
+    test(`created-then-abort streamed function-output returns 499 without resend (${streamMode})`, async () => {
+      const created = {
+        type: "response.created",
+        response: { id: "resp-function-output-abort", status: "in_progress" },
+      };
+      const prefix = new TextEncoder().encode(
+        `event: response.created
+data: ${JSON.stringify(created)}
+
+`,
+      );
+      const abort = new AbortController();
+      let fetchSignal: AbortSignal | undefined;
+      let sawCreated!: () => void;
+      const createdStarted = new Promise<void>(resolve => { sawCreated = resolve; });
+      const outbound: Array<Record<string, unknown>> = [];
+      globalThis.fetch = Object.assign(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        fetchSignal = init?.signal ?? undefined;
+        let sentPrefix = false;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!sentPrefix) {
+              sentPrefix = true;
+              controller.enqueue(prefix);
+              sawCreated();
+              return new Promise<void>((_resolve, reject) => {
+                const fail = () => reject(fetchSignal?.reason ?? new Error("aborted"));
+                if (fetchSignal?.aborted) {
+                  fail();
+                  return;
+                }
+                fetchSignal?.addEventListener("abort", fail, { once: true });
+              });
+            }
+          },
+        }), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }, { preconnect: originalFetch.preconnect }) as typeof fetch;
+
+      const logCtx: RequestLogContext = { model: "", provider: "" };
+      const pending = handleResponses(functionOutputRequest(true), {
+        ...config(), streamMode,
+      }, logCtx, { abortSignal: abort.signal });
+      await createdStarted;
+      expect(fetchSignal).toBeDefined();
+      abort.abort();
+      expect(fetchSignal?.aborted).toBe(true);
+      const response = await pending;
+      expect(response.status).toBe(499);
+      const body = await response.json() as { error?: { code?: string; type?: string } };
+      expect(body.error?.code ?? body.error?.type).toBe("client_cancelled");
+      expect(outbound).toHaveLength(1);
+      const sentInput = outbound.at(0)?.input as Array<Record<string, unknown>> | undefined;
+      expect(sentInput?.at(1)).toEqual(functionOutputReplayInput().at(1));
+    });
+  }
+
   test("#2247 strips reasoning and compaction ciphertext before a pooled thread moves accounts", async () => {
     const outbound: Array<{ accountId: string | null; body: Record<string, unknown> }> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -310,6 +1244,24 @@ describe("opaque blob recovery through /v1/responses", () => {
       return outbound.length === 1
         ? rejection(CHATGPT_UNVERIFIABLE_BLOB_ERROR)
         : success("resp-2247-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(request(), config(), { model: "", provider: "" });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(outbound).toHaveLength(2);
+    expect(hasBlob(outbound[0]!)).toBe(true);
+    expect(hasBlob(outbound[1]!)).toBe(false);
+  });
+
+  test("#4469 retries the reported caller-mismatch reasoning blob rejection once", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? rejection(CALLER_MISMATCH_BLOB_ERROR)
+        : success("resp-4469-recovered");
     }) as typeof fetch;
 
     const response = await handleResponses(request(), config(), { model: "", provider: "" });

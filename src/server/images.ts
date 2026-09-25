@@ -19,6 +19,7 @@ import {
   cooldownErrorResponse,
   CodexAuthContextError,
   CodexMainProfileDrainingError,
+  CodexModelAvailabilityError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
@@ -28,9 +29,12 @@ import { readBoundedResponseBytes, type BoundedBytesResult } from "../lib/bounde
 import { sidecarEnter } from "../lib/sidecar-tracker";
 import type { OcxConfig } from "../types";
 import { resolveFirstUsableOpenAiSidecar, selectImagesProvider } from "../providers/openai-sidecar";
+import { selectProactiveApiKeyTransport } from "../providers/key-failover";
 import { getProviderRegistryEntry } from "../providers/registry";
-import { readJsonRequestBody } from "./request-decompress";
+import { readJsonRequestBody, resolveInboundBodyLimitBytes } from "./request-decompress";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
+import type { DataPlaneAdmission } from "./auth-cors";
+import { admissionScopeDenial } from "./admission-model-scope";
 import type { RequestLogContext } from "./request-log";
 import { codexLogAccountId, decodeRequestErrorResponse } from "./responses";
 import { getValidAccessToken, getOAuthCredentialProjectId } from "../oauth/index";
@@ -48,6 +52,7 @@ import { findXaiProvider, resolveXaiImageAuthToken } from "../images/plan";
 import { callXaiImages } from "../images/xai-client";
 import type { AdmissionLease } from "../lib/admission";
 import { codexAccountSelectionForTurn } from "./lifecycle";
+import { codexModelAvailabilityErrorResponse } from "./responses/codex-auth-error";
 
 export type ImagesEndpoint = "generations" | "edits";
 
@@ -112,6 +117,18 @@ export async function readImageResponseBytes(
 }
 
 const CCA_IMAGE_MODEL = "gemini-3.1-flash-image";
+const XAI_IMAGE_BRIDGE_MODEL = "grok-imagine-image-quality";
+
+/**
+ * The model this request names, or undefined when it names none.
+ *
+ * An absent `model` is relayed as an absent `model`: the upstream picks, so
+ * there is no destination to echo and none a model list can allow.
+ */
+function requestedImageSelector(body: unknown): string | undefined {
+  const model = (body as { model?: unknown } | null)?.model;
+  return typeof model === "string" && model.trim() ? model : undefined;
+}
 
 /**
  * Google Gemini finishReasons that indicate a permanent content/safety block.
@@ -204,10 +221,20 @@ async function tryCcaImageGeneration(
   logCtx: RequestLogContext,
   signal: AbortSignal,
   endpoint: ImagesEndpoint,
+  admission: DataPlaneAdmission | undefined,
 ): Promise<Response | undefined> {
   if (endpoint !== "generations") return undefined;
   const provider = config.providers?.["google-antigravity"];
   if (!provider || provider.disabled) return undefined;
+
+  // The destination is decided here, not by the caller: this branch always
+  // bills Antigravity for CCA_IMAGE_MODEL whatever the body named. That is the
+  // pair a scoped key is held to.
+  const denial = admissionScopeDenial(config, admission, requestedImageSelector(body), {
+    providerName: "google-antigravity",
+    modelId: CCA_IMAGE_MODEL,
+  });
+  if (denial) return denial;
 
   const prompt = (body as { prompt?: unknown })?.prompt;
   if (typeof prompt !== "string" || !prompt.trim()) {
@@ -288,6 +315,7 @@ async function tryCcaImageGeneration(
     try {
       upstream = await fetch(`${baseUrl}/v1internal:generateContent`, {
         method: "POST",
+        redirect: "manual",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`,
@@ -442,10 +470,20 @@ async function tryXaiImageRelay(
   logCtx: RequestLogContext,
   signal: AbortSignal | undefined,
   endpoint: ImagesEndpoint,
+  admission: DataPlaneAdmission | undefined,
 ): Promise<Response | undefined> {
   if (config.images?.bridgeEnabled !== true) return undefined;
   const found = findXaiProvider(config);
   if (!found) return undefined;
+  const bridgeModel = config.images?.bridgeModel ?? XAI_IMAGE_BRIDGE_MODEL;
+  // The bridge sends this request to the configured xAI provider and the bridge
+  // model regardless of the selector in the body, so that is what the key is
+  // checked against.
+  const denial = admissionScopeDenial(config, admission, requestedImageSelector(body), {
+    providerName: found.name,
+    modelId: bridgeModel,
+  });
+  if (denial) return denial;
   const obj = body && typeof body === "object" && !Array.isArray(body)
     ? body as Record<string, unknown>
     : {};
@@ -492,11 +530,11 @@ async function tryXaiImageRelay(
     }
     if (!token) return xaiImageAuthMissing();
     logCtx.provider = "xai";
-    logCtx.model = config.images?.bridgeModel ?? "grok-imagine-image-quality";
+    logCtx.model = bridgeModel;
     const result = await callXaiImages(
       {
         prompt,
-        model: logCtx.model,
+        model: bridgeModel,
         n,
         size,
         quality,
@@ -598,10 +636,11 @@ export async function handleImages(
   endpoint: ImagesEndpoint,
   logCtx: RequestLogContext,
   turnAdmissionLease?: AdmissionLease,
+  admission?: DataPlaneAdmission,
 ): Promise<Response> {
   let body: unknown;
   try {
-    body = await readJsonRequestBody(req);
+    body = await readJsonRequestBody(req, undefined, resolveInboundBodyLimitBytes(config.maxInboundBodyBytes));
   } catch (err) {
     return decodeRequestErrorResponse(err, "images");
   }
@@ -612,7 +651,7 @@ export async function handleImages(
   // Explicit images.provider owns the route, including its validation errors.
   // Do not divert that selection to the xAI Imagine relay.
   if (config.images?.provider === undefined) {
-    const xaiRelay = await tryXaiImageRelay(body, config, logCtx, req.signal, endpoint);
+    const xaiRelay = await tryXaiImageRelay(body, config, logCtx, req.signal, endpoint, admission);
     if (xaiRelay) return xaiRelay;
   }
   if (candidates.error) {
@@ -637,7 +676,7 @@ export async function handleImages(
   const canUseOpenAiForward = !skipOpenAiForwardForAdmissionBearer && candidates.forwardCandidates.length > 0;
 
   if (!canUseOpenAiForward && !candidates.keyed) {
-    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint);
+    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint, admission);
     if (ccaResponse) return ccaResponse;
     // 400, not 5xx: codex retries every 5xx up to 5 total attempts, and this is a permanent
     // configuration state that must surface on the first attempt.
@@ -672,6 +711,8 @@ export async function handleImages(
         const safeAccountLabel = formatCodexProviderForLog("openai", err.accountId, config);
         console.error(`[images] Pool account ${safeAccountLabel} token failed; reauthentication required`);
         forwardAuthError = formatErrorResponse(401, "authentication_error", "Selected Codex account needs reauthentication");
+      } else if (err instanceof CodexModelAvailabilityError) {
+        forwardAuthError = codexModelAvailabilityErrorResponse(err);
       } else if (err instanceof CodexPoolAuthenticationError) {
         forwardAuthError = formatErrorResponse(401, "authentication_error", err.message);
       } else {
@@ -682,7 +723,20 @@ export async function handleImages(
 
   const headers: Record<string, string> = { "content-type": "application/json" };
   let url: string;
+  // Both relay branches copy the body upstream, so the destination is the
+  // provider chosen in that branch and the model the caller named. Each branch
+  // is checked as it is entered, before it resolves a credential or commits a
+  // key rotation, so a refused request spends nothing.
+  const relaySelector = requestedImageSelector(body);
   if (forward) {
+    const denial = admissionScopeDenial(config, admission, relaySelector, {
+      providerName: forward.providerName,
+      modelId: relaySelector,
+    });
+    if (denial) {
+      forward.releaseProbeLease?.();
+      return denial;
+    }
     const { provider } = forward;
     if (provider.headers) Object.assign(headers, provider.headers);
     for (const [name, value] of forward.headers) headers[name] = value;
@@ -691,13 +745,44 @@ export async function handleImages(
   } else if (forwardAuthError) {
     // Before surfacing the OpenAI auth failure, try CCA — the user may have a
     // valid Google Antigravity login even though their OpenAI pool is broken.
-    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint);
+    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint, admission);
     if (ccaResponse) return ccaResponse;
     // No CCA either: a configured OpenAI pool mode owns its authentication failure.
     // Do not hide a broken/expired pool behind separately billed API-key image generation.
     return forwardAuthError;
   } else if (candidates.keyed) {
-    const { provider, apiKey, providerName } = candidates.keyed;
+    const { providerName } = candidates.keyed;
+    const denial = admissionScopeDenial(config, admission, relaySelector, {
+      providerName,
+      modelId: relaySelector,
+    });
+    if (denial) return denial;
+    // The keyed image path builds its own URL and Authorization header and never enters
+    // handleResponses, so the pre-dispatch key pick happens here.
+    //
+    // Two things about the placement. It stays INSIDE this branch because higher up it would
+    // also run for requests ChatGPT forward goes on to serve, spending a rotation on a path
+    // that never used the key. And the header is rebuilt from the returned route rather than
+    // from candidates.keyed.apiKey, which is a snapshot resolved earlier: reusing it would
+    // send the OLD key while the picker had already persisted the new one.
+    //
+    // Transport variant: this branch reads `provider.baseUrl` and `provider.headers` to build
+    // the URL and the request, and it comes back with the credential already resolved.
+    const warmKeyProvider = selectProactiveApiKeyTransport(config, providerName, candidates.keyed.provider);
+    const provider = warmKeyProvider ?? candidates.keyed.provider;
+    // No fall back to the earlier snapshot once a pick has happened. The picker COMMITS its
+    // choice before returning, so if the chosen reference will not resolve -- revoked keychain
+    // entry, unset env var -- sending the previous key would authenticate a non-idempotent
+    // POST with a credential the config no longer considers active, and the previous key is
+    // the one that was cooling. Fail loudly instead.
+    if (warmKeyProvider && !warmKeyProvider.apiKey?.trim()) {
+      return formatErrorResponse(
+        500,
+        "configuration_error",
+        `image generation selected an API key for "${providerName}" that cannot be resolved`,
+      );
+    }
+    const apiKey = warmKeyProvider?.apiKey ?? candidates.keyed.apiKey;
     if (provider.headers) Object.assign(headers, provider.headers);
     headers["authorization"] = `Bearer ${apiKey}`;
     logCtx.provider = providerName;
@@ -705,7 +790,7 @@ export async function handleImages(
     url = `${provider.baseUrl.replace(/\/v1\/?$/, "")}/v1/images/${endpoint}`;
   } else {
     // No usable OpenAI credential — try CCA before giving up.
-    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint);
+    const ccaResponse = await tryCcaImageGeneration(body, config, logCtx, req.signal, endpoint, admission);
     if (ccaResponse) return ccaResponse;
     return formatErrorResponse(
       401,

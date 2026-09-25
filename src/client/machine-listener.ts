@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { Server } from "bun";
 import { loadConfig } from "../config";
 import { browserSecurityHeaders } from "../server/auth-cors";
@@ -12,15 +11,15 @@ import {
 } from "../server/management-auth";
 import type { OcxClientConnectionConfig, OcxConfig } from "../types";
 import { disconnectClient, syncConnectedClient } from "./connect";
-import { readClientConnectionState } from "./state";
+import { isLinkConnection, readClientConnectionState } from "./state";
 import { handleMachineApi, type HubReachability, type MachineApiDeps } from "./machine-api";
 import { MACHINE_GUI_ORIGIN_HEADER, requireMachineAuth } from "./machine-auth";
-import { relayHubManagementRequest } from "./hub-relay";
+import { HUB_RELAY_REQUEST_BODY_MAX_BYTES, relayHubManagementRequest } from "./hub-relay";
+import { relayLinkDataRequest } from "./link-relay";
+import { packageVersion } from "../lib/package-version";
+import { linkRouteAllowed } from "../link/routes";
 
-const VERSION = (() => {
-  try { return JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version as string; }
-  catch { return "0.0.0"; }
-})();
+const VERSION = packageVersion("0.0.0");
 const GUI_SPA_PATHS = new Set([
   "/dashboard", "/startup", "/providers", "/models", "/subagents",
   "/logs", "/usage", "/storage", "/codex-set", "/integrations",
@@ -42,13 +41,19 @@ function machinePolicyConfig(config: OcxConfig): OcxConfig {
   return { ...config, hostname: "127.0.0.1" };
 }
 
-export function machineRouteAllowed(url: URL, req: Request, relayEnabled: boolean): boolean {
+export function machineRouteAllowed(url: URL, req: Request, relayEnabled: boolean, linkMode = false): boolean {
   if (req.headers.get("upgrade")) return false;
+  if (linkMode && linkRouteAllowed(url, req)) return true;
   const path = url.pathname;
   if (req.method === "GET" && (path === "/healthz" || path === "/readyz" || path === "/" || path === "/opencodex-session")) return true;
-  if (req.method === "GET" && (path === "/api/machine/status" || path === "/api/machine/clients" || path === "/api/machine/shim")) return true;
+  if ((req.method === "GET" || req.method === "HEAD") && (path === "/api/machine/status" || path === "/api/machine/clients" || path === "/api/machine/shim")) return true;
   if (req.method === "POST" && (path === "/api/machine/sync" || path === "/api/machine/shim" || path === "/api/machine/disconnect")) return true;
   if (relayEnabled && path.startsWith("/api/machine/hub-relay/")) return true;
+  // Known machine endpoints are admitted for every method so an unsupported
+  // method reaches the authenticated method restriction (403) instead of a
+  // bare 404 that hides the endpoint entirely.
+  if (path === "/api/machine/status" || path === "/api/machine/clients" || path === "/api/machine/shim"
+    || path === "/api/machine/sync" || path === "/api/machine/disconnect") return true;
   if (req.method !== "GET" || path.startsWith("/api/") || path.startsWith("/v1/")) return false;
   return GUI_SPA_PATHS.has(path)
     || path.startsWith("/integrations/")
@@ -65,25 +70,31 @@ export function startMachineListener(
     if (state.kind !== "connected") throw new Error(`machine listener requires connected client state, got ${state.kind}`);
     return state.value;
   })();
+  const linkMode = isLinkConnection(connection);
+  if (linkMode && !connection.link) throw new Error("link machine listener requires link transport metadata");
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
   let hubReachability: HubReachability = "unknown";
   const machineApiDeps: MachineApiDeps = {
     sync: deps.machineApi?.sync ?? syncConnectedClient,
     disconnect: deps.machineApi?.disconnect ?? disconnectClient,
-    scheduleStandaloneRecycle: deps.machineApi?.scheduleStandaloneRecycle ?? (() => {
-      void import("./runtime").then(module => module.scheduleStandaloneRecycle());
+    scheduleStandaloneRecycle: deps.machineApi?.scheduleStandaloneRecycle ?? (tokenFingerprint => {
+      void import("./runtime").then(module => module.scheduleStandaloneRecycle(tokenFingerprint));
     }),
     hubReachability: deps.machineApi?.hubReachability ?? (() => hubReachability),
     setHubReachability: deps.machineApi?.setHubReachability ?? (value => { hubReachability = value; }),
   };
-  const relayEnabled = connection.managementTransport === "relay";
+  const relayEnabled = !linkMode && connection.managementTransport === "relay";
 
   return Bun.serve({
     port: port ?? config.port ?? 10100,
     hostname: "127.0.0.1",
+    maxRequestBodySize: HUB_RELAY_REQUEST_BODY_MAX_BYTES,
     async fetch(req, server) {
       const url = new URL(req.url);
-      if (!machineRouteAllowed(url, req, relayEnabled)) return json404(req);
+      if (!machineRouteAllowed(url, req, relayEnabled, linkMode)) return json404(req);
+      if (linkMode && linkRouteAllowed(url, req)) {
+        return relayLinkDataRequest(req, { tunnelPort: connection.link!.tunnelPort }, { fetchImpl: deps.fetchImpl });
+      }
       if (url.pathname === "/healthz" && req.method === "GET") {
         return Response.json({ service: "opencodex", version: VERSION, role: "client", uptime: process.uptime(), pid: process.pid, port: server.port });
       }
@@ -110,6 +121,14 @@ export function startMachineListener(
         if (authError) return authError;
         if (managementPrincipal(req, managementAuth, config) !== "gui-session") {
           return Response.json({ error: "opencodex machine GUI session required" }, { status: 401 });
+        }
+        // A loopback dashboard session proves possession, not user presence: any local
+        // process can fetch the dashboard bootstrap and replay its token and CSRF value.
+        // Keep the connected listener useful for status/diagnostics, but never let that
+        // credentialless bootstrap authorize durable machine changes. Those operations
+        // remain available through the explicit CLI commands.
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          return Response.json({ error: "opencodex machine changes require the local CLI" }, { status: 403 });
         }
         return await handleMachineApi(req, url, connection, machineApiDeps) ?? json404(req);
       }

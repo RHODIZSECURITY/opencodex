@@ -1,10 +1,9 @@
 import type { KiroOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
 import { initializeProviderModelSelection } from "../providers/initial-model-selection";
-import { parseCallbackInput } from "./callback-server";
 import type { OcxConfig, OcxProviderConfig, RefreshPolicy } from "../types";
 import { ConfigMutationLockError, loadConfig, mutatePersistedConfig, saveConfig } from "../config";
 import { resolveProviderApiKey } from "../providers/key-store";
-import { maskEmail } from "../lib/privacy";
+import { projectEmail } from "../lib/privacy";
 import { KiroTokenRefreshError, environmentKiroRoutingMetadata, loginKiro, refreshKiroToken, settleKiroLoginTransaction } from "./kiro";
 import {
   OAuthMutationBusyError,
@@ -38,19 +37,23 @@ import { loginNous, NousTokenError, refreshNousToken, clearNousRefreshIntent, Re
 import { loginChatGPT, refreshChatGPTToken, type ChatGPTLoginFlow } from "./chatgpt";
 import { loginAntigravity, refreshAntigravityToken } from "./google-antigravity";
 import { loginCursor, refreshCursorToken } from "./cursor";
+import { loginDevin, refreshDevinToken } from "./devin";
+import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
+import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
 import { apiKeyPoolEntryId, sanitizeApiKeyValue } from "../providers/api-keys";
 import { effectiveGoogleMode, getProviderRegistryEntry, mergeRegistryStaticHeaders, providerMatchesRegistryTransport } from "../providers/registry";
-import { resolveProviderModelDiscoveryUrl } from "../providers/model-discovery";
+import { providerModelsUrl, resolveProviderModelDiscoveryUrl } from "../providers/model-discovery";
 import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
-import { captureConfigGeneration, sweepExpiredOnWrite, type GenerationContext } from "../lib/state-store-sweeper";
-import { retainedUtf8Bytes } from "../lib/admission";
+import { captureConfigGeneration, sweepExpiredOnWrite } from "../lib/state-store-sweeper";
+import { clearManualCodeSlot, ensureManualCodeSlot, kiroLoginSettling, loginAbort, loginState, waitForManualLoginCode } from "./login-flow-state";
+export { reconcileOAuthFlowState, submitManualLoginCode } from "./login-flow-state";
 import { randomUUID } from "node:crypto";
 export {
   CODEX_HEALTH_AUTH_FAILED_NOTE,
@@ -87,11 +90,12 @@ export interface OAuthAccessSnapshot {
   /** Safe request-routing subset; refresh-only Kiro client secrets never leave the credential store. */
   kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
   /**
-   * Allowlisted GitHub Copilot API origin belonging to THIS account.
+   * Allowlisted API origin belonging to THIS account.
    *
-   * Copilot pins its bearer to an account-scoped regional host. Initial routing, 401 refresh, and
-   * account failover must resolve transport from this same snapshot; rereading the active account
-   * can pair account A's token with account B's origin during a concurrent switch (#2568d).
+   * Copilot and Devin pin credentials to account-scoped regional or tenant hosts. Initial routing,
+   * discovery, refresh, and account failover must resolve transport from this same snapshot;
+   * rereading the active account can pair account A's token with account B's origin during a
+   * concurrent switch (#2568d).
    */
   apiBaseUrl?: string;
 }
@@ -175,12 +179,13 @@ export interface LoginOpts {
 }
 
 export interface LoginFlowLifecycle {
+  flowId?: string;
   /** Runs after background credential/config persistence settles, before status becomes done. */
   onSettled?: () => void | Promise<void>;
 }
 
 interface OAuthProviderDef {
-  login(ctrl: OAuthController, opts?: LoginOpts): Promise<OAuthCredentials>;
+  login(ctrl: OAuthController, opts?: LoginOpts, providerConfig?: OcxProviderConfig): Promise<OAuthCredentials>;
   refresh(
     refreshToken: string,
     signal?: AbortSignal,
@@ -188,6 +193,8 @@ interface OAuthProviderDef {
   ): Promise<OAuthCredentials>;
   /** provider entry written into config.json on first login. */
   providerConfig: OcxProviderConfig;
+  /** Resolve login-owned config from the latest disk state (for configurable OAuth origins). */
+  resolveProviderConfig?: (config: OcxConfig) => OcxProviderConfig;
   defaultModel: string;
   /**
    * Built-in proactive-refresh policy, risk-tiered by the provider's ToS exposure (devlog
@@ -218,6 +225,27 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultModel: oauthDefaultModel("command-code"),
     defaultRefreshPolicy: "disabled",
   },
+  "orcarouter-oauth": {
+    login: (ctrl, _opts, providerConfig) => loginOrcaRouter(ctrl, {
+      baseUrl: process.env.ORCAROUTER_API_BASE_URL
+        ?? process.env.ORCAROUTER_BASE_URL
+        ?? providerConfig?.baseUrl,
+      authBaseUrl: process.env.ORCAROUTER_AUTH_BASE_URL,
+    }),
+    refresh: refreshOrcaRouterKey,
+    providerConfig: oauthConfig("orcarouter-oauth"),
+    resolveProviderConfig: config => ({
+      ...oauthConfig("orcarouter-oauth"),
+      baseUrl: orcaRouterInferenceBaseUrl(
+        process.env.ORCAROUTER_API_BASE_URL
+          ?? process.env.ORCAROUTER_BASE_URL
+          ?? config.providers["orcarouter-oauth"]?.baseUrl,
+      ),
+    }),
+    defaultModel: oauthDefaultModel("orcarouter-oauth"),
+    // The credential is a durable API key. There is no refresh endpoint.
+    defaultRefreshPolicy: "disabled",
+  },
   xai: {
     // forceLogin skips the local grok-cli import so a SECOND account can be chosen in the browser.
     login: (ctrl, opts) => loginXai(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
@@ -241,7 +269,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     defaultModel: oauthDefaultModel("kimi"),
   },
   "meta-muse": {
-    login: ctrl => loginMetaMuse(ctrl),
+    // Add-account/reauth must not reimport the credential already on disk; it starts the
+    // device grant instead, the same mapping command-code uses above.
+    login: (ctrl, opts) => loginMetaMuse(ctrl, {}, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
     refresh: refreshMetaMuseToken,
     providerConfig: oauthConfig("meta-muse"),
     defaultModel: oauthDefaultModel("meta-muse"),
@@ -284,6 +314,16 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     providerConfig: oauthConfig("cursor"),
     defaultModel: oauthDefaultModel("cursor"),
   },
+  devin: {
+    // Import-first: adopts a signed-in Devin CLI credential when one exists and
+    // only then falls back to the Auth0 browser flow. forceLogin skips the
+    // import so reauth/add-account can reach a different account than the CLI's.
+    login: (ctrl, opts) => loginDevin(ctrl, opts),
+    refresh: refreshDevinToken,
+    providerConfig: oauthConfig("devin"),
+    defaultModel: oauthDefaultModel("devin"),
+    defaultRefreshPolicy: "disabled",
+  },
   "github-copilot": {
     login: (ctrl) => loginGithubCopilot(ctrl),
     refresh: (rt, signal) => refreshGithubCopilotToken(rt, signal),
@@ -296,8 +336,25 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
     login: (ctrl, opts) => loginChatGPT(ctrl, { forceLogin: opts?.forceLogin, flow: opts?.flow }),
     refresh: (rt) => refreshChatGPTToken(rt),
     providerConfig: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" as const },
-    defaultModel: "gpt-5.4",
+    defaultModel: "gpt-5.6-luna",
   },
+};
+
+/**
+ * Removed provider ids that still name a live successor.
+ *
+ * `devin-cli` was merged into `devin` (import-first login absorbed the CLI
+ * credential import; devlog/_plan/260913_devin_provider_merge). The id can
+ * still arrive here from a saved config row or a stored credential slot that
+ * the startup migration has not rekeyed yet, and from a user typing the old
+ * name at `ocx login`. It is deliberately NOT an OAUTH_PROVIDERS entry:
+ * keeping one would re-expose it as a separate dashboard/login row, and its
+ * `oauthConfig("devin-cli")` would throw at module load once the registry row
+ * is gone. The alias map covers the paths that must keep working — refresh
+ * policy resolution below, and the login-cli dispatch that warns and reroutes.
+ */
+export const DEPRECATED_OAUTH_PROVIDER_ALIASES: Record<string, string> = {
+  "devin-cli": "devin",
 };
 
 export function isOAuthProvider(name: string): boolean {
@@ -320,7 +377,11 @@ function isRefreshPolicy(value: unknown): value is RefreshPolicy {
 export function resolveRefreshPolicy(provider: string, config: OcxConfig): RefreshPolicy {
   const override = config.providers[provider]?.refreshPolicy;
   if (isRefreshPolicy(override)) return override;
-  const def = OAUTH_PROVIDERS[provider];
+  // Resolve through the alias map so a lingering `devin-cli` row inherits
+  // devin's "disabled" policy. Without it the row would fall to "lazy-only"
+  // and the guardian would attempt refreshes Cognition has no endpoint for,
+  // marking the account needsReauth on a durable key that cannot refresh.
+  const def = OAUTH_PROVIDERS[DEPRECATED_OAUTH_PROVIDER_ALIASES[provider] ?? provider];
   return def?.defaultRefreshPolicy ?? "lazy-only";
 }
 
@@ -422,16 +483,18 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
   // Validated here, not at the call site: an unvalidated origin from a legacy or crafted
   // credential must never travel with a bearer, and dropping it makes the transport fall back to
   // the canonical host rather than to whatever the previous account was using.
-  const copilotApiBaseUrl = provider === "github-copilot"
+  const accountApiBaseUrl = provider === "github-copilot"
     ? validateCopilotApiBaseUrl(cred.apiBaseUrl)
-    : undefined;
+    : provider === "devin" || provider === "devin-cli"
+      ? validateDevinApiBaseUrl(cred.apiBaseUrl)
+      : undefined;
   return {
     provider,
     accountId,
     generation: credentialGeneration(cred),
     accessToken: cred.access,
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
-    ...(copilotApiBaseUrl ? { apiBaseUrl: copilotApiBaseUrl } : {}),
+    ...(accountApiBaseUrl ? { apiBaseUrl: accountApiBaseUrl } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"
@@ -469,7 +532,9 @@ export function observeActiveOAuthAccessToken(
   if (account.credential.expires <= now) return { kind: "expired" };
   if (account.credential.expires <= now + REFRESH_SKEW_MS) return { kind: "near-expiry" };
 
-  const apiBaseUrl = validateCopilotApiBaseUrl(account.credential.apiBaseUrl);
+  const apiBaseUrl = provider === "github-copilot"
+    ? validateCopilotApiBaseUrl(account.credential.apiBaseUrl)
+    : undefined;
   return {
     kind: "available",
     snapshot: {
@@ -548,7 +613,13 @@ export async function getValidAccessTokenSnapshot(provider: string): Promise<OAu
 }
 
 /** Providers whose upstream-401 replay path may force a snapshot refresh. */
-const FORCE_REFRESH_PROVIDERS = new Set(["xai", "github-copilot", "kiro", "google-antigravity"]);
+const FORCE_REFRESH_PROVIDERS = new Set([
+  "xai",
+  "github-copilot",
+  "kiro",
+  "google-antigravity",
+  "orcarouter-oauth",
+]);
 
 export async function forceRefreshOAuthAccessSnapshot(
   rejected: OAuthAccessSnapshot,
@@ -1164,7 +1235,7 @@ export function buildModelsRequest(
     return { url: discoveryUrl(`${base}/v1/models?limit=1000`), headers };
   }
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-  return { url: discoveryUrl(`${effectiveProvider.baseUrl}/models`), headers };
+  return { url: discoveryUrl(providerModelsUrl(effectiveProvider.baseUrl)), headers };
 }
 
 /**
@@ -1199,6 +1270,7 @@ const OAUTH_RECONCILE_FIELDS: (keyof OcxProviderConfig)[] = [
   "modelReasoningEffortMap",
   "noTemperatureModels",
   "noTopPModels",
+  "noStopModels",
   "noPenaltyModels",
   "autoToolChoiceOnlyModels",
   "preserveReasoningContentModels",
@@ -1208,6 +1280,29 @@ const OAUTH_RECONCILE_FIELDS: (keyof OcxProviderConfig)[] = [
 // an explicit user opt-out (`[]`) on every startup. Registry seeds still reach
 // existing rows through enrichProviderFromRegistry, which is fill-only and
 // preserves explicit saved values.
+
+/**
+ * Output-budget fields an OAuth preset may refresh but must never erase.
+ *
+ * These stay on the reconcile list so a preset that does declare a budget still
+ * refreshes the saved row. What changes is the other branch: when the preset
+ * declares nothing, the operator's value survives instead of being deleted.
+ *
+ * Without that, the fields behaved as if they could not be configured at all.
+ * No OAuth preset seeds either one, so the delete branch was the only branch
+ * these two ever took, and a hand-edited `defaultMaxOutputTokens` was gone
+ * before the first turn of the next startup — leaving the adapter's own
+ * fallback as the only reachable output cap (#5190).
+ *
+ * Scoped to the output budget on purpose. The input side (`contextWindow`,
+ * `modelContextWindows`) describes what the account's models are, which the
+ * preset and live discovery do own; an output budget is a spend decision the
+ * operator makes.
+ */
+const OAUTH_PRESERVE_WHEN_PRESET_UNSET: ReadonlySet<keyof OcxProviderConfig> = new Set([
+  "defaultMaxOutputTokens",
+  "modelMaxOutputTokens",
+]);
 
 const GOOGLE_ANTIGRAVITY_PROVIDER = "google-antigravity";
 const GOOGLE_ANTIGRAVITY_LIVE_DISCOVERY_VERSION = 2 as const;
@@ -1248,7 +1343,7 @@ function applyOAuthPresetCatalog(
     if (JSON.stringify(provider[field]) === JSON.stringify(preset[field])) continue;
     if (preset[field] !== undefined) {
       provider[field] = cloneProviderField(preset[field]) as never;
-    } else {
+    } else if (!OAUTH_PRESERVE_WHEN_PRESET_UNSET.has(field)) {
       delete provider[field];
     }
   }
@@ -1442,10 +1537,11 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, provider);
   if (namespaceCollision) throw new Error(namespaceCollision);
   const existing = config.providers[provider];
+  const providerConfig = def.resolveProviderConfig?.(config) ?? def.providerConfig;
   // Clone operator state, including xAI wire choices and their migration version.
-  const next: OcxProviderConfig = structuredClone(existing ?? def.providerConfig);
+  const next: OcxProviderConfig = structuredClone(existing ?? providerConfig);
   for (const field of OAUTH_LOGIN_OWNED_PROVIDER_FIELDS) {
-    const value = def.providerConfig[field];
+    const value = providerConfig[field];
     if (value === undefined) delete next[field];
     else next[field] = structuredClone(value) as never;
   }
@@ -1454,7 +1550,7 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   if (next.googleMode === "cloud-code-assist") delete next.project;
   // Login used to rebuild the whole row from the preset, so catalog data refreshed
   // immediately. Keep that timing without overwriting unrelated operator-owned fields.
-  applyOAuthPresetCatalog(next, def.providerConfig);
+  applyOAuthPresetCatalog(next, providerConfig);
   // The original Command Code seed was an implementation-owned static catalog, not an
   // operator opt-out. Promote that exact legacy shape when OAuth login refreshes the row.
   if (provider === "command-code" && existing && isLegacyCommandCodeStaticCatalog(existing)) {
@@ -1532,8 +1628,8 @@ export async function runLogin(
   if (!def) throw new UnsupportedOAuthProviderError(provider);
   const loadLatestConfig = deps.loadConfig ?? loadConfig;
   const saveLatestConfig = deps.saveConfig ?? saveConfig;
-  if (provider !== "chatgpt") {
-    const preflightConfig = loadLatestConfig();
+  const preflightConfig = provider !== "chatgpt" ? loadLatestConfig() : undefined;
+  if (preflightConfig) {
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(
       preflightConfig.codexAccountNamespaces,
       provider,
@@ -1546,7 +1642,10 @@ export async function runLogin(
   const previousKiroAccounts = shouldRollbackKiroAccounts ? getAccountSet(provider) : undefined;
   const previousKiroActiveId = previousKiroAccounts?.activeAccountId;
   const previousKiroAccountIds = new Set(previousKiroAccounts?.accounts.map(account => account.id) ?? []);
-  const rawCred = await def.login(ctrl, opts);
+  const loginProviderConfig = preflightConfig
+    ? (def.resolveProviderConfig?.(preflightConfig) ?? preflightConfig.providers[provider] ?? def.providerConfig)
+    : def.providerConfig;
+  const rawCred = await def.login(ctrl, opts, loginProviderConfig);
   const cred: OAuthCredentials = rawCred.source ? rawCred : { ...rawCred, source: "oauth" };
   const settleKiroTransaction = deps.settleKiroLoginTransaction ?? settleKiroLoginTransaction;
   try {
@@ -1642,124 +1741,66 @@ export async function runLogin(
  * localhost), the GUI can POST the final redirect URL or authorization code via
  * submitManualLoginCode(), which feeds OAuthController.onManualCodeInput.
  */
-const loginState = new Map<string, { error?: string; done: boolean }>();
-const loginAbort = new Map<string, AbortController>();
-const kiroLoginSettling = new Set<string>();
 
-/** Pending paste for a login in progress: either a waiter or a stashed early submission. */
-interface ManualCodeSlot {
-  pendingInput?: string;
-  resolve?: (value: string) => void;
-  /** Registered by the callback flow so submits can validate state synchronously. */
-  expectedState?: string;
-}
-const loginManual = new Map<string, ManualCodeSlot>();
-const OAUTH_PENDING_CODE_MAX_BYTES = 4 * 1024;
-let lastOAuthFlowReconciledGeneration = 0;
-
-export function reconcileOAuthFlowState(context: GenerationContext): number {
-  if (context.generation <= lastOAuthFlowReconciledGeneration) return 0;
-  let removed = 0;
-  for (const [provider, state] of loginState) {
-    if (context.providerNames.has(provider) || !state.done || loginAbort.has(provider)) continue;
-    if (loginState.delete(provider)) removed += 1;
-    if (loginManual.delete(provider)) removed += 1;
-    if (loginAbort.delete(provider)) removed += 1;
-  }
-  lastOAuthFlowReconciledGeneration = context.generation;
-  return removed;
-}
-
-function clearManualCodeSlot(provider: string): void {
-  loginManual.delete(provider);
-}
-
-function ensureManualCodeSlot(provider: string): ManualCodeSlot {
-  let slot = loginManual.get(provider);
-  if (!slot) {
-    slot = {};
-    loginManual.set(provider, slot);
-  }
-  return slot;
-}
-
-/** Wait for a GUI/CLI paste of the OAuth redirect URL or code (or return a stashed early submit). */
-function waitForManualLoginCode(provider: string, signal: AbortSignal, expectedState?: string): Promise<string> {
-  if (signal.aborted) {
-    return Promise.reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
-  }
-  const slot = ensureManualCodeSlot(provider);
-  if (expectedState !== undefined) slot.expectedState = expectedState;
-  if (slot.pendingInput !== undefined) {
-    const value = slot.pendingInput;
-    slot.pendingInput = undefined;
-    return Promise.resolve(value);
-  }
-  return new Promise<string>((resolve, reject) => {
-    const onAbort = () => {
-      if (slot.resolve === resolve) slot.resolve = undefined;
-      reject(new Error(`OAuth callback cancelled: ${signal.reason}`));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    slot.resolve = (value: string) => {
-      signal.removeEventListener("abort", onAbort);
-      if (slot.resolve === resolve) slot.resolve = undefined;
-      resolve(value);
-    };
-  });
+export interface OAuthAccountSummary {
+  id: string;
+  alias?: string;
+  email?: string;
+  active: boolean;
+  needsReauth?: boolean;
+  expiresAt?: number;
+  /**
+   * Subscription tier, mirroring the field the OpenAI/Codex provider reports, so a consumer
+   * weighting a multi-account pool by seat size needs no per-provider branching (#3777).
+   *
+   * Always present and explicitly `null` when the tier is unknown. The distinction matters:
+   * an ABSENT key means the proxy is too old to report a tier at all, while `null` means this
+   * version looked and upstream did not say. Omitting it would make those indistinguishable and
+   * invite a consumer to assume a tier.
+   *
+   * Every OAuth provider reports `null` today. Anthropic's `/api/oauth/usage` returns quota
+   * buckets only — `five_hour`, `seven_day`, the model-scoped weekly windows and `limits[]` —
+   * and carries no subscription/tier field, and its token response carries none either. See
+   * `fetchAnthropicUsageQuota` in `src/providers/quota.ts`.
+   */
+  plan: string | null;
 }
 
 /**
- * Feed a pasted redirect URL or authorization code into an in-progress GUI login.
- * Returns ok:false when no login is waiting (or input is empty). Invalid pastes are accepted
- * here and re-prompted by the OAuth callback loop if they cannot be parsed / fail state checks.
+ * Token-safe login state for one provider.
+ *
+ * `maskEmails` is an explicit boolean rather than a config read (#3859). This module must not
+ * acquire a dependency on config I/O to answer a redaction question: the caller already holds
+ * the config at its request boundary and resolves the policy there with `emailMaskingEnabled`.
+ * The default masks, so every existing caller keeps today's behaviour.
  */
-export function submitManualLoginCode(provider: string, input: string): { ok: true } | { ok: false; error: string } {
-  const trimmed = input.trim();
-  if (!trimmed) return { ok: false, error: "empty code" };
-  if (retainedUtf8Bytes(trimmed) > OAUTH_PENDING_CODE_MAX_BYTES) return { ok: false, error: "code too large" };
-  const st = loginState.get(provider);
-  if (!st || st.done) return { ok: false, error: "no login in progress" };
-  const slot = ensureManualCodeSlot(provider);
-  // Synchronous validation (validated request/ack): reject un-parseable input and
-  // authorization responses (url/query kind) whose state is missing or mismatched
-  // once the flow has registered its expected state. Raw codes stay in-session-PKCE
-  // protected. Early posts (flow not yet waiting, no expectedState) are stashed and
-  // re-validated by the callback loop.
-  const parsed = parseCallbackInput(trimmed);
-  // Command Code's manual fallback accepts a pasted JSON callback payload
-  // (`{ apiKey, state, ... }`) which has no `code` param. Let it through the
-  // shared gate so the provider-specific parser can validate it.
-  const isCommandCodeJson = provider === "command-code" && trimmed.startsWith("{") && !parsed.code;
-  if (!parsed.code && !isCommandCodeJson) return { ok: false, error: "no authorization code found in input" };
-  if (parsed.kind !== "raw" && slot.expectedState !== undefined) {
-    if (parsed.state === undefined) return { ok: false, error: "redirect URL is missing the state parameter" };
-    if (parsed.state !== slot.expectedState) return { ok: false, error: "state mismatch — paste the redirect URL from THIS login attempt" };
-  }
-  if (slot.resolve) {
-    const resolve = slot.resolve;
-    slot.resolve = undefined;
-    resolve(trimmed);
-  } else {
-    // Race: GUI may POST before the flow reaches onManualCodeInput — stash for the waiter.
-    slot.pendingInput = trimmed;
-  }
-  return { ok: true };
-}
-
-export interface OAuthAccountSummary { id: string; alias?: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
-
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
+export function getLoginStatus(provider: string, maskEmails = true): {
+  loggedIn: boolean;
+  email?: string;
+  source?: OAuthCredentials["source"];
+  error?: string;
+  done: boolean;
+  url?: string;
+  instructions?: string;
+  deviceCode?: string;
+  activeAccountId?: string;
+  accounts?: OAuthAccountSummary[];
+} {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
   const set = getAccountSet(provider);
   const accounts: OAuthAccountSummary[] | undefined = set?.accounts.map(a => ({
     id: a.id,
     ...(a.alias ? { alias: a.alias } : {}),
-    email: maskEmail(a.credential.email) ?? undefined,
+    email: projectEmail(a.credential.email, maskEmails) ?? undefined,
     active: a.id === set.activeAccountId,
     ...(a.needsReauth ? { needsReauth: true } : {}),
     expiresAt: a.credential.expires,
+    // Explicitly null rather than omitted — see OAuthAccountSummary.plan. No OAuth provider
+    // exposes a subscription tier today, so there is nothing truthful to put here; deriving one
+    // from quota percentages is not possible, because they are normalized per account and a
+    // half-consumed small seat is indistinguishable from a half-consumed large one.
+    plan: null,
   }));
 
   // A stored credential counts as "logged in" when it exists and is not marked for
@@ -1771,34 +1812,41 @@ export function getLoginStatus(provider: string): { loggedIn: boolean; email?: s
     .find(a => a.id === set.activeAccountId)?.needsReauth === true;
   return {
     loggedIn: !!cred && !activeNeedsReauth,
-    email: maskEmail(cred?.email) ?? undefined,
+    email: projectEmail(cred?.email, maskEmails) ?? undefined,
     source: cred?.source,
     error: st?.error,
     done: st?.done ?? false,
+    ...(st?.url !== undefined ? { url: st.url } : {}),
+    ...(st?.instructions !== undefined ? { instructions: st.instructions } : {}),
+    ...(st?.deviceCode !== undefined ? { deviceCode: st.deviceCode } : {}),
     ...(set ? { activeAccountId: set.activeAccountId, accounts } : {}),
   };
 }
 
-/** Token-safe per-provider login state for the CLI `ocx status` logins section (no tokens, masked email). */
-export function oauthLoginSummary(): Array<{ provider: string; loggedIn: boolean; email?: string }> {
+/**
+ * Token-safe per-provider login state for the CLI `ocx status` logins section. Never tokens; the
+ * email follows the operator's `privacy.maskEmails` policy, masked by default (#3859).
+ */
+export function oauthLoginSummary(maskEmails = true): Array<{ provider: string; loggedIn: boolean; email?: string }> {
   return listOAuthProviders().map(provider => {
-    const status = getLoginStatus(provider);
+    const status = getLoginStatus(provider, maskEmails);
     return { provider, loggedIn: status.loggedIn, ...(status.email ? { email: status.email } : {}) };
   });
 }
 
 export function clearLoginState(provider: string): void {
-  loginAbort.get(provider)?.abort("cleared");
+  loginAbort.get(provider)?.controller.abort("cleared");
   loginAbort.delete(provider);
   clearManualCodeSlot(provider);
   loginState.delete(provider);
 }
 
-export function cancelLoginFlow(provider: string): boolean {
-  const ctrl = loginAbort.get(provider);
+export function cancelLoginFlow(provider: string, flowId?: string): boolean {
+  const active = loginAbort.get(provider);
   const existing = loginState.get(provider);
-  if (!ctrl && (!existing || existing.done)) return false;
-  ctrl?.abort("cancelled");
+  if (flowId !== undefined && active?.flowId !== flowId) return false;
+  if (!active && (!existing || existing.done)) return false;
+  active?.controller.abort("cancelled");
   loginAbort.delete(provider);
   clearManualCodeSlot(provider);
   loginState.set(provider, { done: true, error: "Login cancelled" });
@@ -1819,14 +1867,25 @@ export async function startLoginFlow(
   clearManualCodeSlot(provider);
   loginState.set(provider, { done: false });
   const abort = new AbortController();
-  loginAbort.set(provider, abort);
+  loginAbort.set(provider, { controller: abort, flowId: lifecycle?.flowId });
   if (provider === "kiro") kiroLoginSettling.add(provider);
   return new Promise((resolve, reject) => {
     let urlResolved = false;
     const ctrl: OAuthController = {
       onAuth: ({ url, instructions, deviceCode }) => {
-        urlResolved = true;
-        resolve({ url, instructions, deviceCode });
+        // Device grants may later transition to a provider-specific manual fallback. Keep the
+        // latest hint in token-safe login state so polling GUIs can replace the original device
+        // instructions instead of showing a stale callback field forever.
+        loginState.set(provider, {
+          done: false,
+          url,
+          ...(instructions !== undefined ? { instructions } : {}),
+          ...(deviceCode !== undefined ? { deviceCode } : {}),
+        });
+        if (!urlResolved) {
+          urlResolved = true;
+          resolve({ url, instructions, deviceCode });
+        }
       },
       onProgress: () => {},
       // GUI fallback when the browser cannot hit the loopback callback server.
@@ -1834,7 +1893,7 @@ export async function startLoginFlow(
       signal: abort.signal,
     };
     const abandonIfNotOwner = (error?: unknown): boolean => {
-      if (loginAbort.get(provider) === abort) return false;
+      if (loginAbort.get(provider)?.controller === abort) return false;
       if (!urlResolved) reject(error ?? new Error("OAuth login was superseded"));
       return true;
     };
@@ -1872,7 +1931,7 @@ export async function startLoginFlow(
     // Background: runLogin persists the credential + provider entry to disk. The lifecycle hook
     // lets a long-lived server config adopt that settled state before clients observe done=true.
     const assertCurrentOwner = (): void => {
-      if (loginAbort.get(provider) !== abort) throw new OAuthLoginSupersededError();
+      if (loginAbort.get(provider)?.controller !== abort) throw new OAuthLoginSupersededError();
     };
     void runLogin(provider, ctrl, opts, { assertCurrentOwner }).then(
       () => settle(),

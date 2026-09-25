@@ -121,7 +121,7 @@ export OPENCODEX_OPENCODE_API_KEY=<your key>
 
 루프백 바인드(`127.0.0.1`, 기본값)는 아무 인증도 하지 않으므로 `{env:…}` 참조는
 아무 효과가 없고, 변수를 비워 둬도 됩니다. 이것이 중요해지는 것은 `hostname`이
-루프백을 벗어날 때뿐입니다. [원격 접속](/reference/configuration/#remote-access)을
+루프백을 벗어날 때뿐입니다. [원격 접속](/ko/reference/configuration/server/#remote-access)을
 보세요. 이 인증 키는 opencodex 전용이며, [공급자](/guides/providers/) 아래에
 설정한 upstream provider 키와는 무관합니다.
 
@@ -152,3 +152,5 @@ opencode가 설치되어 있고 `PATH`에 있어야 합니다:
 ```bash
 npm install -g opencode-ai
 ```
+
+런처는 환경 변수 또는 실행 중인 프록시 홈의 관리자 토큰으로 모델 목록을 읽습니다. loopback 관리 리스너에 직접 연결하며 리디렉션은 거부합니다. 외부 주소에만 바인딩한 허브에서는 `hub.managementIngress`가 필요합니다. 관리자 토큰은 OpenCode 자식 프로세스에 전달하지 않습니다. 추론 요청에는 별도 데이터 키를 사용하며, 관리자 토큰이 없으면 데이터 키로 재시도하지 않고 오류를 알립니다.

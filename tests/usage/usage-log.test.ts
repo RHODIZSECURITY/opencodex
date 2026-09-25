@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { STORE_BUDGET_MS } from "../helpers/test-budget";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
   currentUsageLogRevision,
+  encodePersistedRequestedModel,
   normalizeUsageEntryForTest,
+  normalizeClaudeCompatibilityUsageLog,
+  normalizePersistedUsageRow,
   readRecentUsageEntries,
   readUsageEntries,
   readUsageEntriesForManagement,
@@ -39,6 +42,100 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("Claude shadow metadata round trips as closed codes and a regenerated reason", () => {
+    const evidence = normalizeClaudeCompatibilityUsageLog({
+      decision: "shadow", featureCodes: ["unknown_beta", "documents", "documents", "private-header", "__proto__"],
+      reason: "private-reason", extra: "private-payload",
+    });
+    const expected = { decision: "shadow", featureCodes: ["documents", "unknown_beta"], reason: "shadow: would reject: documents" };
+    expect(evidence).toEqual(expected);
+    appendUsageEntry({ requestId: "claude-shadow", timestamp: 1, provider: "mock", model: "test-model",
+      status: 200, durationMs: 1, usageStatus: "reported", usage: { inputTokens: 3, outputTokens: 2 },
+      claudeCompatibility: evidence });
+    // Later mutation of the caller's evidence cannot rewrite the serialized record.
+    evidence!.featureCodes.length = 0;
+    resetUsageReadCacheForTests();
+    expect(readUsageEntries()[0]?.claudeCompatibility).toEqual(expected);
+    expect(readRecentUsageEntries(1)[0]?.claudeCompatibility).toEqual(expected);
+    expect(readUsageEntries()[0]?.usage).toMatchObject({ inputTokens: 3, outputTokens: 2 });
+    expect(readFileSync(usageLogPath(), "utf8")).not.toContain("private-");
+  });
+
+  test("legacy and malformed persisted Claude metadata does not poison readers", () => {
+    const base = { requestId: "claude-legacy", timestamp: 1, provider: "mock", model: "test-model",
+      status: 200, durationMs: 1, usageStatus: "unreported" };
+    const invalid: unknown[] = [undefined, null, [], "private-value", 1,
+      { decision: "reject", featureCodes: ["documents"] },
+      { decision: "shadow", featureCodes: "documents" },
+      { decision: "shadow", featureCodes: [null, {}, "constructor", "private-header"] },
+      { decision: "shadow", featureCodes: ["cache_control"], reason: "private-reason" },
+    ];
+    for (const claudeCompatibility of invalid) {
+      const row = normalizePersistedUsageRow({ ...base, claudeCompatibility });
+      expect(row).toBeDefined();
+      expect(row?.claudeCompatibility).toBeUndefined();
+    }
+    writeFileSync(usageLogPath(), invalid.map(claudeCompatibility => JSON.stringify({ ...base, claudeCompatibility })).join("\n") + "\n");
+    resetUsageReadCacheForTests();
+    expect(readUsageEntries()).toHaveLength(invalid.length);
+    expect(readUsageEntries().every(row => row.claudeCompatibility === undefined)).toBe(true);
+  });
+
+  test("round trips only recognized recovery-withheld reasons (#5044)", () => {
+    // The attribution is a wire value a maintainer reads, so it is a bounded vocabulary: an
+    // unknown reason is dropped rather than failing the row, which is how a log written by a
+    // newer build stays readable by an older one — the same rule `recoveryKinds` follows.
+    const attempt = {
+      ordinal: 1, provider: "google", model: "gemini-test", adapter: "google", status: 429,
+      durationMs: 1, sendCount: 1, recoveryKinds: [], usageStatus: "reported" as const,
+    };
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "withheld", timestamp: Date.now(), provider: "google", model: "gemini-test",
+      status: 429, durationMs: 1, usageStatus: "reported",
+      attempts: [
+        { ...attempt, recoveryWithheld: ["retry-send-budget"] },
+        { ...attempt, ordinal: 2, recoveryWithheld: ["rotation-send-budget", "rotation-send-budget"] },
+        { ...attempt, ordinal: 3, recoveryWithheld: ["secret-canary"] },
+        { ...attempt, ordinal: 4 },
+      ],
+    });
+    expect(normalized?.attempts?.map(row => row.recoveryWithheld)).toEqual([
+      ["retry-send-budget"],
+      // Deduplicated: one rotation refused twice is one fact about the attempt.
+      ["rotation-send-budget"],
+      // Unknown value dropped, and the key omitted entirely rather than left as an empty array,
+      // so an attempt that withheld nothing keeps the exact shape it had before this field.
+      undefined,
+      undefined,
+    ]);
+
+    // The count that means "requests this proxy actually made" does not move for a refusal.
+    expect(normalized?.attempts?.every(row => row.sendCount === 1)).toBe(true);
+  });
+
+
+  test("round trips only recognized per-attempt xAI credential sources", () => {
+    const attempt = {
+      ordinal: 1, provider: "xai", model: "grok-test", adapter: "openai-chat", status: 200,
+      durationMs: 1, sendCount: 1, recoveryKinds: [], usageStatus: "reported" as const,
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 }, totalTokens: 5,
+    };
+    appendUsageEntry({
+      requestId: "credential-source", timestamp: Date.now(), provider: "combo", model: "combo/test",
+      status: 200, durationMs: 1, usageStatus: "reported", attempts: [
+        { ...attempt, credentialSource: "grok-oauth" },
+        { ...attempt, ordinal: 2, credentialSource: "xai-api-key" },
+        { ...attempt, ordinal: 3, credentialSource: "secret-canary" as never },
+        { ...attempt, ordinal: 4, provider: "custom", credentialSource: "grok-oauth" },
+        { ...attempt, ordinal: 5 },
+      ],
+    });
+    resetUsageReadCacheForTests();
+    const sources = readUsageEntries()[0]?.attempts?.map(row => row.credentialSource);
+    expect(sources).toEqual(["grok-oauth", "xai-api-key", undefined, undefined, undefined]);
+    expect(readFileSync(usageLogPath(), "utf8")).not.toContain("secret-canary");
+  });
+
   test("preserves explicitly empty attempts through normalization", () => {
     const normalized = normalizeUsageEntryForTest({
       requestId: "ocx-empty-attempts",
@@ -52,6 +149,47 @@ describe("usage log", () => {
     });
 
     expect(normalized.attempts).toEqual([]);
+  });
+
+  test("bounds requested model selectors before appending usage rows", () => {
+    const requestedModel = `policy/${"x".repeat(1024 * 1024)}`;
+    appendUsageEntry({
+      requestId: "ocx-bounded-selector",
+      timestamp: 1,
+      provider: "unknown",
+      model: "unknown",
+      requestedModel,
+      status: 404,
+      durationMs: 1,
+      usageStatus: "unreported",
+    });
+
+    const raw = readFileSync(usageLogPath(), "utf8");
+    const persisted = JSON.parse(raw) as PersistedUsageEntry;
+    expect(persisted.requestedModel).toBe(encodePersistedRequestedModel(requestedModel));
+    expect(persisted.requestedModel!.length).toBeLessThanOrEqual(130);
+    expect(raw.length).toBeLessThan(1024);
+  });
+
+  test("keeps over-long selectors that share the bounded prefix distinguishable", () => {
+    // Selectors are not length-bound at admission, so two valid selectors can
+    // agree past the persistence bound; they must not collapse into one identity.
+    const sharedPrefix = `provider/${"m".repeat(200)}`;
+    const selectorA = `${sharedPrefix}-alpha`;
+    const selectorB = `${sharedPrefix}-omega`;
+    expect(selectorA.slice(0, 130)).toBe(selectorB.slice(0, 130));
+
+    const encodedA = encodePersistedRequestedModel(selectorA);
+    const encodedB = encodePersistedRequestedModel(selectorB);
+    expect(encodedA).not.toBe(encodedB);
+    expect(encodedA.length).toBeLessThanOrEqual(130);
+    expect(encodedB.length).toBeLessThanOrEqual(130);
+
+    // Short selectors persist verbatim, and re-normalizing a persisted row is a
+    // no-op — normalizeUsageEntry also runs on every read.
+    const short = "provider/model";
+    expect(encodePersistedRequestedModel(short)).toBe(short);
+    expect(encodePersistedRequestedModel(encodedA)).toBe(encodedA);
   });
 
   test("preserves only valid non-PII Codex account log labels", () => {
@@ -516,6 +654,14 @@ describe("usage log", () => {
     expect(valid.attempts?.[0]?.reasoningWireValue).toBe(false);
   });
 
+  test("local-answer provenance survives attempt normalization for capacity exclusion", () => {
+    const value = normalizeUsageEntryForTest({ requestId: "local-capacity", timestamp: Date.now(), provider: "openai", model: "m", status: 200, durationMs: 1, usageStatus: "reported", attempts: [{
+      ordinal: 1, provider: "openai", model: "m", adapter: "openai-responses", status: 200, durationMs: 1, sendCount: 1,
+      recoveryKinds: [], usageStatus: "reported", locallyAnswered: true, accountLogLabel: "pabcdef", usage: { inputTokens: 1, outputTokens: 1 },
+    }] });
+    expect(value.attempts?.[0]?.locallyAnswered).toBe(true);
+  });
+
   test("drops only malformed persisted attempts while preserving valid siblings", () => {
     const valid = (ordinal: number) => ({
       ordinal,
@@ -941,4 +1087,104 @@ describe("usage log", () => {
 
     expect(readRecentUsageEntries(1)).toEqual([]);
   }, STORE_BUDGET_MS);
+
+  test("appendUsageEntry avoids redundant mkdirSync and chmodSync on consecutive calls", async () => {
+    const nodeFs = await import("node:fs");
+    const mkdirSpy = spyOn(nodeFs, "mkdirSync");
+    const chmodSpy = spyOn(nodeFs, "chmodSync");
+    // Pinned so the count measures the cache and not the runner's scheduling: five
+    // appends that happen to straddle the one-second boundary would legitimately
+    // harden twice, and a saturated CI runner can take that long.
+    const clock = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+    try {
+      for (let i = 0; i < 5; i++) {
+        appendUsageEntry({
+          requestId: `ocx-perf-${i}`,
+          timestamp: Date.now(),
+          provider: "openai",
+          model: "gpt-4o",
+          status: 200,
+          durationMs: 10,
+          usageStatus: "unreported",
+        });
+      }
+
+      expect(mkdirSpy.mock.calls.length).toBe(1);
+      // One for the directory, one for the file. Not five.
+      expect(chmodSpy.mock.calls.length).toBe(2);
+    } finally {
+      clock.mockRestore();
+      mkdirSpy.mockRestore();
+      chmodSpy.mockRestore();
+    }
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "appendUsageEntry re-narrows externally widened permissions after the bounded cache window",
+    () => {
+      const now = Date.now();
+      const clock = spyOn(Date, "now").mockReturnValue(now);
+      try {
+        appendUsageEntry({
+          requestId: "ocx-permission-initial",
+          timestamp: now,
+          provider: "openai",
+          model: "gpt-4o",
+          status: 200,
+          durationMs: 10,
+          usageStatus: "unreported",
+        });
+        chmodSync(testDir, 0o755);
+        chmodSync(usageLogPath(), 0o644);
+
+        clock.mockReturnValue(now + 1_000);
+        appendUsageEntry({
+          requestId: "ocx-permission-recheck",
+          timestamp: now + 1_000,
+          provider: "openai",
+          model: "gpt-4o",
+          status: 200,
+          durationMs: 11,
+          usageStatus: "unreported",
+        });
+
+        expect(statSync(testDir).mode & 0o777).toBe(0o700);
+        expect(statSync(usageLogPath()).mode & 0o777).toBe(0o600);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  test("appendUsageEntry recovers cleanly on ENOENT if usage directory is deleted between calls", () => {
+    const entry1: PersistedUsageEntry = {
+      requestId: "ocx-enoent-1",
+      timestamp: Date.now(),
+      provider: "openai",
+      model: "gpt-4o",
+      status: 200,
+      durationMs: 10,
+      usageStatus: "unreported",
+    };
+    appendUsageEntry(entry1);
+
+    // Simulate directory deletion by log rotation / cleanup while process is running
+    rmSync(testDir, { recursive: true, force: true });
+    expect(existsSync(testDir)).toBe(false);
+
+    const entry2: PersistedUsageEntry = {
+      requestId: "ocx-enoent-2",
+      timestamp: Date.now(),
+      provider: "openai",
+      model: "gpt-4o",
+      status: 200,
+      durationMs: 12,
+      usageStatus: "unreported",
+    };
+    expect(() => appendUsageEntry(entry2)).not.toThrow();
+    const readBack = readRecentUsageEntries(10);
+    expect(readBack.length).toBe(1);
+    expect(readBack[0].requestId).toBe("ocx-enoent-2");
+  });
 });

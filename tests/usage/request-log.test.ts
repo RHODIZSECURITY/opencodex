@@ -22,6 +22,9 @@ import {
   recordFirstOutput,
   requestLogEntryFromPersistedUsage,
   sealRequestAttemptIdentity,
+  recordAttemptCredentialSource,
+  inspectResponseLogSsePayload,
+  httpStatusForRequestLogTerminal,
   type RequestLogContext,
 } from "../../src/server/request-log";
 import { handleResponses } from "../../src/server/responses";
@@ -29,6 +32,7 @@ import { bridgeToResponsesSSE } from "../../src/bridge";
 import type { AdapterEvent, OcxConfig, OcxUsage } from "../../src/types";
 import {
   appendUsageEntry,
+  normalizeUsageEntryForTest,
   readUsageEntries,
   resetUsageReadCacheForTests,
   type PersistedUsageEntry,
@@ -37,25 +41,172 @@ import { mkdtempSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
+import { log } from "../helpers/request-log-entry";
+import { decodeRequestLogCursor, selectRequestLogPoll } from "../../src/server/request-log-cursor";
 
 async function* replayAdapterEvents(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
   for (const event of events) yield event;
 }
 
-function log(overrides: Partial<RequestLogEntry>): RequestLogEntry {
-  return {
-    requestId: "ocx-test",
-    timestamp: 1,
-    model: "gpt-test",
-    provider: "openai",
-    status: 200,
-    durationMs: 10,
-    usageStatus: "unreported",
-    ...overrides,
-  };
-}
-
 describe("request log metadata", () => {
+  test("Claude evidence is normalized before direct ring ingress and cannot be mutated afterwards", () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "ocx-claude-log-"));
+    process.env.OPENCODEX_HOME = home;
+    clearRequestLogsForTests();
+    try {
+      const raw = JSON.parse('{"decision":"shadow","featureCodes":["documents","unknown_beta","private-header"],"reason":"private-reason"}');
+      addRequestLog(log({ claudeCompatibility: raw }));
+      raw.featureCodes.length = 0;
+      raw.reason = "changed";
+      const expected = { decision: "shadow", featureCodes: ["documents", "unknown_beta"], reason: "shadow: would reject: documents" };
+      expect(getRequestLogEntries()[0]?.claudeCompatibility).toEqual(expected);
+      expect(readUsageEntries()[0]?.claudeCompatibility).toEqual(expected);
+      const finalized: RequestLogEntry[] = [];
+      addFinalRequestLog("claude-final", 1, { model: "test", provider: "mock",
+        claudeCompatibility: JSON.parse('{"decision":"shadow","featureCodes":["documents"],"reason":"private-final"}') },
+      200, { closeReason: "non_stream" }, row => finalized.push(row));
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0].claudeCompatibility).toEqual({
+        decision: "shadow", featureCodes: ["documents"], reason: "shadow: would reject: documents",
+      });
+    } finally {
+      clearRequestLogsForTests();
+      resetUsageReadCacheForTests();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
+
+  test("custom hydration normalizes Claude evidence and ignores malformed optional rows", () => {
+    clearRequestLogsForTests();
+    const raw: PersistedUsageEntry[] = [
+      { ...log({ requestId: "legacy" }) },
+      { ...log({ requestId: "shadow" }), claudeCompatibility: JSON.parse('{"decision":"shadow","featureCodes":["documents","private-header"],"reason":"private-reason"}') },
+      { ...log({ requestId: "malformed" }), claudeCompatibility: JSON.parse('{"decision":"shadow","featureCodes":null,"reason":"private-reason"}') },
+    ];
+    try {
+      expect(hydrateRequestLogsFromDisk(() => raw)).toBe(3);
+      expect(getRequestLogEntries().map(row => row.claudeCompatibility)).toEqual([
+        undefined, { decision: "shadow", featureCodes: ["documents"], reason: "shadow: would reject: documents" }, undefined,
+      ]);
+      raw[1].claudeCompatibility!.featureCodes.length = 0;
+      expect(getRequestLogEntries()[1]?.claudeCompatibility?.featureCodes).toEqual(["documents"]);
+      expect(hydrateRequestLogsFromDisk(() => raw)).toBe(0);
+      expect(JSON.stringify(getRequestLogEntries())).not.toContain("private-");
+    } finally { clearRequestLogsForTests(); }
+  });
+  test("incomplete quota evidence preserves an explicit HTTP 402 message", () => {
+    const log: RequestLogContext = { model: "gpt-test", provider: "openai" };
+    inspectResponseLogSsePayload(log, JSON.stringify({
+      type: "response.incomplete",
+      response: { incomplete_details: { message: "402" } },
+    }));
+    expect(log.terminalHttpStatus).toBe(402);
+    expect(httpStatusForRequestLogTerminal("incomplete", log)).toBe(402);
+  });
+
+  test("normal structured incomplete reason wins over quota-like display text", () => {
+    const log: RequestLogContext = { model: "gpt-test", provider: "openai" };
+    inspectResponseLogSsePayload(log, JSON.stringify({
+      type: "response.incomplete",
+      response: { incomplete_details: { reason: "max_output_tokens", message: "Token usage limit reached" } },
+    }));
+    expect(log.terminalHttpStatus).toBeUndefined();
+    expect(log.terminalIncompleteReason).toBe("max_output_tokens");
+  });
+
+  for (const error of [
+    { type: "authentication_error", message: "Usage limit lookup requires renewed authentication" },
+    { code: "invalid_api_key", message: "Usage limit unavailable for this credential" },
+  ]) {
+    test(`structured auth failure wins over quota wording: ${JSON.stringify(error)}`, () => {
+      const failed: RequestLogContext = { model: "gpt-test", provider: "openai" };
+      inspectResponseLogSsePayload(failed, JSON.stringify({ type: "response.failed", response: { error } }));
+      expect(failed.terminalHttpStatus).toBe(401);
+      const incomplete: RequestLogContext = { model: "gpt-test", provider: "openai" };
+      inspectResponseLogSsePayload(incomplete, JSON.stringify({ type: "response.incomplete", response: { error } }));
+      expect(incomplete.terminalHttpStatus).toBeUndefined();
+    });
+  }
+
+  test("upstream credential attribution requires the resolved canonical xAI transport", () => {
+    const attempt = beginRequestAttempt(1, "xai", "grok-test", "openai-chat");
+    const oauth = { adapter: "openai-chat", authMode: "oauth" as const, baseUrl: "https://cli-chat-proxy.grok.com/v1" };
+    recordAttemptCredentialSource(attempt, "xai", oauth);
+    expect(attempt.credentialSource).toBe("grok-oauth");
+    for (const baseUrl of ["https://api.x.ai/v1", "https://proxy.example/v1", "http://cli-chat-proxy.grok.com/v1",
+      "https://cli-chat-proxy.grok.com:8443/v1", Object.assign(new URL(oauth.baseUrl), { username: "test" }).href,
+      "https://cli-chat-proxy.grok.com/v1?credential=canary", "https://cli-chat-proxy.grok.com/v2", "invalid"]) {
+      recordAttemptCredentialSource(attempt, "xai", { ...oauth, baseUrl });
+      expect(attempt.credentialSource).toBeUndefined();
+    }
+    recordAttemptCredentialSource(attempt, "xai", oauth);
+    recordAttemptCredentialSource(attempt, "custom", oauth);
+    expect(attempt.credentialSource).toBeUndefined();
+    recordAttemptCredentialSource(attempt, "xai", { ...oauth, authMode: "key", baseUrl: "https://api.x.ai/v1" });
+    expect(attempt.credentialSource).toBe("xai-api-key");
+    recordAttemptCredentialSource(attempt, "xai", { ...oauth, authMode: "key" });
+    expect(attempt.credentialSource).toBeUndefined();
+  });
+
+  test("seal same identity preserves credentialSource; provider or adapter change clears it", () => {
+    const attempt = beginRequestAttempt(1, "xai", "grok-test", "openai-chat");
+    recordAttemptCredentialSource(attempt, "xai", {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://api.x.ai/v1",
+    });
+    expect(attempt.credentialSource).toBe("xai-api-key");
+    sealRequestAttemptIdentity(attempt, "xai", "openai-chat");
+    expect(attempt.credentialSource).toBe("xai-api-key");
+    expect(attempt.provider).toBe("xai");
+    expect(attempt.adapter).toBe("openai-chat");
+
+    sealRequestAttemptIdentity(attempt, "custom", "openai-chat");
+    expect(attempt.credentialSource).toBeUndefined();
+    expect(attempt.provider).toBe("custom");
+
+    recordAttemptCredentialSource(attempt, "xai", {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://api.x.ai/v1",
+    });
+    attempt.provider = "xai";
+    expect(attempt.credentialSource).toBe("xai-api-key");
+    sealRequestAttemptIdentity(attempt, "xai", "openai-responses");
+    expect(attempt.credentialSource).toBeUndefined();
+    expect(attempt.adapter).toBe("openai-responses");
+  });
+
+  test("recordAttemptCredentialSource fourth adapterName rejects unsupported even when config adapter is openai-chat", () => {
+    const attempt = beginRequestAttempt(1, "xai", "grok-test", "openai-chat");
+    recordAttemptCredentialSource(attempt, "xai", {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://api.x.ai/v1",
+    }, "anthropic");
+    expect(attempt.credentialSource).toBeUndefined();
+  });
+
+  test("combo logging keeps credential provenance on physical attempts only", () => {
+    const a = beginRequestAttempt(1, "xai", "grok-test", "openai-chat");
+    const b = beginRequestAttempt(2, "openai", "gpt-test", "openai-responses");
+    recordAttemptCredentialSource(a, "xai", {
+      adapter: "openai-chat", authMode: "oauth", baseUrl: "https://cli-chat-proxy.grok.com/v1",
+    });
+    noteAttemptSend(a, undefined);
+    finishRequestAttempt(a, 503, 1, { inputTokens: 4, outputTokens: 1 });
+    noteAttemptSend(b, undefined);
+    const entries: RequestLogEntry[] = [];
+    addFinalRequestLog("mixed-combo", Date.now(), {
+      provider: "openai", model: "gpt-test", requestedModel: "combo/test", comboId: "test",
+      providerAdapter: "openai-responses", attempts: [a, b], activeAttempt: b,
+      usage: { inputTokens: 10, outputTokens: 2 },
+    }, 200, undefined, entry => entries.push(entry));
+    expect(entries[0]?.totalTokens).toBe(17);
+    expect(entries[0]?.attempts?.[0]?.credentialSource).toBe("grok-oauth");
+    expect(entries[0]?.attempts?.[0]?.totalTokens).toBe(5);
+    expect(entries[0]?.attempts?.[1]?.credentialSource).toBeUndefined();
+    expect(entries[0]).not.toHaveProperty("credentialSource");
+  });
+
   test("creates one ordinary attempt after the final adapter is resolved", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => Response.json({
@@ -78,6 +229,9 @@ describe("request log metadata", () => {
       },
     } as OcxConfig;
 
+    // This row calls the handler directly, so it takes the spend-journal writer lease that
+    // startServer would have taken. Released in the finally, before the fetch stub is restored.
+    const releaseSpendHome = acquireOwnedSpendHome();
     try {
       const response = await handleResponses(new Request("http://localhost/v1/responses", {
         method: "POST",
@@ -94,7 +248,11 @@ describe("request log metadata", () => {
         adapter: "openai-responses",
         sendCount: 1,
       })]);
+      // Read before the lease is released: the row asserts on metadata only, so without this it
+      // finishes with the turn's body still attached and the lease dropped underneath it.
+      await response.text();
     } finally {
+      releaseSpendHome();
       globalThis.fetch = originalFetch;
     }
   });
@@ -286,6 +444,31 @@ describe("request log metadata", () => {
     }
   });
 
+  test("persists transport finality evidence from the final request log", () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-finality-usage-"));
+    const previousHome = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    try {
+      clearRequestLogsForTests();
+      resetUsageReadCacheForTests();
+      addFinalRequestLog("ocx-finality-persist", 1, {
+        model: "gpt-6-astra",
+        provider: "openai",
+        transportPhase: "mid_stream",
+        terminalSource: "synthetic",
+        upstreamError: "synthetic terminal",
+      }, 502, { terminalStatus: "failed", closeReason: "terminal" });
+      expect(getRequestLogEntries()[0]).toMatchObject({ transportPhase: "mid_stream", terminalSource: "synthetic" });
+      expect(readUsageEntries()[0]).toMatchObject({ transportPhase: "mid_stream", terminalSource: "synthetic" });
+    } finally {
+      clearRequestLogsForTests();
+      resetUsageReadCacheForTests();
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
+    }
+  });
+
   // The value is caller-controlled, so proving it lands is only half the contract: the
   // persistence path must also be the SANITIZED one. A test that only ever writes a safe
   // short slug passes identically whether `sanitizeLogMetadataString` is applied or not.
@@ -354,53 +537,6 @@ describe("request log metadata", () => {
       resetUsageReadCacheForTests();
       removeTreeWithRetry(home);
     }
-  });
-
-  test("records ordered attempts with sealed identity, fresh estimates, and deduplicated recoveries", () => {
-    const a = beginRequestAttempt(1, "provisional-a", "model-a", "openai-chat");
-    noteAttemptSend(a, 100);
-    noteAttemptSend(a, 120, "transient-5xx");
-    noteAttemptSend(a, 120, "transient-5xx");
-    sealRequestAttemptIdentity(a, "chatgpt-pabcdef", "openai-responses", "pabcdef");
-    finishRequestAttempt(a, 503, 12);
-
-    const b = beginRequestAttempt(2, "prov-b", "model-b", "openai-chat");
-    noteAttemptSend(b, undefined);
-    finishRequestAttempt(b, 200, 8, {
-      inputTokens: 10,
-      outputTokens: 2,
-      cachedInputTokens: 4,
-      cacheReadInputTokens: 4,
-    });
-
-    expect(a).toMatchObject({
-      ordinal: 1,
-      provider: "chatgpt-pabcdef",
-      accountLogLabel: "pabcdef",
-      adapter: "openai-responses",
-      status: 503,
-      sendCount: 3,
-      inputTokenEstimate: 120,
-      recoveryKinds: ["transient-5xx"],
-      usageStatus: "estimated",
-      usage: { inputTokens: 120, outputTokens: 0, estimated: true },
-      totalTokens: 120,
-      errorCode: "server_is_overloaded",
-    });
-    expect(b).toMatchObject({ status: 200, sendCount: 1, usageStatus: "reported", totalTokens: 12 });
-
-    expect(aggregateAttemptUsage([a, b])).toEqual({
-      status: "estimated",
-      totalTokens: 132,
-      usage: {
-        inputTokens: 130,
-        outputTokens: 2,
-        totalTokens: 132,
-        cachedInputTokens: 4,
-        cacheReadInputTokens: 4,
-        estimated: true,
-      },
-    });
   });
 
   test("folds partial and unsupported attempt measurement honestly", () => {
@@ -647,6 +783,10 @@ describe("request log metadata", () => {
       "Provider error 401: this model requires a subscription, upgrade for access",
     )).toBe("invalid_api_key");
     expect(requestLogErrorCode(429)).toBe("rate_limit_exceeded");
+    expect(requestLogErrorCode(
+      429,
+      "The upstream exchange did not complete reliably. The request may already have been processed; automatic replay was stopped.",
+    )).toBe("upstream_reset_replay_refused");
     expect(requestLogErrorCode(499)).toBe("client_closed_request");
     expect(requestLogErrorCode(502, "client closed request during web-search")).toBe("client_closed_request");
     expect(requestLogErrorCode(400, "blocked", "cyber_policy")).toBe("cyber_policy");
@@ -752,6 +892,39 @@ describe("request log metadata", () => {
     // The assertion an unfiltered implementation cannot pass.
     expect(filterRequestLogs(logs, new URLSearchParams("model=absent-model"))).toEqual([]);
     expect(filterRequestLogs(logs, new URLSearchParams("model=grok-4.6&provider=xai")).map(entry => entry.requestId)).toEqual(["b", "c"]);
+  });
+
+  /**
+   * #4057: the account label was already persisted on every row and every attempt, but nothing
+   * could select on it, so "which of my accounts served this?" could only be answered by
+   * grepping usage.jsonl. The non-matching assertion is the one that matters: an implementation
+   * that ignores `account` entirely passes the positive cases for free.
+   */
+  test("filters logs by account label, including the attempt that actually served a failover", () => {
+    const logs = [
+      log({ requestId: "a", provider: "openai", accountLogLabel: "main" }),
+      log({ requestId: "b", provider: "openai", accountLogLabel: "p3f9a1" }),
+      log({
+        requestId: "c",
+        provider: "openai",
+        accountLogLabel: "p3f9a1",
+        attempts: [
+          { ordinal: 1, provider: "openai", model: "gpt-test", adapter: "openai", status: 429, durationMs: 5, sendCount: 1, recoveryKinds: [], usageStatus: "unreported", accountLogLabel: "main" },
+          { ordinal: 2, provider: "openai", model: "gpt-test", adapter: "openai", status: 200, durationMs: 7, sendCount: 1, recoveryKinds: [], usageStatus: "reported", accountLogLabel: "p3f9a1" },
+        ],
+      }),
+      log({ requestId: "d", provider: "xai" }),
+    ];
+
+    // "c" matches on its FIRST attempt: the pool account that refused the request is part of
+    // that account's history, which is exactly what quota debugging needs to see.
+    expect(filterRequestLogs(logs, new URLSearchParams("account=main")).map(entry => entry.requestId)).toEqual(["a", "c"]);
+    expect(filterRequestLogs(logs, new URLSearchParams("account=p3f9a1")).map(entry => entry.requestId)).toEqual(["b", "c"]);
+    // The assertion an unfiltered implementation cannot pass.
+    expect(filterRequestLogs(logs, new URLSearchParams("account=p000000"))).toEqual([]);
+    // A row with no label is never swept into an account's history.
+    expect(filterRequestLogs(logs, new URLSearchParams("account=xai"))).toEqual([]);
+    expect(filterRequestLogs(logs, new URLSearchParams("account=main&provider=openai")).map(entry => entry.requestId)).toEqual(["a", "c"]);
   });
 
   test("filters logs by offset and limit", () => {
@@ -1599,6 +1772,33 @@ describe("request log metadata", () => {
 });
 
 describe("request log restart hydrate", () => {
+  test("persists and rehydrates transport finality evidence", () => {
+    const persisted = {
+      requestId: "ocx-finality-evidence",
+      timestamp: 1_800_000_000_000,
+      provider: "openai",
+      model: "gpt-6-astra",
+      status: 502,
+      durationMs: 42,
+      usageStatus: "unreported",
+      errorCode: "upstream_server_error",
+      terminalStatus: "failed",
+      closeReason: "terminal",
+      upstreamError: "upstream failed",
+      transportPhase: "mid_stream",
+      terminalSource: "synthetic",
+    } as PersistedUsageEntry;
+
+    expect(normalizeUsageEntryForTest(persisted)).toMatchObject({
+      transportPhase: "mid_stream",
+      terminalSource: "synthetic",
+    });
+    expect(requestLogEntryFromPersistedUsage(persisted)).toMatchObject({
+      transportPhase: "mid_stream",
+      terminalSource: "synthetic",
+    });
+  });
+
   test("projects persisted usage rows into /api/logs entries", () => {
     const persisted: PersistedUsageEntry = {
       requestId: "ocx-revive",
@@ -1730,5 +1930,99 @@ describe("request log restart hydrate", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+
+describe("request log snapshot cursor", () => {
+  const epoch = "a".repeat(32);
+  const query = new URLSearchParams("limit=2000");
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+
+  test("codec bounds and canonical encoding reject malformed or type-confused input", () => {
+    const poll = selectRequestLogPoll([], query, null, epoch);
+    const payload = JSON.parse(Buffer.from(poll.cursor, "base64url").toString());
+    expect(decodeRequestLogCursor(poll.cursor)).toEqual(payload);
+    for (const raw of ["", "!", "a".repeat(513), `${poll.cursor}=`, ` ${poll.cursor}`,
+      encode(null), encode([]), encode({ ...payload, v: 3 }), encode({ ...payload, n: -1 }),
+      encode({ ...payload, n: 2001 }), encode({ ...payload, n: 0.5 }), encode({ ...payload, n: "0" }),
+      encode({ ...payload, h: "x".repeat(64) }), encode({ ...payload, q: null }),
+      encode({ ...payload, e: "short" }), encode({ ...payload, extra: true }),
+      encode({ v: 1, t: -1, id: "row" }), encode({ v: 1, t: 1, id: "" }),
+      encode({ v: 1, t: "1", id: "row" }), encode({ v: 1, t: 1, id: "x".repeat(257) })]) {
+      expect(decodeRequestLogCursor(raw)).toBeNull();
+    }
+    const legacy = decodeRequestLogCursor(encode({ v: 1, t: 1, id: "row" }));
+    expect(legacy).toEqual({ v: 1, t: 1, id: "row" });
+    expect(selectRequestLogPoll([], query, legacy, epoch).reset).toBe(true);
+  });
+
+  test("stable empty and populated snapshots produce empty deltas, appends preserve repeated IDs", () => {
+    const empty = selectRequestLogPoll([], query, null, epoch);
+    expect(empty.reset).toBe(false);
+    expect(selectRequestLogPoll([], query, decodeRequestLogCursor(empty.cursor), epoch)).toEqual(empty);
+    const rows = [log({ requestId: "same" })];
+    const first = selectRequestLogPoll(rows, query, decodeRequestLogCursor(empty.cursor), epoch);
+    expect(first.logs).toEqual(rows);
+    const cursor = decodeRequestLogCursor(first.cursor);
+    expect(selectRequestLogPoll(rows, query, cursor, epoch)).toEqual({ ...first, logs: [] });
+    rows.push(log({ requestId: "same", status: 500 }));
+    expect(selectRequestLogPoll(rows, query, cursor, epoch)).toMatchObject({ logs: [rows[1]], reset: false });
+  });
+
+  test("in-place older/newest/nested changes, field removal, reorder and eviction reset the whole window", () => {
+    const original = [
+      log({ requestId: "older", usage: { inputTokens: 10, outputTokens: 5 }, firstOutputMs: 3 }),
+      log({ requestId: "newest" }),
+    ];
+    const cursor = decodeRequestLogCursor(selectRequestLogPoll(original, query, null, epoch).cursor);
+    const mutations: Array<(rows: RequestLogEntry[]) => void> = [
+      rows => { rows[0]!.status = 500; },
+      rows => { rows[1]!.durationMs = 22; },
+      rows => { rows[0]!.usage!.outputTokens = 6; },
+      rows => { delete rows[0]!.firstOutputMs; },
+      rows => { rows[0] = log({ requestId: "replacement" }); },
+      rows => { rows.reverse(); },
+      rows => { rows.shift(); },
+      rows => { rows.length = 0; },
+    ];
+    for (const mutate of mutations) {
+      const rows = structuredClone(original);
+      mutate(rows);
+      expect(selectRequestLogPoll(rows, query, cursor, epoch)).toMatchObject({ logs: rows, reset: true });
+    }
+    // Same hydrated IDs and values do not make an old process cursor valid.
+    expect(selectRequestLogPoll(original, query, cursor, "b".repeat(32)))
+      .toMatchObject({ logs: original, reset: true });
+  });
+
+  test("query identity ignores cursor and parameter ordering but binds filters and pagination", () => {
+    const rows = [log({ requestId: "private-row", conversationId: "private-conversation" })];
+    const first = selectRequestLogPoll(rows, new URLSearchParams("provider=private-provider&limit=1"), null, epoch);
+    const cursor = decodeRequestLogCursor(first.cursor);
+    const raw = Buffer.from(first.cursor, "base64url").toString();
+    for (const value of ["private-row", "private-conversation", "private-provider"]) expect(raw).not.toContain(value);
+    expect(selectRequestLogPoll(rows, new URLSearchParams(`limit=1&cursor=${first.cursor}&provider=private-provider`), cursor, epoch).logs)
+      .toEqual([]);
+    for (const changed of ["provider=other&limit=1", "provider=private-provider&limit=2", "provider=private-provider&limit=1&offset=1"]) {
+      expect(selectRequestLogPoll(rows, new URLSearchParams(changed), cursor, epoch).reset).toBe(true);
+    }
+    const duplicated = selectRequestLogPoll(rows, new URLSearchParams("provider=a&provider=b"), null, epoch);
+    expect(selectRequestLogPoll(rows, new URLSearchParams("provider=b&provider=a"), decodeRequestLogCursor(duplicated.cursor), epoch).reset)
+      .toBe(true);
+  });
+
+  test("a full-window rollover resets; a stale fingerprint cannot suppress current rows", () => {
+    const rows = Array.from({ length: 2000 }, (_, index) => log({ requestId: `row-${index}`, timestamp: 2000 - index }));
+    const initial = selectRequestLogPoll(rows, query, null, epoch);
+    const cursor = decodeRequestLogCursor(initial.cursor);
+    expect(cursor).toMatchObject({ v: 2, n: 2000 });
+    rows.shift();
+    rows.push(log({ requestId: "new", timestamp: 0 }));
+    expect(selectRequestLogPoll(rows, query, cursor, epoch)).toMatchObject({ logs: rows, reset: true });
+    const payload = JSON.parse(Buffer.from(initial.cursor, "base64url").toString());
+    const stale = decodeRequestLogCursor(encode({ ...payload, h: "0".repeat(64) }));
+    expect(stale).not.toBeNull();
+    expect(selectRequestLogPoll(rows, query, stale, epoch)).toMatchObject({ logs: rows, reset: true });
   });
 });

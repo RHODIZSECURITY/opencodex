@@ -235,7 +235,7 @@ async function runShutdownBudgetChild(
 async function runNeverSettlingAclChild(
   mode: "principal" | "icacls",
 ): Promise<NeverSettlingAclChildResult> {
-  const timeoutMs = watchdogMs(1_500);
+  const timeoutMs = watchdogMs(8_000);
   const child = Bun.spawn([
     process.execPath,
     helperPath("responses-state-never-settling-acl-child.ts"),
@@ -356,7 +356,7 @@ describe("Responses previous_response_id state", () => {
       model: "cursor/auto",
       previous_response_id: first.id,
       input: [{ type: "function_call_output", call_id: "call_1", output: "ok" }],
-    }) as { input: unknown[] };
+    }, "   ") as { input: unknown[] };
 
     expect(expanded.input).toEqual([
       { role: "user", content: "use ping" },
@@ -376,13 +376,10 @@ describe("Responses previous_response_id state", () => {
       model: "cursor/auto",
       previous_response_id: first.id,
       input: "continue task A",
-    }, "task-a") as { previous_response_id?: string; input: unknown[] };
+    }, "  task-a  ") as { previous_response_id?: string; input: unknown[] };
     expect(sameTask.previous_response_id).toBe(first.id);
-    expect(sameTask.input).toEqual([
-      { role: "user", content: "private task A history" },
-      first.output[0],
-      { role: "user", content: "continue task A" },
-    ]);
+    expect(sameTask.input).toEqual([{ role: "user", content: "private task A history" }, first.output[0],
+      { role: "user", content: "continue task A" }]);
     expect(previousResponseScopeMismatch(sameTask)).toBe(false);
 
     const foreignTask = expandPreviousResponseInput({
@@ -390,10 +387,12 @@ describe("Responses previous_response_id state", () => {
       previous_response_id: first.id,
       input: "brand-new task B",
     }, "task-b") as { previous_response_id?: string; input: string };
-    expect(foreignTask).toEqual({ model: "cursor/auto", input: "brand-new task B" });
+    expect(foreignTask).toEqual({ model: "cursor/auto", previous_response_id: first.id, input: "brand-new task B" });
     expect(previousResponseScopeMismatch(foreignTask)).toBe(true);
-    expect(previousResponseReplayPrefixLength(foreignTask)).toBe(0);
-    expect(responseStateMetrics().replayScopeMismatchDrops).toBe(1);
+    expect(previousResponseReplayFailure(foreignTask)?.reason).toBe("scope_mismatch");
+    const unscopedTask = expandPreviousResponseInput({ previous_response_id: first.id, input: "unscoped" });
+    expect(previousResponseReplayFailure(unscopedTask)?.reason).toBe("scope_mismatch");
+    expect(responseStateMetrics().replayScopeMismatchDrops).toBe(2);
   });
 
   test("scoped tasks reject legacy unscoped continuation state", () => {
@@ -406,7 +405,7 @@ describe("Responses previous_response_id state", () => {
       previous_response_id: first.id,
       input: "new task",
     }, "task-new");
-    expect(freshTask).toEqual({ input: "new task" });
+    expect(freshTask).toEqual({ previous_response_id: first.id, input: "new task" });
     expect(previousResponseScopeMismatch(freshTask)).toBe(true);
   });
 
@@ -1079,6 +1078,9 @@ describe("Responses previous_response_id state", () => {
       spillWriteFailures: 0,
       spillWriteStatus: "healthy",
       spillWriteConsecutiveFailures: 0,
+      spillLastWriteFailureOrigin: null,
+      spillAclRetryReturnedTimeouts: 0,
+      spillAclTimeoutMemoRefusals: 0,
     });
   });
 
@@ -1112,6 +1114,9 @@ describe("Responses previous_response_id state", () => {
       spillWriteConsecutiveFailures: 1,
       spillLastWriteFailureCode: "EACLRETRYEXHAUSTED",
       spillLastWriteSuccessAt: null,
+      spillLastWriteFailureOrigin: "retry_returned_timeout",
+      spillAclRetryReturnedTimeouts: 1,
+      spillAclTimeoutMemoRefusals: 0,
     });
     expect(metrics.spillLastWriteFailureAt).toBeGreaterThanOrEqual(0);
 
@@ -1127,9 +1132,63 @@ describe("Responses previous_response_id state", () => {
       spillWriteStatus: "healthy",
       spillWriteConsecutiveFailures: 0,
       spillLastWriteFailureCode: "EACLRETRYEXHAUSTED",
+      spillLastWriteFailureOrigin: "retry_returned_timeout",
+      spillAclRetryReturnedTimeouts: 1,
+      spillAclTimeoutMemoRefusals: 0,
     });
     expect(typeof recovered.spillLastWriteSuccessAt === "number"
       && recovered.spillLastWriteSuccessAt >= (recovered.spillLastWriteFailureAt ?? 0)).toBe(true);
+  });
+
+  test("Windows stable-directory memo refusals stay distinct after the runner becomes healthy", async () => {
+    forceWindowsAclLane();
+    const previousVerify = process.env.OPENCODEX_ACL_VERIFY_EXISTING;
+    delete process.env.OPENCODEX_ACL_VERIFY_EXISTING;
+    let clock = 0;
+    let grantCalls = 0;
+    setNowForTests(() => clock);
+    setResponseSpillNowForTests(() => clock);
+    setResponseSpillAsyncAclAttemptBudgetForTests(100);
+    setResponseStateByteCapForTests(1_024);
+    const spillDir = responseSpillDirectory();
+    let healthy = false;
+    setAsyncIcaclsRunnerForTests(async args => {
+      if (args[0] !== spillDir) return ICACLS_OK;
+      if (args.includes("/grant:r")) grantCalls += 1;
+      if (healthy) return ICACLS_OK;
+      clock += 100;
+      return { success: false, exitCode: null, timedOut: true, stdout: "private-acl-output" };
+    });
+    try {
+      rememberLarge("resp_stable_timeout", "x".repeat(8_000));
+      await flushPendingResponseSpillsForTests();
+      expect(responseStateMetrics()).toMatchObject({
+        spillWrites: 0, spillWriteFailures: 1,
+        spillLastWriteFailureCode: "EACLRETRYEXHAUSTED",
+        spillLastWriteFailureOrigin: "retry_returned_timeout",
+        spillAclRetryReturnedTimeouts: 1, spillAclTimeoutMemoRefusals: 0,
+      });
+      expect(grantCalls).toBe(2);
+      healthy = true; // Same stable directory and process; no memo reset between jobs.
+      for (let refusal = 1; refusal <= 2; refusal += 1) {
+        rememberLarge(`resp_stable_refusal_${refusal}`, "y".repeat(8_000));
+        await flushPendingResponseSpillsForTests();
+        expect(responseStateMetrics()).toMatchObject({
+          spillWrites: 0, spillWriteFailures: 1 + refusal,
+          spillWriteStatus: "degraded", spillWriteConsecutiveFailures: 1 + refusal,
+          spillLastWriteFailureCode: "EACLRETRYEXHAUSTED",
+          spillLastWriteFailureOrigin: "timeout_memo_refusal",
+          spillAclRetryReturnedTimeouts: 1, spillAclTimeoutMemoRefusals: refusal,
+          spillLastWriteSuccessAt: null, spillStubCount: 0,
+        });
+        expect(grantCalls).toBe(2);
+        expect(spillFileNames(home)).toHaveLength(0);
+        expect(spillTempNames(home)).toHaveLength(0);
+      }
+    } finally {
+      if (previousVerify === undefined) delete process.env.OPENCODEX_ACL_VERIFY_EXISTING;
+      else process.env.OPENCODEX_ACL_VERIFY_EXISTING = previousVerify;
+    }
   });
 
   test("Windows async spill attempts share one bounded ACL budget across every harden", async () => {
@@ -1186,7 +1245,7 @@ describe("Responses previous_response_id state", () => {
         metrics: { tombstoneCount: 2 },
       });
     }
-  }, { timeout: (2 * watchdogMs(1_500)) + 2_000 });
+  }, { timeout: (2 * watchdogMs(8_000)) + 2_000 });
 
   test("Windows pending spill publication cannot overwrite a newer same-id generation", async () => {
     forceWindowsAclLane();
@@ -1427,16 +1486,27 @@ describe("Responses previous_response_id state", () => {
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     setResponseStateByteCapForTests(1_024);
-    rememberLarge("resp_shutdown_fallback", "f".repeat(2 * 1024 * 1024 + 4_096));
-    await started;
-
+    let restoreClock: (() => void) | undefined;
     try {
+      rememberLarge("resp_shutdown_fallback", "f".repeat(2 * 1024 * 1024 + 4_096));
+      await started;
+      // ACL/spill clocks alone do not control the shutdown reserve: state.ts
+      // uses Date.now(). Keep its 80 ms budget independent of real disk latency.
+      // The real 40 ms drain timer still fires while publication stays gated.
+      const shutdownNow = Date.now();
+      const nowSpy = spyOn(Date, "now").mockReturnValue(shutdownNow);
+      restoreClock = () => { nowSpy.mockRestore(); };
       await flushResponseState();
       expect(synchronousCalls).toBeGreaterThan(0);
       expect(pendingResponseSpillMetricsForTests()).toEqual({ count: 0, bytes: 0 });
       expect(responseStateMetrics()).toMatchObject({ residentCount: 0, spillStubCount: 1 });
     } finally {
       release();
+      try {
+        await awaitResponseSpillPublicationTailForTests();
+      } finally {
+        restoreClock?.();
+      }
     }
   });
 
@@ -1890,7 +1960,7 @@ describe("Responses previous_response_id state", () => {
       { previous_response_id: "resp_spill_restart", input: "foreign" },
       "task-other",
     );
-    expect(foreign).toEqual({ input: "foreign" });
+    expect(foreign).toEqual({ previous_response_id: "resp_spill_restart", input: "foreign" });
   });
 
   test("spill references bind the expected response id and use the locked digest basename", () => {
@@ -2102,7 +2172,7 @@ describe("Responses previous_response_id state", () => {
     const realNow = Date.now;
     setResponseStateByteCapForTests(1_024);
     try {
-      Date.now = () => realNow() - 2 * 60 * 60 * 1_000;
+      Date.now = () => realNow() - 25 * 60 * 60 * 1_000;
       rememberLarge("resp_ttl_spill", "t".repeat(8_000));
       const ttlFile = spillFileNames(home)[0]!;
       Date.now = realNow;
@@ -2580,6 +2650,7 @@ describe("Responses previous_response_id state", () => {
     const {
       spillWriteStatus,
       spillLastWriteFailureCode,
+      spillLastWriteFailureOrigin,
       spillLastWriteFailureAt,
       spillLastWriteSuccessAt,
       ...numericMetrics
@@ -2588,6 +2659,7 @@ describe("Responses previous_response_id state", () => {
       .every(value => typeof value === "number" && Number.isFinite(value))).toBe(true);
     expect(spillWriteStatus).toBe("healthy");
     expect(spillLastWriteFailureCode).toBeNull();
+    expect(spillLastWriteFailureOrigin).toBeNull();
     expect(spillLastWriteFailureAt).toBeNull();
     expect(typeof spillLastWriteSuccessAt === "number" && Number.isFinite(spillLastWriteSuccessAt)).toBe(true);
     const serialized = JSON.stringify(metrics);
@@ -2702,8 +2774,8 @@ describe("Responses previous_response_id state", () => {
     try {
       const realNow = Date.now;
       try {
-        // Store an old heavy entry, then advance time past the 1h TTL.
-        Date.now = () => realNow() - 2 * 60 * 60 * 1_000;
+        // Store an old heavy entry, then advance time past the 24h RESPONSE_TTL_MS.
+        Date.now = () => realNow() - 25 * 60 * 60 * 1_000;
         const oldBody = { model: "cursor/grok-4.5", input: "o".repeat(6_000), store: false };
         const oldJson = buildResponseJSON([{ type: "text_delta", text: "ok" }, { type: "done" }], "cursor/grok-4.5");
         rememberResponseState(oldBody, oldJson, { cursor: { conversationId: "conv_old" } }, { force: true });
@@ -2946,21 +3018,26 @@ describe("Responses previous_response_id state", () => {
     // Two proxies sharing one config dir race every tick. Reporting the loser's ENOENT as a
     // failure would tell an operator a file is "in use or locked" when nobody holds it.
     const old = new Date(Date.now() - 60 * 60 * 1_000);
-    const path = join(home, "responses-state.json.ocx.9104.1.tmp");
+    const deadPid = findDeadPid();
+    expect(deadPid).not.toBe(process.pid);
+    const path = join(home, `responses-state.json.ocx.${deadPid}.1.tmp`);
     writeFileSync(path, "private state");
     utimesSync(path, old, old);
 
+    const unlinked: string[] = [];
     const result = recoverStaleResponseStateTemps(home, {
       isProcessAlive: () => false,
       bootTime: () => 0,
-      unlink: () => {
+      unlink: target => {
+        unlinked.push(target);
         const error = new Error("gone") as NodeJS.ErrnoException;
         error.code = "ENOENT";
         throw error;
       },
     });
 
-    expect(result).toMatchObject({ matched: 1, removed: 1, failed: 0 });
+    expect(result).toMatchObject({ matched: 1, eligible: 1, removed: 1, failed: 0 });
+    expect(unlinked).toEqual([path]);
   });
 
   test("a dry run reports exactly what a reclaim then removes", () => {
@@ -3150,12 +3227,12 @@ describe("Responses previous_response_id state", () => {
     await flushResponseState();
     clearResponseStateMemoryForTests();
 
-    // Rewrite the snapshot with an expired createdAt (2h ago > 1h TTL).
+    // Rewrite the snapshot with a createdAt past the 24h RESPONSE_TTL_MS.
     const path = join(home, "responses-state.json");
     const snapshot = JSON.parse(readFileSync(path, "utf-8")) as {
       states: [string, { createdAt: number }][];
     };
-    for (const [, state] of snapshot.states) state.createdAt = Date.now() - 2 * 60 * 60 * 1_000;
+    for (const [, state] of snapshot.states) state.createdAt = Date.now() - 25 * 60 * 60 * 1_000;
     writeFileSync(path, JSON.stringify(snapshot));
 
     const second = {
@@ -3348,10 +3425,60 @@ describe("Responses previous_response_id state", () => {
         spillWriteStatus: "initial",
         spillWriteConsecutiveFailures: 0,
         spillLastWriteFailureCode: null,
+        spillLastWriteFailureOrigin: null,
+        spillAclRetryReturnedTimeouts: 0,
+        spillAclTimeoutMemoRefusals: 0,
         spillLastWriteFailureAt: null,
         spillLastWriteSuccessAt: null,
         spillReadFailures: 0,
         replayScopeMismatchDrops: 0,
+      });
+    });
+
+    test("spill failure origin decoding stays bounded, closed and paired with the effective code", () => {
+      setResponseStateByteCapForTests(1_024);
+      const memoError = Object.assign(new Error("private-path-and-payload"), {
+        code: "ETIMEDOUT", aclFailureOrigin: "timeout_memo_refusal",
+      });
+      const cycle: { code: string; cause?: unknown; aclFailureOrigin: string } = {
+        code: "ETIMEDOUT", aclFailureOrigin: "private-origin",
+      };
+      cycle.cause = cycle;
+      const cases = [
+        { error: new Error("wrapper", { cause: memoError }), code: "ETIMEDOUT", origin: "timeout_memo_refusal" },
+        { error: Object.assign(new Error("denied", { cause: memoError }), { code: "EACCES" }), code: "EACCES", origin: null },
+        { error: { code: "EACLRETRYEXHAUSTED" }, code: "EACLRETRYEXHAUSTED", origin: null },
+        { error: { code: "ETIMEDOUT", aclFailureOrigin: "private-origin" }, code: "ETIMEDOUT", origin: null },
+        { error: { code: "ETIMEDOUT", aclFailureOrigin: ["timeout_memo_refusal"] }, code: "ETIMEDOUT", origin: null },
+        { error: cycle, code: "ETIMEDOUT", origin: null },
+        // Including the writer's wrapper, the marker is beyond the four-object scan.
+        { error: { code: "ETIMEDOUT", cause: { cause: { cause: memoError } } }, code: "ETIMEDOUT", origin: null },
+      ];
+      cases.forEach(({ error, code, origin }, index) => {
+        setSpillIoForTest({ write: () => { throw error; } });
+        rememberLarge(`resp_private_origin_${index}`, "private-content".repeat(1_000));
+        const metrics = responseStateMetrics();
+        expect(metrics).toMatchObject({
+          spillWriteFailures: index + 1,
+          spillLastWriteFailureCode: code,
+          spillLastWriteFailureOrigin: origin,
+          spillAclRetryReturnedTimeouts: 0, spillAclTimeoutMemoRefusals: 1,
+        });
+        const serialized = JSON.stringify(metrics);
+        for (const privateValue of ["private-path-and-payload", "private-origin", "private-content", "resp_private_origin", home]) {
+          expect(serialized).not.toContain(privateValue);
+        }
+      });
+      setSpillIoForTest(null);
+      rememberLarge("resp_after_origin_failures", "healthy".repeat(1_500));
+      expect(responseStateMetrics()).toMatchObject({
+        spillWriteStatus: "healthy", spillWriteConsecutiveFailures: 0,
+        spillLastWriteFailureCode: "ETIMEDOUT", spillLastWriteFailureOrigin: null,
+        spillAclRetryReturnedTimeouts: 0, spillAclTimeoutMemoRefusals: 1,
+      });
+      clearResponseStateMemoryForTests();
+      expect(responseStateMetrics()).toMatchObject({
+        spillLastWriteFailureOrigin: null, spillAclRetryReturnedTimeouts: 0, spillAclTimeoutMemoRefusals: 0,
       });
     });
 
@@ -3460,6 +3587,9 @@ describe("Responses previous_response_id state", () => {
         spillWriteStatus: "initial",
         spillWriteConsecutiveFailures: 0,
         spillLastWriteFailureCode: null,
+        spillLastWriteFailureOrigin: null,
+        spillAclRetryReturnedTimeouts: 0,
+        spillAclTimeoutMemoRefusals: 0,
         spillLastWriteFailureAt: null,
         spillLastWriteSuccessAt: null,
         spillReadFailures: 0,

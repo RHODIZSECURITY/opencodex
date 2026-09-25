@@ -3,8 +3,12 @@ import { managementFetch as fetch } from "../helpers/management-auth";
 import { mkdtempSync, readdirSync, readFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, saveConfig } from "../../src/config";
-import { startServer } from "../../src/server";
+import { loadConfig, saveConfig, saveConfigPreservingClaudeCode } from "../../src/config";
+import { startServer as startServerImpl } from "../../src/server";
+import { handleManagementAPI } from "../../src/server/management-api";
+import { writeDesktop3pConfig, removeDesktop3pStandardPivot } from "../../src/claude/desktop-3p";
+import * as desktopProfiles from "../../src/claude/desktop-profile";
+import { buildClaudeDesktopState } from "../../src/server/management/shared";
 import * as systemEnv from "../../src/server/system-env";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
@@ -20,6 +24,19 @@ let previousHome: string | undefined;
 let previousClaudeConfigDir: string | undefined;
 let previousDesktopConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+
+// Keep the production SQLite kernel while each fixture owns its lock namespace.
+function startServer(port?: number, deps: NonNullable<Parameters<typeof startServerImpl>[1]> = {}) {
+  return startServerImpl(port, {
+    ...deps,
+    managementApi: {
+      writeDesktop3pConfig: (port, slugs, models, key, mode, profile, cap) =>
+        writeDesktop3pConfig(port, slugs, models, key, mode, profile, cap, { lockPath: join(testDir, "lifecycle.sqlite") }),
+      removeDesktop3pStandardPivot: options => removeDesktop3pStandardPivot({ ...options, lifecycleLockDeps: { lockPath: join(testDir, "lifecycle.sqlite") } }),
+      ...deps.managementApi,
+    },
+  });
+}
 
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
@@ -65,7 +82,7 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     expect(d.modelMap).toEqual({});
     expect(d.available).toContain("mock/test-model");
     // Aliases preview uses the readable CLI-surface family (devlog 050 / audit 051 #2).
-    expect(d.aliases.some((a: { id: string }) => a.id === "claude-ocx-mock--test-model")).toBe(true);
+    expect(d.aliases.some((a: { id: string }) => a.id === "ocx-claude-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
   } finally {
     await server.stop(true);
@@ -208,6 +225,10 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("proxy");
     expect(loadConfig().claudeCode?.authMode).toBe("proxy");
+    // With no anthropic provider, a bare Claude id has nowhere to go under proxy auth (#5755).
+    const sonnetTier = (body: Record<string, unknown>) =>
+      (body.effectiveModelEnv as Record<string, string>).ANTHROPIC_DEFAULT_SONNET_MODEL;
+    expect(sonnetTier(get)).toBeUndefined();
 
     // subscription now stores the literal so an explicit choice survives auth changes.
     const back = await fetch(new URL("/api/claude-code", server.url), {
@@ -219,6 +240,8 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     expect(loadConfig().claudeCode?.authMode).toBe("subscription");
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("subscription");
+    // Under Claude Code's own login it passes through natively and keeps its 1M window.
+    expect(sonnetTier(get)).toBe("claude-sonnet-5[1m]");
 
     // "auto" is the return path: it deletes the key so detection drives the mode again.
     const auto = await fetch(new URL("/api/claude-code", server.url), {
@@ -368,6 +391,50 @@ test("authMode-only PUT triggers system-env reconciliation (audit R2 #1)", async
   }
 });
 
+// Model-slot and lever fields feed injectSystemEnv, so changing one must reconcile launchd too;
+// before, only systemEnv/authMode did, and a cleared smallFastModel stayed injected until restart.
+test.each([
+  ["smallFastModel", ""],
+  ["model", ""],
+  ["tierModels", { opus: "mock/test-model" }],
+  ["maxContextTokens", 1_000_000],
+  ["alwaysEnableEffort", true],
+  ["autoContext", false],
+  ["autoCompactWindow", 400_000],
+] as const)("%s-only PUT triggers system-env reconciliation", async (field, value) => {
+  const applySpy = spyOn(systemEnv, "applySystemEnvToggle").mockResolvedValue({ reverted: false, reason: "test" });
+  const server = startServer(0);
+  try {
+    const r = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    expect(r.status).toBe(200);
+    expect(applySpy).toHaveBeenCalled();
+  } finally {
+    applySpy.mockRestore();
+    await server.stop(true);
+  }
+});
+
+test("a PUT that touches no system-env input does not reconcile launchd", async () => {
+  const applySpy = spyOn(systemEnv, "applySystemEnvToggle").mockResolvedValue({ reverted: false, reason: "test" });
+  const server = startServer(0);
+  try {
+    const r = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blockedSkills: null }),
+    });
+    expect(r.status).toBe(200);
+    expect(applySpy).not.toHaveBeenCalled();
+  } finally {
+    applySpy.mockRestore();
+    await server.stop(true);
+  }
+});
+
 test("Claude sidecar overrides round-trip, partially update, clear, and reject unknown backends", async () => {
   const server = startServer(0);
   const put = (body: unknown) => fetch(new URL("/api/claude-code", server.url), {
@@ -458,7 +525,7 @@ test("PUT immediately restores generated agents after re-enable and roster chang
       body: JSON.stringify({ injectAgents: true }),
     });
     expect(enable.status).toBe(200);
-    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-5-6-sol.md")).toBe(true);
+    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-6-sol.md")).toBe(true);
 
     const disable = await fetch(new URL("/api/claude-code", server.url), {
       method: "PUT",
@@ -474,7 +541,7 @@ test("PUT immediately restores generated agents after re-enable and roster chang
       body: JSON.stringify({ injectAgents: true }),
     });
     expect(reenable.status).toBe(200);
-    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-5-6-sol.md")).toBe(true);
+    expect(readdirSync(agentsDir).some(name => name === "ocx-gpt-6-sol.md")).toBe(true);
 
     const roster = await fetch(new URL("/api/subagent-models", server.url), {
       method: "PUT",
@@ -693,7 +760,11 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
     const discovery = await fetch(new URL("/v1/models?flavor=anthropic", server.url)).then(r => r.json()) as { data: Array<{ id: string }> };
     expect(discovery.data.some(model => model.id === alias)).toBe(true);
 
-    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), { method: "POST" });
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "gateway" }),
+    });
     expect(apply.status).toBe(200);
     const result = await apply.json() as { path: string; applied: boolean };
     expect(result.applied).toBe(true);
@@ -801,6 +872,14 @@ test("Claude Desktop apply validates the mode body", async () => {
     expect(badProfile.status).toBe(400);
     expect(loadConfig()).toEqual(beforeBadProfile);
 
+    const badGatewayProfile = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "gateway", profile: { version: 2 } }),
+    });
+    expect(badGatewayProfile.status).toBe(400);
+    expect(loadConfig()).toEqual(beforeBadProfile);
+
     const hybrid = await fetch(new URL("/api/claude-desktop/apply", server.url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -849,6 +928,94 @@ test("Claude Desktop PUT rejects invalid JSON profile without mutating saved con
   }
 });
 
+test("Claude Desktop PUT clears applied markers when routing changes", async () => {
+  const server = startServer(0);
+  try {
+    const apply = await fetch(new URL("/api/claude-desktop/apply", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "static" }),
+    });
+    expect(apply.status).toBe(200);
+    expect(loadConfig().claudeCode?.desktopProfile?.appliedFingerprint).toBeString();
+
+    const state = await fetch(new URL("/api/claude-desktop", server.url)).then(r => r.json()) as Record<string, any>;
+    const edited = structuredClone(state.profile);
+    edited.assignments["mock/test-model"].family = "sonnet";
+    edited.defaults.opus = Object.keys(edited.assignments)
+      .filter(route => edited.assignments[route].family === "opus")
+      .sort()[0] ?? null;
+    edited.defaults.sonnet = "mock/test-model";
+
+    const put = await fetch(new URL("/api/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: edited }),
+    });
+    expect(put.status).toBe(200);
+    expect(loadConfig().claudeCode?.desktopProfile).not.toHaveProperty("appliedFingerprint");
+    expect(loadConfig().claudeCode?.desktopProfile).not.toHaveProperty("appliedAt");
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("Claude Desktop PUT preserves a newer applied marker committed during profile rebuilding", async () => {
+  const seeded = loadConfig();
+  const initialState = await buildClaudeDesktopState(seeded);
+  seeded.claudeCode = {
+    ...(seeded.claudeCode ?? {}),
+    desktopProfile: {
+      ...initialState.profile,
+      appliedFingerprint: "older-fingerprint",
+      appliedAt: "2026-09-23T00:00:00.000Z",
+    },
+  };
+  saveConfig(seeded);
+  // This standalone management snapshot has no live-config baseline. The old
+  // whole-snapshot save would therefore overwrite the newer disk marker.
+  const liveConfig = structuredClone(seeded);
+  const originalReconcile = desktopProfiles.reconcileDesktopProfile;
+  let builds = 0;
+  let injected = false;
+  const reconcile = spyOn(desktopProfiles, "reconcileDesktopProfile").mockImplementation((stored, models) => {
+    const profile = originalReconcile(stored, models);
+    builds += 1;
+    if (builds === 2) {
+      const concurrent = loadConfig();
+      concurrent.claudeCode = {
+        ...(concurrent.claudeCode ?? {}),
+        desktopProfile: {
+          ...concurrent.claudeCode!.desktopProfile!,
+          appliedFingerprint: "newer-fingerprint",
+          appliedAt: "2026-09-23T00:00:01.000Z",
+        },
+      };
+      saveConfig(concurrent);
+      injected = true;
+    }
+    return profile;
+  });
+  try {
+    const url = new URL("http://127.0.0.1:10100/api/claude-desktop");
+    const req = new Request(url, {
+      method: "PUT",
+      headers: { Host: url.host, "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: initialState.profile }),
+    });
+    const put = await handleManagementAPI(req, url, liveConfig);
+    expect(put?.status).toBe(200);
+    expect(injected).toBe(true);
+    expect(loadConfig().claudeCode?.desktopProfile?.appliedFingerprint).toBe("newer-fingerprint");
+    expect(loadConfig().claudeCode?.desktopProfile?.appliedAt).toBe("2026-09-23T00:00:01.000Z");
+    expect(liveConfig.claudeCode?.desktopProfile?.appliedFingerprint).toBe("newer-fingerprint");
+    saveConfigPreservingClaudeCode(liveConfig);
+    expect(loadConfig().claudeCode?.desktopProfile?.appliedFingerprint).toBe("newer-fingerprint");
+  } finally {
+    reconcile.mockRestore();
+  }
+});
+
 test("Claude Desktop PUT retains but cannot move an unavailable route", async () => {
   const seeded = loadConfig();
   seeded.claudeCode = {
@@ -877,6 +1044,67 @@ test("Claude Desktop PUT retains but cannot move an unavailable route", async ()
     expect(put.status).toBe(400);
     expect((await put.json() as { error: string }).error).toContain("사용할 수 없는 모델");
     expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]?.family).toBe("opus");
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("Claude Desktop PUT allows deleting an unavailable route, but rejects modifying or adding one", async () => {
+  const seeded = loadConfig();
+  seeded.claudeCode = {
+    desktopProfile: {
+      version: 1,
+      assignments: {
+        "missing/old-model": { family: "opus", alias: "claude-opus-4-8-20260101" },
+      },
+      defaults: { opus: "missing/old-model", fable: null, sonnet: null, haiku: null },
+    },
+  };
+  saveConfig(seeded);
+  const server = startServer(0);
+  try {
+    const state = await fetch(new URL("/api/claude-desktop", server.url)).then(r => r.json()) as Record<string, any>;
+    expect(state.models.find((model: { route: string }) => model.route === "missing/old-model")?.available).toBe(false);
+
+    // Modifying an existing unavailable assignment (e.g. changing alias) is rejected with 400.
+    const modifyEdit = structuredClone(state.profile);
+    modifyEdit.assignments["missing/old-model"].alias = "claude-opus-4-8-20260202";
+    const putModify = await fetch(new URL("/api/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: modifyEdit }),
+    });
+    expect(putModify.status).toBe(400);
+    expect((await putModify.json() as { error: string }).error).toContain("현재 사용할 수 없는 모델은 옮길 수 없습니다: missing/old-model");
+    expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]?.alias).toBe("claude-opus-4-8-20260101");
+
+    // Deleting an existing unavailable assignment succeeds with 200.
+    const deleteEdit = structuredClone(state.profile);
+    delete deleteEdit.assignments["missing/old-model"];
+    deleteEdit.defaults.opus = Object.keys(deleteEdit.assignments).filter(route => deleteEdit.assignments[route].family === "opus").sort()[0] ?? null;
+
+    const putDelete = await fetch(new URL("/api/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: deleteEdit }),
+    });
+    expect(putDelete.status).toBe(200);
+    const deleteResult = await putDelete.json() as Record<string, any>;
+    expect(deleteResult.models.some((model: { route: string }) => model.route === "missing/old-model")).toBe(false);
+    expect(deleteResult.profile.assignments["missing/old-model"]).toBeUndefined();
+    expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]).toBeUndefined();
+
+    // Adding a newly unavailable assignment is rejected with 400.
+    const addEdit = structuredClone(deleteResult.profile);
+    addEdit.assignments["missing/new-model"] = { family: "fable", alias: "claude-opus-4-8-20260102" };
+    addEdit.defaults.fable = "missing/new-model";
+    const putAdd = await fetch(new URL("/api/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: addEdit }),
+    });
+    expect(putAdd.status).toBe(400);
+    expect((await putAdd.json() as { error: string }).error).toContain("현재 사용할 수 없는 모델은 추가할 수 없습니다: missing/new-model");
   } finally {
     await server.stop(true);
   }

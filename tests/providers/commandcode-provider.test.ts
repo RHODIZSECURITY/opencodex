@@ -67,6 +67,7 @@ describe("Command Code provider", () => {
       liveModels: true,
       preserveCustomDestination: true,
       defaultModel: "deepseek/deepseek-v4-flash",
+      promptCacheKey: true,
       apiKeyValidation: "unknown",
       reasoningEfforts: [],
       modelReasoningEfforts: {
@@ -176,6 +177,20 @@ describe("Command Code provider", () => {
     expect(body).not.toHaveProperty("parallel_tool_calls");
   });
 
+  test("forwards the enabled prompt cache key to chat completions", () => {
+    const route = routeModel(
+      commandcodeConfig(),
+      "commandcode/deepseek/deepseek-v4-flash",
+    );
+    const request = createOpenAIChatAdapter(route.provider).buildRequest({
+      modelId: route.modelId,
+      context: { messages: [{ role: "user", content: "ping", timestamp: 0 }] },
+      stream: true,
+      options: { promptCacheKey: "command-code-session-cache" },
+    });
+    expect(JSON.parse(String(request.body)).prompt_cache_key).toBe("command-code-session-cache");
+  });
+
   test("discovers the live catalog with context windows and preserves slash ids", async () => {
     globalThis.fetch = (async (input, init) => {
       expect(String(input)).toBe("https://api.commandcode.ai/provider/v1/models");
@@ -189,17 +204,13 @@ describe("Command Code provider", () => {
 
     const config = withStubbedProviderFetch(commandcodeConfig());
     const models = (await gatherRoutedModels(config)).filter(row => row.provider === "commandcode");
-    // Full authenticated catalog snapshot: 59 rows, including the free-tier entries.
-    //
-    // #2647's fixture carried 60 because it predates 328931265, which removed Ox Alpha
-    // entirely — both ids, the Zen slug for the same stealth model, the context
-    // constant, the effort profile, and the OpenRouter entry. That stealth window has
-    // closed, so `stealth/ox-alpha` is dropped from the snapshot rather than being
-    // silently resurrected by a regenerated fixture.
-    expect(models).toHaveLength(59);
+    // Authenticated 2026-09-23 catalog snapshot, including endpoint metadata.
+    expect(models).toHaveLength(77);
     expect(models.map(row => row.id)).toContain("deepseek/deepseek-v4-flash");
     expect(models.map(row => row.id)).toContain("moonshotai/Kimi-K2.7-Code");
     expect(models.map(row => row.id)).toContain("poolside/laguna-s-2.1-free");
+    expect(models.map(row => row.id)).toContain("xiaomi/mimo-v2.6-flash");
+    expect(models.map(row => row.id)).not.toContain("minimax/minimax-m3-free");
 
     const deepseek = models.find(row => row.id === "deepseek/deepseek-v4-flash")!;
     expect(deepseek.contextWindow).toBe(1_000_000);
@@ -227,6 +238,10 @@ describe("Command Code provider", () => {
       id: "google/gemini-3.7-flash",
       reasoningEfforts: ["low", "medium", "high"],
     });
+    expect(models.find(row => row.id === "Qwen/Qwen3.8-Flash")?.reasoningEfforts)
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(models.find(row => row.id === "meta/muse-spark-1.3-contributor")?.reasoningEfforts)
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
 
     expect(routedSlug("commandcode", deepseek.id)).toBe("commandcode/deepseek-deepseek-v4-flash");
     expect(routeModel(config, "commandcode/deepseek/deepseek-v4-flash").modelId)

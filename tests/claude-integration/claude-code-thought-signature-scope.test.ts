@@ -11,21 +11,34 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 
 import type { ProviderAdapter } from "../../src/adapters/base";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../../src/types";
+import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
 const actualResolver = await import("../../src/server/adapter-resolve");
+// Capture the real function before the override. `mock.module` rewrites the namespace's live
+// binding in place, so a lookup through `actualResolver` inside the wrapper would reach
+// whichever override is current, including this one, once another file in the same process
+// has mocked this module too.
+const actualResolveAdapter = actualResolver.resolveAdapter;
 
 let adapterFactory: ((provider: OcxProviderConfig) => ProviderAdapter) | undefined;
 
 mock.module("../../src/server/adapter-resolve", () => ({
   ...actualResolver,
   resolveAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long") {
-    return adapterFactory?.(provider) ?? actualResolver.resolveAdapter(provider, cacheRetention);
+    return adapterFactory?.(provider) ?? actualResolveAdapter(provider, cacheRetention);
   },
 }));
 
 const { handleResponses } = await import("../../src/server/responses");
+let releaseSpendHome: (() => void) | undefined;
+
+// Direct physical dispatch needs the writer lease to prevent spend-ledger ownership failures.
+const takeSpendHome = (): void => { releaseSpendHome ??= acquireOwnedSpendHome(); };
 
 afterEach(() => {
+  // Release first so a failed dispatch cannot leak ownership into the next case.
+  releaseSpendHome?.();
+  releaseSpendHome = undefined;
   adapterFactory = undefined;
 });
 
@@ -72,6 +85,7 @@ async function drive(options: {
   };
   if (options.promptCacheKey !== undefined) body.prompt_cache_key = options.promptCacheKey;
 
+  takeSpendHome();
   const response = await handleResponses(
     new Request("http://localhost/v1/responses", {
       method: "POST",
@@ -97,16 +111,19 @@ describe("Claude Code Anthropic inbound reasoning-replay scope", () => {
     const parsed = await drive({ promptCacheKey: "session-key-123", promptCacheKeyIsSharedCohort: false });
     expect(parsed._clientThreadId).toBeUndefined();
     expect(parsed._reasoningReplayScope?.clientThreadId).toBe("session-key-123");
+    expect(parsed._promptCacheKeyIsSharedCohort).toBe(false);
   });
 
   test("the shared Desktop prompt_cache_key cohort does not create a scope", async () => {
     const parsed = await drive({ promptCacheKey: "shared-cohort-key", promptCacheKeyIsSharedCohort: true });
     expect(parsed._reasoningReplayScope).toBeUndefined();
+    expect(parsed._promptCacheKeyIsSharedCohort).toBe(true);
   });
 
   test("an Anthropic replay without prompt_cache_key does not create a scope", async () => {
     const parsed = await drive({});
     expect(parsed._reasoningReplayScope).toBeUndefined();
+    expect(parsed._promptCacheKeyIsSharedCohort).toBeUndefined();
   });
 
   test("an overlong prompt_cache_key is hashed, not stored raw", async () => {
@@ -121,5 +138,17 @@ describe("Claude Code Anthropic inbound reasoning-replay scope", () => {
   test("a whitespace-only prompt_cache_key does not create a scope", async () => {
     const parsed = await drive({ promptCacheKey: "   ", promptCacheKeyIsSharedCohort: false });
     expect(parsed._reasoningReplayScope).toBeUndefined();
+  });
+
+  test("distinct session identities remain distinct and bounded", async () => {
+    const first = await drive({ promptCacheKey: "session-a", promptCacheKeyIsSharedCohort: false });
+    const second = await drive({ promptCacheKey: "session-b", promptCacheKeyIsSharedCohort: false });
+    const a = first._reasoningReplayScope?.clientThreadId;
+    const b = second._reasoningReplayScope?.clientThreadId;
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(a).not.toBe(b);
+    expect(a).toBe("session-a");
+    expect(b).toBe("session-b");
   });
 });

@@ -1,15 +1,13 @@
 import { MAX_REMOTE_CATALOG_BYTES } from "../server/catalog-download";
+import { MAX_HUB_STATE_BYTES, parseHubStateBody, type HubStateDTO } from "../remote/hub-state";
+import { MAX_HUB_USAGE_BYTES, parseHubUsage, type HubUsageReport } from "../remote/hub-usage";
 import { readBoundedResponseBytes } from "../lib/bounded-body";
 import { clearableDeadline } from "../lib/abort";
+import type { Desktop3pModelEntry } from "../claude/desktop-3p";
+import { assertDesktop3pModelsValid } from "../claude/desktop-3p-guard";
 
-/**
- * A pairing grant may cross loopback or authenticated HTTPS, and nothing else.
- *
- * Mirrors the hub-side rule in src/server/gui-session.ts. Checking here too is not
- * redundant: it keeps the client from spending a single-use code on a request the hub is
- * certain to refuse.
- */
-function isPairingTransportPermitted(origin: string): boolean {
+/** Hub traffic may cross loopback or authenticated HTTPS, and nothing else. */
+function isHubTransportPermitted(origin: string): boolean {
   let url: URL;
   try {
     url = new URL(origin);
@@ -30,6 +28,8 @@ import {
 const READY_BODY_LIMIT = 64 * 1024;
 const MANAGEMENT_BODY_LIMIT = 128 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
+const DESKTOP_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+const DESKTOP_SNAPSHOT_MAX_ENTRIES = 2000;
 
 export type OneTimeConnectCredential =
   | { kind: "admin"; value: Uint8Array }
@@ -97,6 +97,7 @@ async function fetchBounded(
     });
     headerDeadline?.clear();
     if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+      try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
       throw new HubClientError("redirect_refused", "Hub request redirect was refused", response.status);
     }
     return response;
@@ -111,14 +112,16 @@ async function fetchBounded(
 async function boundedText(
   response: Response,
   maxBytes: number,
-  options: { inactivityTimeoutMs?: number } = {},
+  options: { signal?: AbortSignal; inactivityTimeoutMs?: number } = {},
 ): Promise<string> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maxBytes) {
+    try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
     throw new HubClientError("body_too_large", "Hub response exceeded the allowed size", response.status);
   }
   const result = await readBoundedResponseBytes(response, {
     maxBytes,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.inactivityTimeoutMs === undefined ? {} : { inactivityTimeoutMs: options.inactivityTimeoutMs }),
   });
   if (result.oversized) {
@@ -185,6 +188,12 @@ export function normalizeHubOrigin(input: string): string {
       "Hub URL must be an HTTP(S) origin without credentials, query, fragment, or non-/v1 path",
     );
   }
+  if (!isHubTransportPermitted(parsed.origin)) {
+    throw new HubClientError(
+      "insecure_http_refused",
+      "Hub URLs require loopback or HTTPS; plaintext remote HTTP is not permitted",
+    );
+  }
   return parsed.origin;
 }
 
@@ -244,7 +253,7 @@ export async function exchangeConnectPairingGrant(
   // Deliberateness is not the control that matters: the grant is readable by anything on the
   // path and the session it mints is reusable. The hub refuses this exchange outright now, so
   // sending it would only burn a single-use code against a certain rejection.
-  if (!isPairingTransportPermitted(origin)) {
+  if (!isHubTransportPermitted(origin)) {
     throw new HubClientError("insecure_http_refused", "Pairing requires loopback or HTTPS; plaintext HTTP cannot carry a grant");
   }
   const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/opencodex-session`, {
@@ -438,20 +447,26 @@ export async function downloadClientCatalog(
     headers,
   }, options.timeoutMs, "headers");
   if (response.status === 304) {
+    try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
     throw new HubClientError("catalog_unexpected_304", "Hub answered 304 to an unconditional catalog request", 304);
   }
   if (!response.ok) {
+    try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
     const code = response.status === 401 ? "catalog_unauthorized" : `catalog_http_${response.status}`;
     throw new HubClientError(code, `Hub catalog request failed (${response.status})`, response.status);
   }
   if (!jsonCompatibleContentType(response)) {
-    try { await response.body?.cancel(); } catch { /* best effort */ }
+    try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
     throw new HubClientError("catalog_content_type_invalid", "Hub catalog response was not JSON", response.status);
   }
   let body: string;
   try {
+    const inactivityTimeoutMs = safeTimeout(options.timeoutMs);
     body = await boundedText(response, options.maxBytes ?? MAX_REMOTE_CATALOG_BYTES, {
-      inactivityTimeoutMs: safeTimeout(options.timeoutMs),
+      // Permit active catalog transfers to span multiple inactivity windows,
+      // while retaining the client's established maximum request lifetime.
+      signal: AbortSignal.timeout(Math.min(inactivityTimeoutMs * 24, 120_000)),
+      inactivityTimeoutMs,
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
@@ -463,6 +478,165 @@ export async function downloadClientCatalog(
   validateRemoteCatalog(parsed);
   const keyId = response.headers.get("x-opencodex-key-id")?.trim() || undefined;
   return { kind: "fresh", body, ...(keyId ? { keyId } : {}) };
+}
+
+/** Bounded own-key usage read; never falls back to a local management endpoint. */
+export async function fetchHubUsage(
+  serverUrl: string,
+  admissionToken: string,
+  query: URLSearchParams,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<HubUsageReport> {
+  const origin = normalizeHubOrigin(serverUrl);
+  if (!isHubTransportPermitted(origin)) {
+    throw new HubClientError("insecure_http_refused", "Client usage requires HTTPS or loopback HTTP");
+  }
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/v1/usage?${query}`, {
+    method: "GET",
+    cache: "no-store",
+    headers: new Headers({ Accept: "application/json", "x-opencodex-api-key": admissionToken }),
+  }, options.timeoutMs);
+  if (!response.ok) {
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    const message = response.status === 404 ? "Hub does not support client usage; upgrade the hub"
+      : response.status === 401 || response.status === 403 ? "Hub rejected this client's usage credential"
+      : `Hub usage request failed (${response.status})`;
+    throw new HubClientError(`hub_usage_http_${response.status}`, message, response.status);
+  }
+  if (!jsonCompatibleContentType(response)) {
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    throw new HubClientError("hub_usage_invalid", "Hub usage response was not JSON");
+  }
+  const text = await boundedText(response, MAX_HUB_USAGE_BYTES, { inactivityTimeoutMs: safeTimeout(options.timeoutMs) });
+  const report = parseHubUsage(parseJson(text, "hub_usage_invalid"));
+  if (!report) throw new HubClientError("hub_usage_invalid", "Hub usage response was invalid");
+  return report;
+}
+
+/**
+ * Read the hub's provider/login/roster state with the per-client DATA key (#4236).
+ *
+ * Sits beside `downloadClientCatalog` because it is the same kind of call: one bounded,
+ * schema-validated, unconditional GET on the data plane with the credential the client already
+ * holds. It deliberately has no management variant — the client has no hub management
+ * credential, and handing it one to read a list of booleans is the trade #809 already refused.
+ *
+ * A hub too old to serve the route answers 404, which surfaces as `hub_state_unsupported`. The
+ * caller must report that as "state unavailable" and MUST NOT fall back to the client's own
+ * local provider/login state: that silent fallback is the defect this route exists to fix.
+ */
+export async function fetchHubState(
+  serverUrl: string,
+  admissionToken: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<HubStateDTO> {
+  const origin = normalizeHubOrigin(serverUrl);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/v1/hub-state`, {
+    method: "GET",
+    headers: new Headers({ Accept: "application/json", "x-opencodex-api-key": admissionToken }),
+  }, options.timeoutMs, "headers");
+  if (response.status === 404) {
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    throw new HubClientError("hub_state_unsupported", "Hub does not serve /v1/hub-state; upgrade the hub", 404);
+  }
+  if (!response.ok) {
+    const code = response.status === 401 ? "hub_state_unauthorized" : `hub_state_http_${response.status}`;
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    throw new HubClientError(code, `Hub state request failed (${response.status})`, response.status);
+  }
+  if (!jsonCompatibleContentType(response)) {
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    throw new HubClientError("hub_state_content_type_invalid", "Hub state response was not JSON", response.status);
+  }
+  let text: string;
+  try {
+    text = await boundedText(response, MAX_HUB_STATE_BYTES, {
+      inactivityTimeoutMs: safeTimeout(options.timeoutMs),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new HubClientError("unreachable", "Hub state read stalled", undefined, { cause: error });
+    }
+    throw error;
+  }
+  const parsed = parseHubStateBody(parseJson(text, "hub_state_invalid"));
+  if (!parsed) throw new HubClientError("hub_state_schema_invalid", "Hub state response was invalid", response.status);
+  return parsed;
+}
+
+function desktopSnapshotModels(value: unknown): Desktop3pModelEntry[] {
+  const invalid = () => new HubClientError("desktop_snapshot_invalid", "Hub Desktop model snapshot was invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+  const raw = value as Record<string, unknown>;
+  if (raw.version !== 1) {
+    throw new HubClientError("desktop_snapshot_unsupported", "Hub Desktop model snapshot format is unsupported");
+  }
+  if (!Array.isArray(raw.models) || raw.models.length > DESKTOP_SNAPSHOT_MAX_ENTRIES) throw invalid();
+  const models: Desktop3pModelEntry[] = raw.models.map((row: unknown) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) throw invalid();
+    const entry = row as Record<string, unknown>;
+    const family = entry.anthropicFamilyTier;
+    if (typeof entry.name !== "string" || typeof entry.labelOverride !== "string"
+      || (family !== "opus" && family !== "fable" && family !== "sonnet" && family !== "haiku")
+      || (Object.hasOwn(entry, "isFamilyDefault") && typeof entry.isFamilyDefault !== "boolean")
+      || (Object.hasOwn(entry, "supports1m") && entry.supports1m !== true)
+      || (Object.hasOwn(entry, "prefer1m") && entry.prefer1m !== true)) throw invalid();
+    return {
+      name: entry.name,
+      labelOverride: entry.labelOverride,
+      anthropicFamilyTier: family,
+      ...(typeof entry.isFamilyDefault === "boolean" ? { isFamilyDefault: entry.isFamilyDefault } : {}),
+      ...(entry.supports1m === true ? { supports1m: true as const } : {}),
+      ...(entry.prefer1m === true ? { prefer1m: true as const } : {}),
+    };
+  });
+  try { assertDesktop3pModelsValid(models); } catch { throw invalid(); }
+  return models;
+}
+
+export async function downloadDesktop3pModels(
+  serverUrl: string,
+  admissionToken: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<{ version: 1; models: Desktop3pModelEntry[] }> {
+  const origin = normalizeHubOrigin(serverUrl);
+  if (!isHubTransportPermitted(origin)) {
+    throw new HubClientError("insecure_http_refused", "Desktop model snapshots require HTTPS or loopback HTTP");
+  }
+  try {
+    // Keep fetchBounded's total request deadline active through body consumption;
+    // continuous progress must not extend a small Desktop snapshot download indefinitely.
+    const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/v1/models?ids=desktop&format=desktop-config`, {
+      method: "GET",
+      headers: new Headers({
+        Accept: "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-opencodex-api-key": admissionToken,
+      }),
+    }, options.timeoutMs);
+    if (!response.ok || response.status === 304) {
+      try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
+      throw new HubClientError(`desktop_snapshot_http_${response.status}`, "Hub Desktop model snapshot request failed", response.status);
+    }
+    if (!jsonCompatibleContentType(response)) {
+      try { void response.body?.cancel().catch(() => {}); } catch { /* best effort */ }
+      throw new HubClientError("desktop_snapshot_invalid", "Hub Desktop model snapshot was invalid");
+    }
+    const body = await boundedText(response, DESKTOP_SNAPSHOT_MAX_BYTES, {
+      inactivityTimeoutMs: safeTimeout(options.timeoutMs),
+    });
+    return { version: 1, models: desktopSnapshotModels(parseJson(body, "desktop_snapshot_invalid")) };
+  } catch (error) {
+    // Existing low-level errors can carry a cause containing remote JSON or fetch details.
+    // Expose only the fixed category/message, never that cause or a remote field value.
+    if (error instanceof HubClientError) {
+      const message = error.code === "desktop_snapshot_invalid" ? "Hub Desktop model snapshot was invalid"
+        : error.code === "desktop_snapshot_unsupported" ? "Hub Desktop model snapshot format is unsupported"
+          : "Hub Desktop model snapshot request failed";
+      throw new HubClientError(error.code, message, error.status);
+    }
+    throw new HubClientError("unreachable", "Hub Desktop model snapshot request did not complete");
+  }
 }
 
 export async function probeClientKeyId(

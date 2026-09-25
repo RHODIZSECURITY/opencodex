@@ -109,6 +109,80 @@ describe("ocx provider", () => {
     }
   });
 
+  test("provider list --jsonl matches JSON configured records with escaped model values", () => {
+    const escapedModel = 'model-"quoted"\\path\nnext\r\ttab-한글';
+    const { dir } = freshConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+        "custom.models-1": {
+          adapter: "openai-chat",
+          baseUrl: "https://models.example.test/v1",
+          defaultModel: escapedModel,
+          models: ["plain-model", escapedModel],
+        },
+      },
+      defaultProvider: "custom.models-1",
+    });
+    try {
+      const result = runCli(["provider", "list", "--jsonl"], { OPENCODEX_HOME: dir });
+      const json = runCli(["provider", "list", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      expect(json.status).toBe(0);
+      // Keep every physical line: embedded newlines must be escaped, and only
+      // the final record terminator may produce an empty split element.
+      const lines = result.stdout.split(/\r?\n/);
+      expect(lines.pop()).toBe("");
+      expect(lines).toHaveLength(2);
+      const records = lines.map(line => JSON.parse(line));
+      const envelope = JSON.parse(json.stdout);
+      expect(records).toEqual(envelope.configured);
+      expect(envelope.registryCount).toBeGreaterThan(0);
+      expect(records).toEqual([
+        {
+          name: "openai",
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          defaultModel: null,
+          isDefault: false,
+          source: "registry",
+          models: [],
+        },
+        {
+          name: "custom.models-1",
+          adapter: "openai-chat",
+          baseUrl: "https://models.example.test/v1",
+          authMode: "key",
+          defaultModel: escapedModel,
+          isDefault: true,
+          source: "custom",
+          models: ["plain-model", escapedModel],
+        },
+      ]);
+    } finally {
+      removeTreeWithRetry(dir);
+    }
+  });
+
+  test.each([
+    ["--json", "--jsonl"],
+    ["--jsonl", "--json"],
+  ])("provider list rejects %s %s without stdout", (first, second) => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli(["provider", "list", first, second], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Use only one of --json or --jsonl");
+    } finally {
+      removeTreeWithRetry(dir);
+    }
+  });
+
   test("provider add registry provider seeds config", () => {
     const { dir } = freshConfig();
     try {
@@ -256,6 +330,51 @@ describe("ocx provider", () => {
       expect(config.providers["my-llm"].baseUrl).toBe("http://localhost:8080/v1");
       expect(config.providers["my-llm"].apiKey).toBe("test-key");
       expect(config.providers["my-llm"].defaultModel).toBe("my-model");
+    } finally {
+      removeTreeWithRetry(dir);
+    }
+  });
+
+  test.each(["compatible", "reject-lossy"] as const)("provider add persists Google tool-schema policy %s", policy => {
+    const { dir } = freshConfig();
+    try {
+      const result = runCli([
+        "provider", "add", "google-policy",
+        "--adapter", "google",
+        "--base-url", "https://generativelanguage.googleapis.com",
+        "--api-key", "test-key",
+        "--google-tool-schema-policy", policy,
+      ], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      expect(readConfig(dir).providers["google-policy"].googleToolSchemaPolicy).toBe(policy);
+    } finally {
+      removeTreeWithRetry(dir);
+    }
+  });
+
+  test("provider add rejects invalid or non-Google tool-schema policy without changing config", () => {
+    const { dir, configPath } = freshConfig();
+    try {
+      const before = readFileSync(configPath, "utf8");
+      const invalid = runCli([
+        "provider", "add", "google-policy",
+        "--adapter", "google",
+        "--base-url", "https://generativelanguage.googleapis.com",
+        "--google-tool-schema-policy", "silent-loss",
+      ], { OPENCODEX_HOME: dir });
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain('must be "compatible" or "reject-lossy"');
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+
+      const wrongAdapter = runCli([
+        "provider", "add", "chat-policy",
+        "--adapter", "openai-chat",
+        "--base-url", "https://example.test/v1",
+        "--google-tool-schema-policy", "reject-lossy",
+      ], { OPENCODEX_HOME: dir });
+      expect(wrongAdapter.status).toBe(1);
+      expect(wrongAdapter.stderr).toContain("requires the google adapter");
+      expect(readFileSync(configPath, "utf8")).toBe(before);
     } finally {
       removeTreeWithRetry(dir);
     }
@@ -569,4 +688,32 @@ describe("ocx provider add --sync", () => {
       removeTreeWithRetry(dir);
     }
   });
+});
+
+
+test("provider add --force preserves all explicit model capability axes", () => {
+  const declarations = { ModelA: { inputModalities: ["text"], contextTier: "long_context", video: { processing: "agentic" } }, modela: { inputModalities: ["text", "image"] } };
+  const { dir } = freshConfig({ defaultProvider: "caps", providers: { caps: {
+    adapter: "openai-chat", baseUrl: "https://example.test/v1", modelCapabilities: declarations,
+  } } });
+  try {
+    const result = runCli(["provider", "add", "caps", "--adapter", "openai-chat", "--base-url", "https://example.test/v1", "--force", "--json"], { OPENCODEX_HOME: dir });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readConfig(dir).providers.caps.modelCapabilities).toEqual(declarations);
+  } finally { removeTreeWithRetry(dir); }
+});
+
+
+test("provider add --text-only preserves other capability axes during force overwrite", () => {
+  const { dir } = freshConfig({ defaultProvider: "caps", providers: { caps: {
+    adapter: "openai-chat", baseUrl: "https://example.test/v1",
+    modelCapabilities: { ModelA: { contextTier: "long_context", video: { processing: "agentic" } }, modela: { inputModalities: ["text", "image"] } },
+  } } });
+  try {
+    const result = runCli(["provider", "add", "caps", "--adapter", "openai-chat", "--base-url", "https://example.test/v1", "--force", "--model", "ModelA", "--text-only", "--json"], { OPENCODEX_HOME: dir });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readConfig(dir).providers.caps.modelCapabilities).toEqual({
+      ModelA: { inputModalities: ["text"], contextTier: "long_context", video: { processing: "agentic" } }, modela: { inputModalities: ["text", "image"] },
+    });
+  } finally { removeTreeWithRetry(dir); }
 });

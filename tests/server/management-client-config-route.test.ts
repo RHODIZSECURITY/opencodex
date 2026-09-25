@@ -8,7 +8,7 @@ import {
   seedCodexModelEntitlementsForTests,
 } from "../../src/codex/model-entitlements";
 import { handleManagementAPI } from "../../src/server/management-api";
-import { loadExportModels } from "../../src/server/management/model-rows";
+import { listManagementModelRows, loadExportModels } from "../../src/server/management/model-rows";
 import {
   OPENCODE_API_KEY_ENV,
   OPENCODE_CONFIG_SCHEMA,
@@ -21,9 +21,14 @@ import {
   type ExportModel,
   type HermesGeneratedConfig,
   type McodeGeneratedConfig,
+  type KimiGeneratedConfig,
+  type OpenclawGeneratedConfig,
   type OpencodeGeneratedConfig,
   type PiGeneratedConfig,
+  type RaycastGeneratedConfig,
+  type ZcodeGeneratedConfig,
 } from "../../src/clients/config-export";
+import type { ClineGeneratedConfig } from "../../src/clients/config-export/cline";
 import type { OcxConfig } from "../../src/types";
 import { catalogConvergenceFactory } from "../helpers/catalog-convergence";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -161,6 +166,75 @@ function toExportModel(row: ModelRow): ExportModel {
 }
 
 
+describe("native Anthropic image input reaches client documents", () => {
+  test.each(["anthropic", "anthropic-apikey"])("all capability-aware exports advertise image input for %s", async (provider) => {
+    const config = {
+      port: 10100,
+      hostname: "127.0.0.1",
+      defaultProvider: provider,
+      providers: {
+        [provider]: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          authMode: provider === "anthropic" ? "oauth" : "key",
+          liveModels: false,
+          // Anthropic Fast is opt-in; enable it so the export roster includes the --fast selectors.
+          fastEnabled: true,
+        },
+      },
+    } as unknown as OcxConfig;
+    // Use the production catalog, not hand-authored ExportModels that would conceal missing seeds.
+    const models = (await loadExportModels(config))
+      .filter(model => model.provider === provider);
+    expect(models.length).toBeGreaterThan(0);
+    const context = { baseUrl: "http://127.0.0.1:10100/v1", config, models };
+    // Client exports must include exactly the documented Anthropic Fast selectors. Keep this
+    // roster explicit so new base catalog models cannot silently change the assertion.
+    const expectedInputs = models
+      .map(model => ({ id: model.namespaced, input: ["text", "image"] }))
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const expectedFastInputs = ["claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"]
+      .map(model => ({ id: `${provider}/${model}--fast`, input: ["text", "image"] }))
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const expectImageInputs = (rows: Array<{ id: string; input: string[] }>) => {
+      const baseRows = rows.filter(row => !row.id.endsWith("--fast"));
+      const fastRows = rows.filter(row => row.id.endsWith("--fast"));
+      expect(baseRows).toEqual(expectedInputs);
+      expect(fastRows).toEqual(expectedFastInputs);
+    };
+
+    for (const client of ["aside", "pi", "gajae", "prime", "omo", "omp"] as const) {
+      const document = buildClientConfig(client, context) as PiGeneratedConfig;
+      const rows = document.providers[OPENCODE_PROVIDER_ID]!.models;
+      expectImageInputs(rows.map(({ id, input }) => ({ id, input })));
+    }
+    const dsh = buildClientConfig("dsh", context) as DshGeneratedConfig;
+    expectImageInputs(dsh["llm-pi-ai"].providers[OPENCODE_PROVIDER_ID]!.models.map(({ id, input }) => ({ id, input })));
+
+    const openclaw = buildClientConfig("openclaw", context) as OpenclawGeneratedConfig;
+    expectImageInputs(openclaw.models.providers[OPENCODE_PROVIDER_ID]!.models.map(({ id, input }) => ({ id, input })));
+    const kimi = buildClientConfig("kimi", context) as KimiGeneratedConfig;
+    const opencode = buildClientConfig("opencode", context) as OpencodeGeneratedConfig;
+    const zcode = buildClientConfig("zcode", context) as ZcodeGeneratedConfig;
+    const cline = buildClientConfig("cline", context) as ClineGeneratedConfig;
+    const hermes = buildClientConfig("hermes", context) as HermesGeneratedConfig;
+    const raycast = buildClientConfig("raycast", context) as RaycastGeneratedConfig;
+    for (const model of models) {
+      expect(kimi.models[`${OPENCODE_PROVIDER_ID}/${model.namespaced}`]?.capabilities).toEqual(["image_in"]);
+      for (const block of [opencode.provider, opencode.providers]) {
+        expect(block[OPENCODE_PROVIDER_ID]!.models[model.namespaced]?.modalities?.input).toEqual(["text", "image"]);
+        expect(block[OPENCODE_PROVIDER_ID]!.models[model.namespaced]?.attachment).toBe(true);
+      }
+      expect(zcode.provider[OPENCODE_PROVIDER_ID]!.models[model.namespaced]?.modalities.input).toEqual(["text", "image"]);
+      const clineModel = cline.catalog.providers[OPENCODE_PROVIDER_ID]!.models[model.namespaced];
+      expect(clineModel?.modalities?.input).toEqual(["text", "image"]);
+      expect(clineModel?.supportsVision).toBe(true);
+      expect(hermes.providers[OPENCODE_PROVIDER_ID]!.models[model.namespaced]?.supports_vision).toBe(true);
+      expect(raycast.providers[0]!.models.find(row => row.id === model.namespaced)?.abilities.vision.supported).toBe(true);
+    }
+  });
+});
+
 describe("native Anthropic effort ladder reaches the Aside document", () => {
   /**
    * The end-to-end guard for the defect: native Anthropic rows used to reach Aside with no
@@ -215,6 +289,50 @@ describe("native Anthropic effort ladder reaches the Aside document", () => {
   });
 });
 describe("GET /api/client-config", () => {
+  for (const hostname of ["0.0.0.0", "::", "192.0.2.40"]) {
+    test(`Raycast export refuses authenticated bind ${hostname} before generating a document`, async () => {
+      const response = await clientConfigApi(baseConfig({ hostname }), "?client=raycast");
+      expect(response.status).toBe(400);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.reason).toBe("non_loopback");
+      expect(body.config).toBeUndefined();
+      expect(body.text).toBeUndefined();
+    });
+  }
+
+  test("Raycast export uses the declared unauthenticated listener instead of the management port", async () => {
+    const response = await clientConfigApi(baseConfig({
+      hostname: "0.0.0.0",
+      unauthenticatedLoopbackListener: { enabled: true, port: 10237 },
+    }), "?client=raycast");
+    expect(response.status).toBe(200);
+    const body = await response.json() as ClientConfigEnvelope;
+    const document = body.config as RaycastGeneratedConfig;
+    expect(document.providers[0]!.base_url).toBe("http://127.0.0.1:10237/v1");
+    expect(document.providers[0]!.models.length).toBeGreaterThan(0);
+    expect(body.text).not.toContain(REAL_LOOKING_KEY);
+    expect(body.text).not.toContain("api_keys");
+  });
+
+  test("OpenCode export keeps its envelope and uses the declared unauthenticated listener", async () => {
+    const response = await clientConfigApi(baseConfig({
+      hostname: "0.0.0.0", unauthenticatedLoopbackListener: { enabled: true, port: 10237 },
+    }), "?client=opencode");
+    expect(response.status).toBe(200);
+    const body = await response.json() as ClientConfigEnvelope;
+    expect(body.client).toBe("opencode");
+    expect((body.config as OpencodeGeneratedConfig).provider.opencodex!.options.baseURL)
+      .toBe("http://127.0.0.1:10237/v1");
+  });
+
+  test("Raycast export uses the main port for an ordinary loopback bind", async () => {
+    const response = await clientConfigApi(baseConfig(), "?client=raycast");
+    expect(response.status).toBe(200);
+    const body = await response.json() as ClientConfigEnvelope;
+    expect((body.config as RaycastGeneratedConfig).providers[0]!.base_url)
+      .toBe("http://127.0.0.1:10100/v1");
+  });
+
   test("opencode envelope carries the shared builder's exact bytes", async () => {
     const config = baseConfig();
     const response = await clientConfigApi(config, "?client=opencode");
@@ -241,7 +359,15 @@ describe("GET /api/client-config", () => {
     const document = body.config as OpencodeGeneratedConfig;
     expect(document.$schema).toBe(OPENCODE_CONFIG_SCHEMA);
     const models = document.provider[OPENCODE_PROVIDER_ID].models;
-    expect(models["a/m1"]).toEqual({ name: "m1 (a)", limit: { context: 128_000, output: 32_000 } });
+    // The row's declared modalities now reach opencode's own capability fields; without them
+    // opencode gates attachments client-side and the image never leaves the TUI (#4286).
+    expect(models["a/m1"]).toEqual({
+      name: "m1 (a)", limit: { context: 128_000, output: 32_000 },
+      attachment: true, modalities: { input: ["text", "image"], output: ["text"] },
+    });
+    // m2 declares text-only in `modelInputModalities`, which is exactly what routes it through
+    // the vision sidecar: the catalog advertises image so the attachment can reach the proxy.
+    expect(models["a/m2"]!.modalities).toEqual({ input: ["text", "image"], output: ["text"] });
     expect(models["b/no-context"]).toEqual({ name: "no-context (b)" });
   }, 15_000);
 
@@ -348,7 +474,13 @@ describe("GET /api/client-config", () => {
       const config = baseConfig({
         providers: {
           ...baseConfig().providers,
-          openai: { authMode: "forward", liveModels: false, models: [] },
+          // Spelled out the same way as the other `openai` fixture in this file: `adapter` and
+          // `baseUrl` are required by the persisted-config schema, so a row without them is not a
+          // state configuration loading can produce, and discovery builds a request from it.
+          openai: {
+            adapter: "openai-responses", authMode: "forward", liveModels: false,
+            baseUrl: "https://chatgpt.com/backend-api/codex", models: [],
+          },
         },
       });
       const response = await clientConfigApi(config, "?client=opencode");
@@ -643,5 +775,69 @@ describe("default Fast availability reaches external exports", () => {
     expect(rows.find(row => row.namespaced === "fixture/m")?.fastRowAvailable).toBe(false);
     const result = buildClientConfig("pi", { baseUrl: "http://127.0.0.1:10100/v1", models: rows, config }) as PiGeneratedConfig;
     expect(result.providers.opencodex.models.map(model => model.id)).not.toContain("fixture/m--fast");
+  });
+});
+
+describe("Pi and Aside provider selection", () => {
+  test.each(["pi", "aside"] as const)("%s exports selected Grok models while management retains the full roster", async client => {
+    const config = baseConfig({
+      fastRows: false,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", authMode: "key",
+          liveModels: false, models: ["grok-4.6", "grok-4.5", "grok-4.3"],
+          selectedModels: ["grok-4.6"],
+        },
+      },
+    });
+    const ids = async () => {
+      const models = await loadExportModels(config);
+      const doc = buildClientConfig(client, { baseUrl: "http://127.0.0.1:10100/v1", config, models }) as PiGeneratedConfig;
+      return doc.providers.opencodex!.models.map(model => model.id).filter(id => id.startsWith("xai/"));
+    };
+    const management = await listManagementModelRows(config);
+    expect(management.filter(row => row.provider === "xai")).toHaveLength(3);
+    expect(await ids()).toEqual(["xai/grok-4.6"]);
+    config.disabledModels = ["xai/grok-4.6"];
+    expect(await ids()).toEqual([]);
+    config.disabledModels = [];
+    config.providers.xai!.selectedModels = [];
+    expect(await ids()).toEqual(["xai/grok-4.3", "xai/grok-4.5", "xai/grok-4.6"]);
+  });
+});
+
+describe("visibility changes refresh connected client catalogs", () => {
+  test.each([
+    ["/api/selected-models", { provider: "a", models: ["m1"] }, ["a/m1"]],
+    ["/api/disabled-models", { models: ["a/m2"] }, ["a/m1"]],
+    ["/api/model-visibility", { scope: "models", provider: "a", targets: [{ id: "m2" }], enabled: false }, ["a/m1"]],
+    ["/api/model-presets", { provider: "a", mode: "all" }, ["a/m1", "a/m2"]],
+  ] as const)("%s refreshes from the persisted selection and reports refused clients", async (path, body, expected) => {
+    const config = baseConfig({ fastRows: false });
+    let saved = false;
+    let refreshCalls = 0;
+    const url = new URL(`http://127.0.0.1:10100${path}`);
+    const response = await handleManagementAPI(new Request(url, {
+      method: "PUT", headers: { Host: url.host, "content-type": "application/json" }, body: JSON.stringify(body),
+    }), url, config, {
+      saveConfigPreservingClaudeCode: () => { saved = true; },
+      createManagementConvergeCodex: catalogConvergenceFactory(),
+      refreshOwnedCatalogIntegrations: async input => {
+        expect(saved).toBe(true);
+        expect(input.config).toBe(config);
+        expect(input.port).toBe(10100);
+        const models = typeof input.models === "function" ? await input.models() : input.models;
+        expect(models.filter(row => row.provider === "a").map(row => row.namespaced)).toEqual([...expected]);
+        refreshCalls += 1;
+        return [{ client: "pi", ok: false, reason: "integration_mutation_busy" }, { client: "aside", ok: true, changed: true }];
+      },
+    });
+    expect(response?.status).toBe(200);
+    expect(refreshCalls).toBe(1);
+    expect(await response!.json()).toMatchObject({
+      ok: true,
+      clientIntegrations: [{ client: "pi", ok: false, reason: "integration_mutation_busy" }, { client: "aside", ok: true, changed: true }],
+    });
   });
 });

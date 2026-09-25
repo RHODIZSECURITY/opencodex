@@ -51,6 +51,20 @@ async function seedOAuth(expires = Date.now() + 3_600_000, projectId?: string | 
   });
 }
 
+async function seedOAuthPool(count: number): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await saveCredential("google-antigravity", {
+      access: `pool-access-${index}`,
+      refresh: `pool-refresh-${index}`,
+      expires: Date.now() + 3_600_000,
+      accountId: `pool-account-${index}`,
+      email: `pool-${index}@example.test`,
+      projectId: `pool-project-${index}`,
+      source: "oauth",
+    }, { addAccount: true });
+  }
+}
+
 function antigravityConfig(): OcxConfig {
   return {
     port: 0,
@@ -292,6 +306,40 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     }
   });
 
+  test("transient 429 preserves three attempts per credential and exhausts the whole OAuth pool before returning", async () => {
+    await seedOAuthPool(4);
+    saveConfig(antigravityConfig());
+    const observed = installOAuthFetch(Array.from({ length: 12 }, () => 429));
+    const server = startServer(0);
+    try {
+      const response = await postResponses(server);
+      expect(response.status).toBe(429);
+      await response.text();
+
+      expect(observed.chatAuth).toHaveLength(12);
+      const groups: Array<{ auth: string; count: number }> = [];
+      for (const auth of observed.chatAuth) {
+        const previous = groups.at(-1);
+        if (previous?.auth === auth) previous.count += 1;
+        else groups.push({ auth, count: 1 });
+      }
+      expect(groups.map(group => group.count)).toEqual([3, 3, 3, 3]);
+      expect(new Set(groups.map(group => group.auth)).size).toBe(4);
+
+      expect(observed.chatProjects).toHaveLength(12);
+      const projectGroups: Array<{ project: string; count: number }> = [];
+      for (const project of observed.chatProjects) {
+        const previous = projectGroups.at(-1);
+        if (previous?.project === project) previous.count += 1;
+        else projectGroups.push({ project, count: 1 });
+      }
+      expect(projectGroups.map(group => group.count)).toEqual([3, 3, 3, 3]);
+      expect(new Set(projectGroups.map(group => group.project)).size).toBe(4);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test.each([false, true])("HTTP 403 never triggers OAuth refresh (native=%s)", async native => {
     await seedOAuth();
     saveConfig(native ? antigravityPassthroughConfig() : antigravityConfig());
@@ -353,7 +401,7 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     }
   });
 
-  test.each([false, true])("401 stays pinned to rejected account A after active switches to B (newer A generation=%s)", async newerGeneration => {
+  test.each([false, true])("401 recovery follows the newly selected account and its project (newer A generation=%s)", async newerGeneration => {
     await seedOAuth();
     const accountA = getAccountSet("google-antigravity")!.activeAccountId;
     const config = antigravityConfig();
@@ -382,17 +430,17 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
       const response = await postResponses(server);
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("ok after google refresh");
-      expect(observed.counts.refresh).toBe(newerGeneration ? 0 : 1);
-      expect(observed.chatAuth).toEqual(["Bearer rejected-access", newerGeneration ? "Bearer newer-access-a" : "Bearer fresh-access"]);
-      expect(observed.chatProjects).toEqual(["initial-project-id", newerGeneration ? "newer-project-a" : "refreshed-project-a"]);
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual(["Bearer rejected-access", "Bearer access-b"]);
+      expect(observed.chatProjects).toEqual(["initial-project-id", "project-b"]);
       const accounts = getAccountSet("google-antigravity")!;
       expect(accounts.activeAccountId).not.toBe(accountA);
       expect(accounts.accounts.find(account => account.id === accounts.activeAccountId)?.credential).toMatchObject({
         access: "access-b", projectId: "project-b",
       });
       expect(accounts.accounts.find(account => account.id === accountA)?.credential).toMatchObject({
-        access: newerGeneration ? "newer-access-a" : "fresh-access",
-        projectId: newerGeneration ? "newer-project-a" : "refreshed-project-a",
+        access: newerGeneration ? "newer-access-a" : "rejected-access",
+        projectId: newerGeneration ? "newer-project-a" : "initial-project-id",
       });
     } finally {
       await server.stop(true);
@@ -594,45 +642,45 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
     }
   });
 
-  test("negative project-less refresh rejects replay in native Responses passthrough", async () => {
+  test("project-less account is refused before dispatch in native Responses passthrough", async () => {
     await seedOAuth(undefined, null);
     saveConfig(antigravityPassthroughConfig());
     const observed = installOAuthFetch([401], { refreshedProjectId: null });
     const server = startServer(0);
     try {
       const response = await postResponses(server);
-      expect(observed.requestPaths).toEqual(["/v1/responses"]);
+      expect(observed.requestPaths).toEqual([]);
       const json = await response.json() as { error?: { code?: string; message?: string; type?: string } };
       expect(response.status).toBe(401);
       expect(json.error?.type).toBe("authentication_error");
       expect(json.error?.message).toBe(PUBLIC_OAUTH_AUTHENTICATION_ERROR);
-      expect(observed.counts.refresh).toBe(1);
-      expect(observed.chatAuth).toEqual(["Bearer rejected-access"]);
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual([]);
     } finally {
       await server.stop(true);
     }
   });
 
-  test("negative project-less refresh rejects replay in generic adapter", async () => {
+  test("project-less account is refused before dispatch in generic adapter", async () => {
     await seedOAuth(undefined, null);
     saveConfig(antigravityConfig());
     const observed = installOAuthFetch([401], { refreshedProjectId: null });
     const server = startServer(0);
     try {
       const response = await postResponses(server);
-      expect(observed.requestPaths).toEqual(["/v1internal:generateContent"]);
+      expect(observed.requestPaths).toEqual([]);
       const json = await response.json() as { error?: { code?: string; message?: string; type?: string } };
       expect(response.status).toBe(401);
       expect(json.error?.type).toBe("authentication_error");
       expect(json.error?.message).toBe(PUBLIC_OAUTH_AUTHENTICATION_ERROR);
-      expect(observed.counts.refresh).toBe(1);
-      expect(observed.chatAuth).toEqual(["Bearer rejected-access"]);
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual([]);
     } finally {
       await server.stop(true);
     }
   });
 
-  test("negative project-less refresh rejects replay in chat completions", async () => {
+  test("project-less account is refused before dispatch in chat completions", async () => {
     await seedOAuth(undefined, null);
     saveConfig(antigravityConfig());
     const observed = installOAuthFetch([401], { refreshedProjectId: null });
@@ -643,8 +691,8 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
       expect(response.status).toBe(401);
       expect(json.error?.type).toBe("authentication_error");
       expect(json.error?.message).toBe(PUBLIC_OAUTH_AUTHENTICATION_ERROR);
-      expect(observed.counts.refresh).toBe(1);
-      expect(observed.chatAuth).toEqual(["Bearer rejected-access"]);
+      expect(observed.counts.refresh).toBe(0);
+      expect(observed.chatAuth).toEqual([]);
     } finally {
       await server.stop(true);
     }

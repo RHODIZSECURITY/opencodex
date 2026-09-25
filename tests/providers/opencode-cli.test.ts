@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as directHttp from "../../src/server/direct-local-http";
+import { opencodeCatalogToken } from "../../src/lib/admin-secrets";
+import * as childProcess from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearModelCache } from "../../src/codex/model-cache";
@@ -16,6 +19,7 @@ import {
   buildOpencodeProviderBlockFromCatalog,
   buildOpencodeProviderBlocksFromCatalog,
   buildOpencodeV2ProviderBlock,
+  cmdOpencode,
   fetchOpencodeProxyModels,
   isOpencodeRuntimeConfigError,
   mergeOpencodeRuntimeConfig,
@@ -33,6 +37,7 @@ import {
   serializeOpencodeRuntimeConfig,
 } from "../../src/cli/opencode";
 import type { OcxConfig } from "../../src/types";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 function cfg(extra?: Partial<OcxConfig>): OcxConfig {
   return {
@@ -124,9 +129,9 @@ describe("ocx opencode provider block", () => {
   });
 
   test("native slugs pick up authoritative context windows from the resolver", () => {
-    const block = buildOpencodeProviderBlock(10100, ["gpt-5.4", "unknown-native"], [], slug =>
-      slug === "gpt-5.4" ? 1_000_000 : undefined);
-    expect(block.models["gpt-5.4"]?.limit).toEqual({ context: 1_000_000, output: SCHEMA_REQUIRED_OUTPUT_BUDGET });
+    const block = buildOpencodeProviderBlock(10100, ["gpt-5.6-luna", "unknown-native"], [], slug =>
+      slug === "gpt-5.6-luna" ? 1_000_000 : undefined);
+    expect(block.models["gpt-5.6-luna"]?.limit).toEqual({ context: 1_000_000, output: SCHEMA_REQUIRED_OUTPUT_BUDGET });
     expect(block.models["unknown-native"]?.limit).toBeUndefined();
   });
 
@@ -235,6 +240,71 @@ describe("ocx opencode proxy model catalog", () => {
   const ENV_KEY = "OCX_TEST_OPENCODE_PROXY_ONLY_KEY";
   const RESOLVED = "proxy-only-resolved-key";
   const PROVIDER = "proxyenv";
+
+  test("the first launcher reads selection persisted during /api/models before building both provider blocks", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-opencode-discovery-selection-"));
+    const envKeys = ["OPENCODEX_HOME", "CODEX_HOME", "XDG_CONFIG_HOME", "OPENCODEX_ADMIN_AUTH_TOKEN", OPENCODE_CONFIG_CONTENT_ENV];
+    const previous = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    const configPath = join(home, "config.json");
+    const pending = cfg({
+      defaultProvider: "pending", fastRows: false,
+      providers: { pending: {
+        adapter: "openai-chat", baseUrl: "https://fixture.example.test/v1", liveModels: false,
+        models: ["chosen", "other"],
+        initialModelSelection: { version: 1, registrationId: crypto.randomUUID(), status: "pending" },
+      } },
+    });
+    const ready = structuredClone(pending);
+    ready.providers.pending!.initialModelSelection!.status = "ready";
+    ready.providers.pending!.selectedModels = ["chosen"];
+    const rows = ["chosen", "other"].map(id => ({ provider: "pending", id, namespaced: `pending/${id}` }));
+    expect(opencodeCatalogFromProxyRows(rows, pending)).toEqual([]);
+    const liveness = await import("../../src/server/proxy-liveness");
+    const finder = spyOn(liveness, "findLiveProxy").mockResolvedValue({
+      port: 10123, hostname: "127.0.0.1", pid: null, source: "config",
+    });
+    const fetcher = spyOn(directHttp, "directLocalHttpFetch").mockImplementation(async (input, init) => {
+      expect(new Headers(init?.headers).get("x-opencodex-api-key")).toBe(opencodeCatalogToken("fixture-admin-token"));
+      expect(String(input)).toBe("http://127.0.0.1:10123/api/models");
+      expect(JSON.parse(readFileSync(configPath, "utf8")).providers.pending.initialModelSelection.status).toBe("pending");
+      writeFileSync(configPath, JSON.stringify(ready));
+      return Response.json(rows);
+    });
+    let inline = "";
+    // Exercise cmdOpencode through env construction without launching an installed
+    // OpenCode or proxy process. All config reads still use the actual temp files.
+    const spawn = spyOn(childProcess, "spawn").mockImplementation((...args) => {
+      inline = args[2]?.env?.[OPENCODE_CONFIG_CONTENT_ENV] ?? "";
+      const child = new childProcess.ChildProcess();
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      process.env.OPENCODEX_HOME = home;
+      process.env.OPENCODEX_ADMIN_AUTH_TOKEN = "fixture-admin-token";
+      process.env.CODEX_HOME = join(home, "codex");
+      process.env.XDG_CONFIG_HOME = join(home, "xdg");
+      delete process.env[OPENCODE_CONFIG_CONTENT_ENV];
+      mkdirSync(process.env.CODEX_HOME);
+      writeFileSync(configPath, JSON.stringify(pending));
+      expect(await cmdOpencode([])).toBe(0);
+      expect(finder).toHaveBeenCalledTimes(1);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      const injected = JSON.parse(inline);
+      expect(Object.keys(injected.provider.opencodex.models)).toEqual(["pending/chosen"]);
+      expect(Object.keys(injected.providers.opencodex.models)).toEqual(["pending/chosen"]);
+      expect(pending.providers.pending!.initialModelSelection!.status).toBe("pending");
+    } finally {
+      finder.mockRestore(); fetcher.mockRestore(); spawn.mockRestore(); stderr.mockRestore();
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      removeTreeWithRetry(home);
+    }
+  });
 
   test("uses /api/models namespaced selectors and resolves env-backed provider keys only in the proxy", async () => {
     const originalFetch = globalThis.fetch;
@@ -353,6 +423,38 @@ describe("ocx opencode proxy model catalog", () => {
     expect(blocks.v1.models["opencode-go/glm-5.3"]).not.toHaveProperty("variants");
     expect(Object.keys(blocks.v2.models)).toEqual(Object.keys(blocks.v1.models));
     expect(Object.keys(blocks.v1.models)).not.toContain("opencode-go/hidden");
+  });
+
+  test("carries /api/models modalities into the blocks the launcher injects", () => {
+    // Same failure mode as the ladder above, one field over: the management API reports
+    // image input for these rows and opencode gates attachments client-side, so dropping the
+    // field here leaves the image blocked before any request reaches the proxy (#4286).
+    const rows = [
+      { namespaced: "gpt-5.6-luna", native: true, provider: "openai", id: "gpt-5.6-luna", inputModalities: ["text", "image"] },
+      { namespaced: "opencode-go/glm-5.3", provider: "opencode-go", id: "glm-5.3", inputModalities: ["text", "image"] },
+      { namespaced: "opencode-go/text-only", provider: "opencode-go", id: "text-only", inputModalities: ["text"] },
+      { namespaced: "opencode-go/undeclared", provider: "opencode-go", id: "undeclared" },
+      { namespaced: "opencode-go/hidden", provider: "opencode-go", id: "hidden", disabled: true, inputModalities: ["text", "image"] },
+    ];
+    const catalog = opencodeCatalogFromProxyRows(rows, cfg());
+    const blocks = buildOpencodeProviderBlocksFromCatalog(10100, catalog, undefined, cfg());
+
+    for (const block of [blocks.v1, blocks.v2]) {
+      expect(block.models["gpt-5.6-luna"]).toMatchObject({
+        attachment: true, modalities: { input: ["text", "image"], output: ["text"] },
+      });
+      expect(block.models["opencode-go/glm-5.3"]).toMatchObject({
+        attachment: true, modalities: { input: ["text", "image"], output: ["text"] },
+      });
+      expect(block.models["opencode-go/text-only"]).toMatchObject({
+        attachment: false, modalities: { input: ["text"], output: ["text"] },
+      });
+      // A row that declares nothing keeps the exact entry shape opencode already reads as
+      // text-only — the pre-#4286 bytes, not a synthesized capability list.
+      expect(block.models["opencode-go/undeclared"]).not.toHaveProperty("attachment");
+      expect(block.models["opencode-go/undeclared"]).not.toHaveProperty("modalities");
+      expect(Object.keys(block.models)).not.toContain("opencode-go/hidden");
+    }
   });
 
   test("the launcher's V1 and V2 blocks share one connection", () => {
