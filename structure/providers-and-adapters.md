@@ -99,6 +99,8 @@ and valid padded or unpadded payloads pass unchanged without a decoding allocati
 Adapter output must stay in internal `AdapterEvent` form until `src/bridge/sse.ts` converts it back
 to Responses SSE or WebSocket frames, or `src/bridge/response-json.ts` buffers it into a JSON
 response. `src/bridge.ts` is the compatibility facade that re-exports both.
+`src/adapters/run-turn-queue.ts` preflight callers may supply an optional wait bound; timeout hands
+the outstanding iterator read to replay once, while callers without a bound keep the existing wait.
 
 The image/video loop bounds each hidden iteration before replay or fulfillment; see
 [media iteration retention](transports/inventory.md#media-iteration-retention).
@@ -386,3 +388,6 @@ normalization, and `tool_choice` alias resolution, so every adapter matches a de
 same way. `src/types/wire.ts` owns accepted wire enumerations such as the per-provider upstream
 HTTP-version pin, shared by the config load schema, the management write boundary, and the fetch
 runtime, so no boundary accepts a value another rejects.
+
+Preflight heartbeat retention keeps `replayUnsafe` sticky in the replayed tail, so a second
+preflight cannot forget earlier side effects after the original marker is evicted.
