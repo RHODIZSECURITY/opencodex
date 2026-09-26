@@ -22,7 +22,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function mountWindow(
   role: "standalone" | "hub",
-  options: { session?: boolean; url?: string; managementAuthRequired?: boolean } = {},
+  options: { session?: boolean; url?: string; managementAuthTag?: "0" | "1" } = {},
 ): void {
   const url = options.url ?? "http://localhost/#remote";
   const session = options.session ?? true;
@@ -31,7 +31,7 @@ function mountWindow(
   const head = testWindow.document.head;
   const metaEntries: Array<readonly [string, string]> = [
     ["opencodex-runtime-role", role],
-    ...(options.managementAuthRequired ? [["opencodex-management-auth-required", "1"]] as const : []),
+    ...(options.managementAuthTag ? [["opencodex-management-auth-required", options.managementAuthTag]] as const : []),
     ...(session ? [
       ["opencodex-session-token", "ocx_session_route_test"],
       ["opencodex-session-csrf", "route-test-csrf"],
@@ -122,8 +122,8 @@ for (const role of ["standalone", "hub"] as const) {
 test("an authenticated remote hub without a GUI session offers one-time pairing", async () => {
   mountWindow("hub", {
     session: false,
-    url: "https://opencodex.rhodiz.net/#remote",
-    managementAuthRequired: true,
+    url: "https://hub.example.test/#remote",
+    managementAuthTag: "1",
   });
   const { resetApiAuthFetchForTests, installApiAuthFetch } = await import("../src/api");
   resetApiAuthFetchForTests();
@@ -140,6 +140,26 @@ test("an authenticated remote hub without a GUI session offers one-time pairing"
   });
   await waitFor(() => (container.textContent ?? "").includes("Connect this dashboard to the hub"));
   expect(container.textContent).not.toContain("Sign in to the local dashboard session");
-  expect(container.textContent).toContain('ocx gui pair --origin "https://opencodex.rhodiz.net"');
+  expect(container.textContent).toContain('ocx gui pair --origin "https://hub.example.test"');
   expect(linkStatusReads).toBe(0);
 });
+
+for (const managementAuthTag of [undefined, "0"] as const) {
+  test(`a remote hub without an explicit auth-required declaration does not force pairing (${managementAuthTag ?? "missing"})`, async () => {
+    mountWindow("hub", { session: false, url: "https://hub.example.test/#remote", managementAuthTag });
+    const { resetApiAuthFetchForTests, installApiAuthFetch } = await import("../src/api");
+    resetApiAuthFetchForTests();
+    installApiAuthFetch();
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: window.fetch });
+    const [{ createRoot }, { LanguageProvider }, { default: App }] = await Promise.all([
+      import("react-dom/client"), import("../src/i18n/provider"), import("../src/App"),
+    ]);
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LanguageProvider><App /></LanguageProvider>);
+    });
+    await waitFor(() => (container.textContent ?? "").includes("Sign in to the local dashboard session"));
+    expect(container.textContent).not.toContain("Connect this dashboard to the hub");
+    expect(container.textContent).not.toContain("ocx gui pair --origin");
+  });
+}
