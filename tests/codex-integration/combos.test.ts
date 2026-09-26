@@ -392,12 +392,20 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", undefined).reasoning).toBeUndefined();
   });
 
-  test("force mode overrides only valid caller effort and resolves independently per target", () => {
+  test("force mode overrides every valid declared caller effort and resolves independently per target", () => {
     const raw = { model: "combo/x", reasoning: { effort: "medium", summary: "concise" } };
     expect(concreteComboRequestBody(raw, target, "max", ["low", "high", "max"], "strict", "force").reasoning)
       .toEqual({ effort: "max", summary: "concise" });
     expect(concreteComboRequestBody(raw, target, "max", ["low", "high"], "strict", "force").reasoning)
       .toEqual({ effort: "high", summary: "concise" });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "none", summary: "auto" } },
+      target, "high", ["minimal", "low", "medium", "high", "xhigh", "max"], "strict", "force",
+    ).reasoning).toEqual({ effort: "high", summary: "auto" });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "minimal" } },
+      target, "high", ["minimal", "low", "medium", "high", "xhigh", "max"], "strict", "force",
+    ).reasoning).toEqual({ effort: "high", summary: "auto" });
     expect(raw.reasoning).toEqual({ effort: "medium", summary: "concise" });
   });
 
