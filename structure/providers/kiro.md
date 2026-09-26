@@ -45,6 +45,15 @@ hydration. Suspension is a process-local quarantine; rate refusals use a short c
 Reactive account rotation is presence-driven even when a proactive preference switch is
 off. Pre-dispatch exclusion of an already refused account requires effective proactive
 preference with the provider override taking precedence over the global setting.
+Kiro OAuth may use `least-loaded` as an opt-in proactive strategy under `pool.kernel`.
+`maxConcurrentPerAccount` independently limits active requests on each account in this
+process: a full selected account waits up to 250 ms, then returns 503
+`account_capacity` with `Retry-After: 1`. Capacity does not select a sibling;
+reactive refusal rotation remains presence-driven and prefers a sibling with room.
+A released slot is handed to the first live waiter before it wakes, so a new arrival
+cannot take it, and every send (first send, reactive rotation, 401 replay) holds the lease of
+the account whose credentials it carries: a replay that resolves a different account takes
+that account's lease first or stops with the formatted 401.
 
 ## Kiro client parallel-tool hint
 
