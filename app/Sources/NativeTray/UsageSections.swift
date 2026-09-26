@@ -6,7 +6,10 @@ struct NativeTrayProviderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(provider.label).font(.subheadline.weight(.semibold))
+            HStack(spacing: 6) {
+                NativeTrayProviderMark(provider: provider)
+                Text(provider.label).font(.subheadline.weight(.semibold))
+            }
             if provider.unavailable || provider.accounts.isEmpty {
                 Text(provider.unavailable ? "Account limits unavailable" : "No quota data")
                     .font(.caption).foregroundStyle(.secondary)
@@ -31,11 +34,9 @@ struct NativeTrayProviderView: View {
                     ForEach(account.windows) { window in
                         HStack(spacing: 8) {
                             Text(window.label).lineLimit(1).frame(width: 96, alignment: .leading)
-                            Text(window.value.map { $0.formatted(.number.precision(.fractionLength(0))) + "%" } ?? "—")
+                            Text(NativeTrayFormat.percentText(window.value))
                                 .monospacedDigit().frame(width: 36, alignment: .trailing)
-                            ProgressView(value: window.fill).tint(.green)
-                                .accessibilityLabel(window.label)
-                                .accessibilityValue(window.value.map { $0.formatted(.number.precision(.fractionLength(0))) + " percent" } ?? "Unavailable")
+                            NativeTrayQuotaBar(window: window)
                             Text(NativeTrayFormat.reset(window.resetAt)).monospacedDigit()
                                 .frame(width: 70, alignment: .trailing)
                                 .help(window.resetDate?.formatted(date: .complete, time: .standard) ?? "Reset time unavailable")

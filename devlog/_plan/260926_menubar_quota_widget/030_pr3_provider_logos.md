@@ -11,6 +11,14 @@
   or dark rounded plate, `image` renders the colors as-is. The mode travels as `iconPaint`.
 - Unknown providers, or data `NSImage` cannot decode, show no mark; the label layout does not
   shift.
+- Amendment at wp3 P: quota bars in the native panel take the dashboard strip's severity colors
+  (`gui/src/quota-summary.ts`: warn at 70%, critical at 90%) instead of a fixed green, so a
+  100% weekly window no longer reads as healthy. The bar becomes a drawn capsule, which also
+  renders faithfully in the offscreen harness (the AppKit progress indicator paints its inactive
+  gray there). Thresholds live in `NativeTrayFormat` and are asserted in NativeTrayTests.
+  The capsule keeps the progress view's accessibility label and value; the value text comes from
+  `NativeTrayFormat.percentDescription` ("125 percent", "Unavailable" for no value) and a window
+  without a percentage draws an empty neutral track, so unknown never looks healthy.
 
 ## Diff
 
