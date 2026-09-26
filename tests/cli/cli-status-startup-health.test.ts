@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { fetchLiveStartupHealth } from "../../src/cli/status";
+import { fetchLiveStartupHealth, selectStatusStartupHealth, statusServiceSummary } from "../../src/cli/status";
+import type { StartupHealth } from "../../src/codex/autostart-health";
 
 const LIVE = {
   pid: 4242,
@@ -69,11 +70,38 @@ describe("ocx status live startup health", () => {
   });
 
   test("rejects malformed live startup payloads", async () => {
-    const observed = await fetchLiveStartupHealth(LIVE, deps({
-      ...startupPayload(),
-      serviceRunning: "yes",
-    }));
-    expect(observed).toBeNull();
+    for (const malformed of [
+      { ...startupPayload(), serviceRunning: "yes" },
+      (() => { const row = { ...startupPayload() } as Record<string, unknown>; delete row.platform; return row; })(),
+      { ...startupPayload(), recommendedCommand: 7 },
+      { ...startupPayload(), commands: { installService: "ok" } },
+    ]) {
+      expect(await fetchLiveStartupHealth(LIVE, deps(malformed))).toBeNull();
+    }
+  });
+
+  test("selection prefers the attested live verdict and does not evaluate the conflicting fallback", () => {
+    const live = startupPayload() as StartupHealth;
+    let fallbackCalls = 0;
+    const selected = selectStatusStartupHealth(live, () => {
+      fallbackCalls += 1;
+      return { ...live, status: "at-risk", rebootSafe: false, protection: "none" } as StartupHealth;
+    });
+    expect(selected.status).toBe("protected");
+    expect(selected.rebootSafe).toBe(true);
+    expect(fallbackCalls).toBe(0);
+    expect(statusServiceSummary(live, { installed: false, summary: "systemd not found" }, true))
+      .toContain("running under the live managed service");
+  });
+
+  test("selection falls back to local startup diagnostics when the live read is unavailable", () => {
+    const local = { ...startupPayload(), status: "at-risk", rebootSafe: false, protection: "none" } as StartupHealth;
+    let fallbackCalls = 0;
+    const selected = selectStatusStartupHealth(null, () => { fallbackCalls += 1; return local; });
+    expect(selected).toBe(local);
+    expect(fallbackCalls).toBe(1);
+    expect(statusServiceSummary(null, { installed: true, summary: "registered" }, false))
+      .toContain("registered but NOT serving");
   });
 
   test("fails closed when the runtime attestation cannot bind the live PID", async () => {

@@ -259,8 +259,36 @@ export async function fetchLiveStartupHealth(
   if (row.routingKind !== "native" && row.routingKind !== "opencodex-local"
     && row.routingKind !== "custom-local" && row.routingKind !== "custom-remote" && row.routingKind !== "unknown") return null;
   if (row.shimCoverage !== "full" && row.shimCoverage !== "cli-only" && row.shimCoverage !== "none") return null;
+  if (typeof row.platform !== "string") return null;
+  if (row.recommendedCommand !== null && typeof row.recommendedCommand !== "string") return null;
+  if (!row.commands || typeof row.commands !== "object" || Array.isArray(row.commands)) return null;
+  for (const key of ["installService", "repairService", "installShim", "restoreNative"] as const) {
+    if (typeof (row.commands as Record<string, unknown>)[key] !== "string") return null;
+  }
   for (const key of STARTUP_HEALTH_BOOLEAN_FIELDS) if (typeof row[key] !== "boolean") return null;
   return payload as StartupHealth;
+}
+
+/** Prefer an attested live verdict and evaluate the local fallback only when live state is absent. */
+export function selectStatusStartupHealth(
+  liveStartup: StartupHealth | null,
+  fallback: () => StartupHealth,
+): StartupHealth {
+  return liveStartup ?? fallback();
+}
+
+/** Build the service summary from the same startup source that `ocx status` selected. */
+export function statusServiceSummary(
+  liveStartup: StartupHealth | null,
+  service: Pick<ReturnType<typeof diagnoseService>, "installed" | "summary">,
+  live: boolean,
+): string {
+  if (liveStartup?.protection === "service" && liveStartup.serviceViable) {
+    return `running under the live managed service (logs: ${serviceLogPath()})`;
+  }
+  return service.installed && !live
+    ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`
+    : service.summary;
 }
 
 /**
@@ -669,18 +697,14 @@ export async function collectStatus(): Promise<CliStatusView> {
   // A service can be registered and still not serve: the manager reports the job
   // either way. When the identity-probed live proxy provides an attested startup verdict,
   // prefer it over a shell-local service-manager probe that lacks the service environment.
-  const serviceSummary = liveStartup?.protection === "service" && liveStartup.serviceViable
-    ? `running under the live managed service (logs: ${serviceLogPath()})`
-    : service.installed && !live
-      ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`
-      : service.summary;
+  const serviceSummary = statusServiceSummary(liveStartup, service, Boolean(live));
   const codexShim = diagnoseCodexShim();
   const codexShimSummary = codexShim.summary;
-  const startup = liveStartup ?? collectStartupHealth(config, {
+  const startup = selectStatusStartupHealth(liveStartup, () => collectStartupHealth(config, {
     service,
     shim: codexShim,
     routingKind: getCodexRoutingKind(),
-  });
+  }));
   const codexPlugins = diagnoseCodexBundledPlugins();
   const lastClamp = loadLastEffortClamp();
   const clampActive = effortClampAppliesToRuntime(lastClamp, resolvedRuntime.runtime);
