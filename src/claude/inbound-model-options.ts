@@ -114,7 +114,8 @@ export function formatFromOutputConfig(outputConfig: unknown): Rec | undefined {
     type: "json_schema",
     name: "response",
     schema: format.schema,
-    strict: satisfiesOpenAiStrictSchema(format.schema),
+    // Strict Structured Outputs also needs an object at the root; a root anyOf/oneOf is refused.
+    strict: format.schema.type === "object" && satisfiesOpenAiStrictSchema(format.schema),
   };
 }
 

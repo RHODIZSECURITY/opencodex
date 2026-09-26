@@ -352,6 +352,18 @@ describe("claude inbound translation", () => {
     expect(parseRequest(body).options.textFormat?.strict).toBe(false);
   });
 
+  test("a root union drops the strict claim; strict mode needs an object root", () => {
+    const union = { anyOf: [{ type: "object", properties: {}, required: [], additionalProperties: false }] };
+    const body = anthropicToResponsesBody({
+      model: "claude-sonnet-5",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "Return JSON" }],
+      output_config: { format: { type: "json_schema", schema: union } },
+    });
+
+    expect(parseRequest(body).options.textFormat?.strict).toBe(false);
+  });
+
   test("structured output rejects unsupported schemas and preserves root references", () => {
     const base = {
       model: "claude-sonnet-5",

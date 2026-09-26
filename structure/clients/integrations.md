@@ -158,8 +158,9 @@ is available; otherwise the operator refreshes the integration or client catalog
 
 ## Model output limits
 
-OpenCode, Pi-family clients, OMP and Gajae export the explicit model `maxTokens` when valid,
-otherwise the generated metadata limit for the provider and model ID (including provider aliases).
+OpenCode, Pi-family clients, OMP and Gajae export the explicit model `maxTokens` when valid (a catalog
+row's `maxOutputTokens`, carried by `toExportModel` in `src/server/management/model-rows.ts` and by
+`opencodeCatalogFromProxyRows` in `src/cli/opencode.ts`), otherwise the generated metadata limit for the provider and model ID (including provider aliases).
 Only unknown limits fall back to 32000. Every output limit is clamped to the authoritative
 context window; absent context still omits both limits. Fast rows preserve these limits.
 
