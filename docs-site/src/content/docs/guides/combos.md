@@ -337,7 +337,7 @@ server delays are capped at 24 hours; reset-derived, configured, and fallback co
 at 10 minutes. The precedence is, from strongest to weakest, explicit
 `Retry-After` → Codex reset headers (`x-codex-primary-reset-at`, `x-codex-secondary-reset-at`, or
 `x-codex-tertiary-reset-at`) → the combo's `cooldownMs` (when set) → the
-10-minute hold for a spent usage window → the 5-second request-rate fallback for upstream
+10-minute hold for a spent usage window or a credential/billing failure → the 5-second request-rate fallback for upstream
 rate-limit codes `1302`/`1305` → the 60-second default. The usage-window hold is tested first, so a
 failure that carries a request-rate code *and* usage-limit prose is held for ten minutes rather than
 five seconds. A valid immediate
@@ -582,7 +582,7 @@ Combos are stored in the top-level `combos` object, keyed by combo id:
 | `targets[].lastResort` | No | `false` | Marks an emergency-only target. Inert unless `cooldownWaitPolicy` is set. Never makes a target permanently ineligible: when no normal target can be reached it is dispatched as usual. |
 | `strategy` | No | `"failover"` | `"failover"`, `"round-robin"`, `"random"`, `"least-used"`, `"reset-window"`, or `"jev"`. JEV decides only the initial eligible target and effort; ordinary Combo fallback owns later attempts. |
 | `stickyLimit` | No | `1` | Integer from 1 to 100 successful requests per round-robin selection. Applies only to round-robin. |
-| `cooldownMs` | No | unset → upstream fallback (5 s for request-rate 429 codes `1302`/`1305`, 10 min for a spent usage window, otherwise 60 s) | Integer from 1 to 600000. When set, applies as the per-target cooldown whenever no usable upstream `Retry-After` or Codex reset signal exists, including request-rate 429s; when unset, uses the upstream fallback. |
+| `cooldownMs` | No | unset → upstream fallback (5 s for request-rate 429 codes `1302`/`1305`, 10 min for a spent usage window or a credential/billing failure, otherwise 60 s) | Integer from 1 to 600000. When set, applies as the per-target cooldown whenever no usable upstream `Retry-After` or Codex reset signal exists, including request-rate 429s; when unset, uses the upstream fallback. |
 | `waitForCooldownMs` | No | `0` | Integer from 0 to 600000. Maximum time to wait for the earliest eligible cooling target before returning `combo_unavailable`; abort cancels the wait. |
 | `cooldownWaitPolicy` | No | unset | `"before-last-resort"` defers targets marked `lastResort`: they are used only when no normal target is available, for every strategy, and `waitForCooldownMs` only adds the wait for a cooling normal target, so at its `0` default nothing waits and the last resort is used as soon as no normal target is available. Only that exact string opts in. The deferral wait and the ordinary wait share one `waitForCooldownMs` budget per selection attempt. |
 | `defaultEffort` | No | `null` | `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; resolved against each target's advertised ladder. |
@@ -609,7 +609,7 @@ provider state and recent upstream errors. For cooldowns, follow an observed `Re
 Codex reset headers also take precedence over `cooldownMs`.
 If neither upstream signal is usable, the configured `cooldownMs` applies, or the upstream fallback applies
 when it is unset (5 seconds for request-rate codes `1302`/`1305`, 10 minutes for a spent usage
-window, otherwise 60 seconds). Explicit
+window or a credential/billing failure, otherwise 60 seconds). Explicit
 `Retry-After` delays are capped at 24 hours; the other cooldowns are capped at 10 minutes.
 
 ### Why was my alias rejected?
