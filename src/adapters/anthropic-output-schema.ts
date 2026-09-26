@@ -161,8 +161,11 @@ export function satisfiesOpenAiStrictSchema(value: unknown): boolean {
     // its own acceptance check -- so an object that never said `additionalProperties: false`
     // reaches the wire without it and is refused, however complete its `required` is.
     if (node.additionalProperties !== false) return false;
+    // Strict mode also requires `required` to be supplied at all, even for an empty
+    // `properties` map, so a missing array is not the same as an empty one.
+    if (!Array.isArray(node.required)) return false;
     const keys = Object.keys(properties);
-    const required = Array.isArray(node.required) ? node.required : [];
+    const required: unknown[] = node.required;
     if (keys.some(key => !required.includes(key))) return false;
   }
   return Object.values(node).every(satisfiesOpenAiStrictSchema);

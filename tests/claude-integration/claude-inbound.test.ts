@@ -339,6 +339,19 @@ describe("claude inbound translation", () => {
     expect(parseRequest(body).options.textFormat?.strict).toBe(false);
   });
 
+  test("an object with no required array drops the strict claim", () => {
+    // Strict mode requires `required` to be supplied, even for an empty property map.
+    const bare = { type: "object", properties: {}, additionalProperties: false };
+    const body = anthropicToResponsesBody({
+      model: "claude-sonnet-5",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "Return JSON" }],
+      output_config: { format: { type: "json_schema", schema: bare } },
+    });
+
+    expect(parseRequest(body).options.textFormat?.strict).toBe(false);
+  });
+
   test("structured output rejects unsupported schemas and preserves root references", () => {
     const base = {
       model: "claude-sonnet-5",
