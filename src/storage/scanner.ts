@@ -165,6 +165,10 @@ async function walkFilesAsync(dir: string, relPrefix: string, limit: FsLimit): P
   } catch {
     return [];
   }
+  // Bun can settle small async fs calls on the microtask queue alone, so a walk of cached
+  // directories would otherwise finish without ever giving the event loop a turn. One timer
+  // turn per directory keeps request handling live during a large scan.
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
   const parts = await mapInBatches(entries, async (entry): Promise<FileEntry[]> => {
     const full = join(dir, entry.name);
     const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
