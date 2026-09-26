@@ -211,7 +211,11 @@ function resetWindowIndex(
     const target = targets[index]!;
     if (!eligible(target)) continue;
     const remaining = quotaResetRemainingMs(
-      getCachedProviderRoutingQuota(target.provider, config.providers[target.provider], now), now,
+      getCachedProviderRoutingQuota(target.provider, config.providers[target.provider], now),
+      now,
+      // Rank by the windows that gate this target: a model-scoped window of another family
+      // says nothing about when this model regains capacity.
+      window => customWindowAppliesToModel(window, target.model),
     );
     // Strict comparison deliberately retains configured order for ties,
     // including the no-snapshot fallback where every value is Infinity.
