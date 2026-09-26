@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigPath, loadConfig, saveConfig } from "../../src/config";
@@ -426,6 +426,31 @@ describe("settings codexRuntime snapshot", () => {
         expect(peekCodexRuntimeProcessCache().kind).toBe("unavailable");
       });
     } finally {
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  }, 30_000);
+
+  test("a runtime file rewritten by another process during the probe keeps its result out of the memo", async () => {
+    const {
+      codexRuntimeStatePath,
+      peekCodexRuntimeProcessCache,
+      resetCodexRuntimeResolveCacheForTests,
+      resolveCodexRuntimeAsync,
+    } = await import("../../src/codex/runtime");
+    resetCodexRuntimeResolveCacheForTests();
+    const launcher = slowFakeCodex("0.200.0");
+    try {
+      await withRuntimeEnv(launcher, async () => {
+        const refresh = resolveCodexRuntimeAsync();
+        // No in-process persist, so no epoch bump: only the on-disk selection changes.
+        writeFileSync(codexRuntimeStatePath(), JSON.stringify({
+          version: 1, command: join(TEST_DIR, "other-codex"), source: "configured", updatedAt: new Date().toISOString(),
+        }));
+        expect((await refresh).runtime.version).toBe("0.200.0");
+        expect(peekCodexRuntimeProcessCache().kind).toBe("unavailable");
+      });
+    } finally {
+      rmSync(codexRuntimeStatePath(), { force: true });
       resetCodexRuntimeResolveCacheForTests();
     }
   }, 30_000);

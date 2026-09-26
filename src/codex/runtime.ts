@@ -756,7 +756,10 @@ export function peekCodexRuntimeProcessCache(): CodexRuntimeProcessCachePeek {
   const refreshing = memo !== null
     && asyncResolveInflight !== null
     && asyncResolveInflight.key === memo.key
-    && asyncResolveInflight.epoch === resolveCacheEpoch;
+    && asyncResolveInflight.epoch === resolveCacheEpoch
+    // An expired memo only stands in for a refresh of the same selection; an out-of-process
+    // runtime switch changes the key without bumping the epoch.
+    && resolveCacheKey({}) === memo.key;
   if (!memo || (Date.now() - memo.at >= RESOLVE_CACHE_MS && !refreshing)) {
     return Object.freeze({ kind: "unavailable" as const, epoch: resolveCacheEpoch });
   }
@@ -873,8 +876,11 @@ export async function resolveCodexRuntimeAsync(
   }
   const promise = resolveCodexRuntimeUncachedAsync(deps).then(result => {
     // A persist or clear while the probes ran makes this answer the previous selection's;
-    // publishing it would resurrect authority the write just revoked.
-    if (resolveCacheEpoch === startedEpoch) publishResolveCache(cacheKey, Date.now(), result);
+    // publishing it would resurrect authority the write just revoked. Another process can also
+    // rewrite codex-runtime.json without touching this epoch, so the key is read again too.
+    if (resolveCacheEpoch === startedEpoch && resolveCacheKey(deps) === cacheKey) {
+      publishResolveCache(cacheKey, Date.now(), result);
+    }
     return result;
   }).finally(() => {
     if (asyncResolveInflight?.promise === promise) asyncResolveInflight = null;
