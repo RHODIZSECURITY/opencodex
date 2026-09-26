@@ -106,6 +106,23 @@ describe("ocx status live startup health", () => {
       .toContain("registered but NOT serving");
   });
 
+  test("service summary never contradicts a present negative live startup verdict", () => {
+    const live = {
+      ...startupPayload(),
+      status: "at-risk",
+      rebootSafe: false,
+      protection: "none",
+      serviceInstalled: false,
+      serviceRunning: false,
+      serviceViable: false,
+      recommendedCommand: "ocx service repair",
+    } as StartupHealth;
+    const summary = statusServiceSummary(live, { installed: true, summary: "healthy local service" }, true);
+    expect(summary).toContain("live startup reports service absent, not running, not viable");
+    expect(summary).toContain("ocx service repair");
+    expect(summary).not.toContain("healthy local service");
+  });
+
   test("fails closed when the runtime attestation cannot bind the live PID", async () => {
     const observed = await fetchLiveStartupHealth(LIVE, {
       ...deps(startupPayload()),

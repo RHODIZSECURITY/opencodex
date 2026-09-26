@@ -296,8 +296,17 @@ export function statusServiceSummary(
   service: Pick<ReturnType<typeof diagnoseService>, "installed" | "summary">,
   live: boolean,
 ): string {
-  if (liveStartup?.protection === "service" && liveStartup.serviceViable) {
-    return `running under the live managed service (logs: ${serviceLogPath()})`;
+  if (liveStartup) {
+    if (liveStartup.protection === "service" && liveStartup.serviceViable) {
+      return `running under the live managed service (logs: ${serviceLogPath()})`;
+    }
+    const state = [
+      liveStartup.serviceInstalled ? "installed" : "absent",
+      liveStartup.serviceRunning ? "running" : "not running",
+      liveStartup.serviceViable ? "viable" : "not viable",
+    ].join(", ");
+    const action = liveStartup.recommendedCommand ? `; run '${liveStartup.recommendedCommand}'` : "";
+    return `live startup reports service ${state}${action} (logs: ${serviceLogPath()})`;
   }
   return service.installed && !live
     ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`
