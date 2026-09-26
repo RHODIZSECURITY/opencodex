@@ -77,7 +77,7 @@ verified matching processes regardless of the advisory freshness result.
 
 ## Hub management dashboard address
 
-When hub management ingress is enabled, `src/cli/dispatch.ts` opens the dashboard on the literal IPv4 loopback address and configured ingress port, matching the listener in `src/server/index.ts`. Other dashboard address selection is unchanged.
+`src/cli/dispatch.ts` makes `codex-shim install` exit nonzero when the resulting shim is unhealthy or installation is refused, printing the diagnostic summary alongside the original installer message. An already-installed healthy shim succeeds. When hub management ingress is enabled, `src/cli/dispatch.ts` opens the dashboard on the literal IPv4 loopback address and configured ingress port, matching the listener in `src/server/index.ts`. Other dashboard address selection is unchanged.
 
 ## Codex desktop process membership
 
