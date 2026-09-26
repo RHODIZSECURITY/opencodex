@@ -265,6 +265,19 @@ export async function fetchLiveStartupHealth(
   for (const key of ["installService", "repairService", "installShim", "restoreNative"] as const) {
     if (typeof (row.commands as Record<string, unknown>)[key] !== "string") return null;
   }
+  if (row.routingAdoption !== undefined) {
+    if (!row.routingAdoption || typeof row.routingAdoption !== "object" || Array.isArray(row.routingAdoption)) return null;
+    const adoption = row.routingAdoption as Record<string, unknown>;
+    if (adoption.adoption !== "not-applicable" && adoption.adoption !== "adopted"
+      && adoption.adoption !== "pending-client-restart" && adoption.adoption !== "unknown") return null;
+    if (adoption.injectedAtMs !== null && typeof adoption.injectedAtMs !== "number") return null;
+    if (typeof adoption.observedClients !== "number" || !Array.isArray(adoption.staleClients)) return null;
+    for (const client of adoption.staleClients) {
+      if (!client || typeof client !== "object" || Array.isArray(client)) return null;
+      const row = client as Record<string, unknown>;
+      if (typeof row.pid !== "number" || typeof row.startedAtMs !== "number") return null;
+    }
+  }
   for (const key of STARTUP_HEALTH_BOOLEAN_FIELDS) if (typeof row[key] !== "boolean") return null;
   return payload as StartupHealth;
 }

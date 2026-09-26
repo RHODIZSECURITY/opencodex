@@ -75,6 +75,8 @@ describe("ocx status live startup health", () => {
       (() => { const row = { ...startupPayload() } as Record<string, unknown>; delete row.platform; return row; })(),
       { ...startupPayload(), recommendedCommand: 7 },
       { ...startupPayload(), commands: { installService: "ok" } },
+      { ...startupPayload(), routingAdoption: { adoption: "adopted", injectedAtMs: 1, staleClients: "bad", observedClients: 1 } },
+      { ...startupPayload(), routingAdoption: { adoption: "adopted", injectedAtMs: 1, staleClients: [{ pid: "bad", startedAtMs: 1 }], observedClients: 1 } },
     ]) {
       expect(await fetchLiveStartupHealth(LIVE, deps(malformed))).toBeNull();
     }
