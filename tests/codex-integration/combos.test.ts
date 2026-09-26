@@ -424,6 +424,11 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody(
       { model: "combo/x", reasoning: { effort: "medium" } }, target, "max", undefined, "strict", "force",
     ).reasoning).toEqual({ effort: "medium" });
+    // Unknown capability stays conservative even for a declared sentinel: force cannot prove
+    // the target accepts the configured default, so strict mode preserves the caller value.
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "none" } }, target, "high", undefined, "strict", "force",
+    ).reasoning).toEqual({ effort: "none" });
     expect(concreteComboRequestBody(
       { model: "combo/x" }, target, "max", [], "strict", "force",
     ).reasoning).toBeUndefined();
