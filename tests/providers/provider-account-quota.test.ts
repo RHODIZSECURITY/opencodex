@@ -18,6 +18,8 @@ import {
   providerOAuthAccountQuotaMode,
 } from "../../src/providers/quota";
 import { PROXY_ENV_KEYS } from "../../src/lib/proxy-env";
+import { antigravityUserAgent } from "../../src/adapters/client-fingerprint";
+import { ANTIGRAVITY_QUOTA_COMPAT_USER_AGENT } from "../../src/providers/quota/antigravity";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const originalFetch = globalThis.fetch;
@@ -738,6 +740,66 @@ describe("google-antigravity per-account quota (#1082)", () => {
     }
   });
 
+  test("retries a 403 quota summary once with the Antigravity compatibility UA", async () => {
+    const expires = Date.now() + 60 * 60_000;
+    await saveCredential("google-antigravity", {
+      access: "agy-compat", refresh: "r-compat", expires,
+      projectId: "proj-compat", accountId: "agy-compat-account", email: "compat@example.com",
+    });
+    globalThis.fetch = (async () => { throw new Error("plain fetch must not be used for account bearers"); }) as typeof fetch;
+
+    const seen: Array<{ url: string; userAgent: string | null }> = [];
+    setAntigravityAccountQuotaTransportForTests({
+      resolveAddresses: async () => ({
+        hostname: "daily-cloudcode-pa.googleapis.com",
+        addresses: [{ address: "142.250.0.1", family: 4 }],
+        privateNetwork: false,
+      }),
+      pinnedPost: async (url, _pinned, _body, _signal, requestOptions) => {
+        const userAgent = new Headers(requestOptions?.headers).get("user-agent");
+        seen.push({ url, userAgent });
+        if (seen.length === 1) return new Response(null, { status: 403 });
+        return new Response(antigravitySummaryBody(0.86, 0.38), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    const [row] = await fetchProviderAccountQuotas("google-antigravity", true);
+    expect(row?.unavailable).not.toBe(true);
+    expect(row?.quotaFailure).toBeUndefined();
+    expect(row?.quota?.customWindows).toHaveLength(4);
+    expect(seen).toEqual([
+      { url: summaryUrl, userAgent: antigravityUserAgent() },
+      { url: summaryUrl, userAgent: ANTIGRAVITY_QUOTA_COMPAT_USER_AGENT },
+    ]);
+  });
+
+  test("does not hide a 401 behind the quota compatibility retry", async () => {
+    const expires = Date.now() + 60 * 60_000;
+    await saveCredential("google-antigravity", {
+      access: "agy-auth-fail", refresh: "r-auth-fail", expires,
+      projectId: "proj-auth-fail", accountId: "agy-auth-fail-account", email: "auth-fail@example.com",
+    });
+    const seen: string[] = [];
+    setAntigravityAccountQuotaTransportForTests({
+      resolveAddresses: async () => ({
+        hostname: "daily-cloudcode-pa.googleapis.com",
+        addresses: [{ address: "142.250.0.1", family: 4 }],
+        privateNetwork: false,
+      }),
+      pinnedPost: async (url, _pinned, _body, _signal, requestOptions) => {
+        seen.push(new Headers(requestOptions?.headers).get("user-agent") ?? "");
+        return new Response(null, { status: 401 });
+      },
+    });
+
+    const [row] = await fetchProviderAccountQuotas("google-antigravity", true);
+    expect(row).toMatchObject({ unavailable: true, quotaFailure: "access_denied" });
+    expect(seen).toEqual([antigravityUserAgent()]);
+  });
+
   test("falls back to fetchAvailableModels when retrieveUserQuotaSummary returns 404", async () => {
     const expires = Date.now() + 60 * 60_000;
     await saveCredential("google-antigravity", { access: "agy-first", refresh: "r1", expires, projectId: "proj-first", accountId: "agy-a", email: "a@example.com" });
@@ -926,7 +988,7 @@ describe("google-antigravity per-account quota (#1082)", () => {
           },
         });
         expect(await fetchProviderAccountQuotas("google-antigravity")).toEqual([{ accountId: idFor("a@example.com"), quota: null, unavailable: true, quotaFailure: status < 400 ? "redirect_blocked" : "access_denied" }]);
-        expect(posted).toEqual(fallback ? [summaryUrl, modelsUrl] : [summaryUrl]);
+        expect(posted).toEqual(fallback ? [summaryUrl, modelsUrl] : status === 403 ? [summaryUrl, summaryUrl] : [summaryUrl]);
         expect(plainFetchCalls).toBe(0);
       });
     }
