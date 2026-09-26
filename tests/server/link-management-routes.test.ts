@@ -8,7 +8,7 @@ import type { OcxConfig } from "../../src/types";
 import type { LinkStore } from "../../src/link/store";
 import type { LinkSupervisor } from "../../src/link/supervisor";
 import type { SshRunner, SshChild, SshRunResult } from "../../src/link/ssh-runner";
-import { trustedLoopbackForIngress, type ServerIngress } from "../../src/server/index/serve-options";
+import { managementAuthRequiredForGuiDocument, trustedLoopbackForIngress, type ServerIngress } from "../../src/server/index/serve-options";
 
 let temp = "";
 
@@ -114,6 +114,14 @@ describe("link management routes", () => {
     expect(ingresses.map(ingress => trustedLoopbackForIngress(ingress, "0.0.0.0"))).toEqual([false, true, false, false, false]);
     expect(trustedLoopbackForIngress("public", "127.0.0.1")).toBe(true);
     expect(trustedLoopbackForIngress("public", "::1")).toBe(true);
+  });
+
+  test("hub-management GUI documents advertise pairing even when the local bind policy is loopback", () => {
+    const loopbackPolicy = { hostname: "127.0.0.1" } as OcxConfig;
+    const remotePolicy = { hostname: "0.0.0.0" } as OcxConfig;
+    expect(managementAuthRequiredForGuiDocument("hub-management", loopbackPolicy)).toBe(true);
+    expect(managementAuthRequiredForGuiDocument("public", loopbackPolicy)).toBe(false);
+    expect(managementAuthRequiredForGuiDocument("public", remotePolicy)).toBe(true);
   });
 
   test("issues and force-revokes a client-initiated link with the K2/K16 DTOs", async () => {
