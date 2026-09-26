@@ -167,6 +167,17 @@ const ANTIGRAVITY_ACCOUNT_QUOTA_BASE = "https://daily-cloudcode-pa.googleapis.co
 const ANTIGRAVITY_QUOTA_SUMMARY_URL = `${ANTIGRAVITY_ACCOUNT_QUOTA_BASE}/v1internal:retrieveUserQuotaSummary`;
 const ANTIGRAVITY_QUOTA_MODELS_URL = `${ANTIGRAVITY_ACCOUNT_QUOTA_BASE}/v1internal:fetchAvailableModels`;
 
+/**
+ * Compatibility fingerprint for quota accounting only.
+ *
+ * Some otherwise healthy Antigravity OAuth identities return HTTP 403 from
+ * retrieveUserQuotaSummary when the request uses the current IDE fingerprint while accepting the
+ * same bearer/project with the older Antigravity client family. Inference and model discovery must
+ * keep the IDE fingerprint because model availability is UA-gated; this one-shot fallback is
+ * deliberately scoped to a 403 from the quota-summary endpoint.
+ */
+export const ANTIGRAVITY_QUOTA_COMPAT_USER_AGENT = "antigravity/1.0";
+
 /** Only these fixed accounting destinations may use transparent Fake-IP DNS. */
 export function isCanonicalAntigravityQuotaUrl(name: string, url: string): boolean {
   return name === "google-antigravity"
@@ -253,17 +264,26 @@ function antigravityUnavailableFailure(
 }
 
 export async function probeAntigravityUsageQuota(accessToken: string, projectId: string): Promise<AntigravityQuotaProbeResult> {
-  const fetchQuota = (url: string) => providerOutboundPost("google-antigravity", { baseUrl: ANTIGRAVITY_ACCOUNT_QUOTA_BASE }, url, {
+  const fetchQuota = (url: string, userAgent = antigravityUserAgent()) => providerOutboundPost("google-antigravity", { baseUrl: ANTIGRAVITY_ACCOUNT_QUOTA_BASE }, url, {
     headers: {
       Accept: "application/json", "Content-Type": "application/json",
-      "User-Agent": antigravityUserAgent(), Authorization: `Bearer ${accessToken}`,
+      "User-Agent": userAgent, Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify({ project: projectId }), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   }, antigravityOutboundDependencies);
   let summaryFailure: QuotaFailureCode | undefined;
   try {
-    const response = await fetchQuota(ANTIGRAVITY_QUOTA_SUMMARY_URL);
+    let response = await fetchQuota(ANTIGRAVITY_QUOTA_SUMMARY_URL);
     if (await providerRedirectError(response, ANTIGRAVITY_QUOTA_SUMMARY_URL)) return unavailableAntigravityQuota("redirect_blocked");
+    if (response.status === 403) {
+      // Google currently admits some healthy Antigravity accounts to inference and quota
+      // accounting while rejecting the newer IDE fingerprint on the summary endpoint itself.
+      // Retry exactly once with the older Antigravity client family; 401 is deliberately not
+      // retried because it is an authentication failure, not a fingerprint compatibility case.
+      try { await response.body?.cancel(); } catch { /* best effort */ }
+      response = await fetchQuota(ANTIGRAVITY_QUOTA_SUMMARY_URL, ANTIGRAVITY_QUOTA_COMPAT_USER_AGENT);
+      if (await providerRedirectError(response, ANTIGRAVITY_QUOTA_SUMMARY_URL)) return unavailableAntigravityQuota("redirect_blocked");
+    }
     if (response.status === 401 || response.status === 403) return unavailableAntigravityQuota("access_denied");
     if (response.ok) {
       const quota = parseAntigravityQuotaSummary(asRecord(await readQuotaJson(response)));
