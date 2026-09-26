@@ -230,7 +230,11 @@ export function coolComboTarget(
   const cooldownMs = serverDelayMs
     ?? parseResetCooldownMs(options?.resetAt, now)
     ?? options?.cooldownMs
+    // A spent account window or an unpaid/rejected credential does not turn over in a minute,
+    // so the 60s default would re-offer a target that cannot succeed. Only the duration
+    // changes; the scope and hop decisions are untouched.
     ?? (isAccountWindowExhausted(options?.message ?? "", options?.code)
+      || PROVIDER_SCOPED_FAILURE_CODES.has(normalizedFailureCode(options?.code))
       ? MAX_COOLDOWN_MS
       : isTransientRequestRateLimit({
         status: options?.status,
