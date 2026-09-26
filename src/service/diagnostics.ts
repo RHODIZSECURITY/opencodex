@@ -14,7 +14,7 @@ import type { ExpectedWindowsTaskUserId } from "./windows-taskxml";
 import { join, win32 } from "node:path";
 import { WINSW_VERSION } from "../lib/winsw";
 import { serviceRepairCommand } from "./health";
-import { LABEL, TASK, serviceLogPath } from "./state";
+import { LABEL, SERVICE_MANAGED_ENV, TASK, serviceLogPath } from "./state";
 
 /**
  * Warn when the paths baked into installed service assets no longer exist (npm prefix
@@ -238,6 +238,32 @@ export function deriveLaunchdServiceDiagnostic(inputs: LaunchdServiceDiagnosticI
 }
 
 /**
+ * Recognize an operator-owned systemd unit supervising this exact process.
+ *
+ * OCX_SERVICE_MANAGED is intentionally stronger than OCX_SERVICE: OpenCodex writes it only into
+ * real manager definitions. Requiring systemd's INVOCATION_ID as well prevents a copied env var
+ * or CLI wrapper from claiming reboot protection it does not own.
+ */
+export function externallyManagedLinuxServiceDiagnostic(
+  env: NodeJS.ProcessEnv,
+  diagnostics: string,
+): ServiceDiagnostic | null {
+  if (env[SERVICE_MANAGED_ENV] !== "1" || !env.INVOCATION_ID?.trim()) return null;
+  return {
+    supported: true,
+    installed: true,
+    enabled: true,
+    running: true,
+    viable: true,
+    startable: true,
+    stale: false,
+    conflict: false,
+    backend: "systemd",
+    summary: `running under a managed systemd supervisor (${diagnostics})`,
+  };
+}
+
+/**
  * Fail-closed restart diagnostic. Presence alone is never enough: conflicting
  * managers, stale baked paths, disabled registrations, and unknown/stopped
  * native managers cannot claim that Codex will reconnect after a reboot.
@@ -276,6 +302,8 @@ export function diagnoseService(): ServiceDiagnostic {
   if (process.platform === "linux") {
     if (existsSync("/.dockerenv")) return { supported: false, installed: false, enabled: false, running: false, viable: false, startable: false, stale: false, conflict: false, backend: null, summary: "unsupported in Docker" };
     if (!isSystemd()) return { supported: false, installed: false, enabled: false, running: false, viable: false, startable: false, stale: false, conflict: false, backend: null, summary: "unsupported: systemd not found" };
+    const externallyManaged = externallyManagedLinuxServiceDiagnostic(process.env, diagnostics);
+    if (externallyManaged) return externallyManaged;
     const installed = existsSync(unitPath());
     const enabled = installed && (() => { try { return sh(`systemctl --user is-enabled ${TASK}`) === "enabled"; } catch { return false; } })();
     const running = installed && (() => { try { return sh(`systemctl --user is-active ${TASK}`) === "active"; } catch { return false; } })();
