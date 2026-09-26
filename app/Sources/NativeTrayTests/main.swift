@@ -99,4 +99,40 @@ check(NativeTrayFormat.percentText(69.9) == "69%" && NativeTrayFormat.severity(6
 check(NativeTrayFormat.percentText(89.9) == "89%" && NativeTrayFormat.severity(89.9) == .warn, "89.9% reads 89% on orange")
 check(NativeTrayFormat.percentDescription(89.9) == "89 percent", "Spoken value floors too")
 check(NativeTrayFormat.percentText(nil) == "—", "Missing value renders a dash")
+
+// Account switching: only names cross to the host, and only for rows the runtime would accept.
+func switchRow(_ id: String, _ fields: [String: Any]) -> [String: Any] {
+    var row: [String: Any] = ["id": "\(id):0", "label": id, "active": false, "unavailable": false, "windows": []]
+    row.merge(fields) { _, new in new }
+    return row
+}
+let switching = try decode(["providers": [
+    ["id": "openai", "label": "OpenAI", "unavailable": false, "switchable": true, "accounts": [
+        switchRow("__main__", ["accountId": "__main__", "switchState": "blocked", "blockedReason": "mainHardLock"]),
+        switchRow("pool-a", ["accountId": "pool-a", "switchState": "active", "active": true]),
+        switchRow("pool-b", ["accountId": "pool-b", "switchState": "available", "exhausted": true]),
+        switchRow("pool-c", ["accountId": "pool-c", "switchState": "blocked", "blockedReason": "paused"]),
+    ]],
+    ["id": "legacy", "label": "Older host", "unavailable": false, "accounts": [switchRow("k", [:])]],
+]])
+let openai = switching.providers[0]
+check(NativeTraySwitch.request(provider: openai, account: openai.accounts[0]) == nil, "A hard-locked main account is not offered")
+check(NativeTraySwitch.request(provider: openai, account: openai.accounts[1]) == nil, "The active account is not offered")
+let exhaustedPick = NativeTraySwitch.request(provider: openai, account: openai.accounts[2])
+check(exhaustedPick?.provider == "openai" && exhaustedPick?.accountId == "pool-b", "An exhausted pool account stays switchable, by raw id")
+check(openai.accounts[2].exhausted == true, "Exhaustion decodes for the warning")
+check(NativeTraySwitch.request(provider: openai, account: openai.accounts[3]) == nil, "A paused account is not offered")
+let legacy = switching.providers[1]
+check(legacy.switchable == nil && NativeTraySwitch.request(provider: legacy, account: legacy.accounts[0]) == nil,
+      "Snapshots from older hosts decode and offer no switch")
+// A pending switch ends on the host's failure marker or a finished refresh showing the row active.
+check(NativeTraySwitch.settles(snapshot: switching, pendingRow: "pool-a:0"), "A finished refresh with the row active settles")
+check(!NativeTraySwitch.settles(snapshot: switching, pendingRow: "pool-b:0"), "Another row being active does not settle")
+let refreshingSwitch = try decode(["refreshing": true, "providers": [["id": "openai", "label": "OpenAI", "unavailable": false,
+    "switchable": true, "accounts": [switchRow("pool-b", ["accountId": "pool-b", "active": true, "switchState": "active"])]]]])
+check(!NativeTraySwitch.settles(snapshot: refreshingSwitch, pendingRow: "pool-b:0"), "An in-flight refresh does not settle")
+let unrelatedError = try decode(["errors": ["Usage unavailable"], "providers": []])
+check(!NativeTraySwitch.settles(snapshot: unrelatedError, pendingRow: "pool-b:0"), "An unrelated error does not settle")
+let failedSwitch = try decode(["errors": ["The runtime refused that account right now."], "switchFailed": true, "refreshing": false, "providers": []])
+check(NativeTraySwitch.settles(snapshot: failedSwitch, pendingRow: "pool-b:0"), "The host's failure marker settles at once")
 print("PASS: \(assertions) native tray contract/formatting assertions")
