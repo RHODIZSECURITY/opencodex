@@ -219,6 +219,7 @@
   "protocol-guard.test.ts": "responses",
   "protocol-ingress-guard.test.ts": "responses",
   "protocol-direct-encoders-chat.test.ts": "responses",
+  "protocol-direct-encoders-stall-disabled.test.ts": "responses",
   "protocol-direct-encoders-messages.test.ts": "responses",
   "chat-native-combo.test.ts": "responses",
   "messages-native-eligibility.test.ts": "responses",

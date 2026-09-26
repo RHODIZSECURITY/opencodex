@@ -836,7 +836,7 @@ export function encodeAdapterEventStream(
         if (upstreamActivity) {
           upstreamActivity = false;
           stallTicks = 0;
-        } else if (++stallTicks >= maxStallTicks) {
+        } else if (maxStallTicks > 0 && ++stallTicks >= maxStallTicks) {
           stall();
           return;
         }
