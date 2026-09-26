@@ -208,6 +208,14 @@ export function trustedLoopbackForIngress(ingress: ServerIngress, hostname: stri
     || (ingress === "public" && isLoopbackHostname(hostname));
 }
 
+/** Whether the served GUI document must advertise an explicit pairing/auth requirement. */
+export function managementAuthRequiredForGuiDocument(
+  ingress: ServerIngress,
+  policy: Parameters<typeof isApiAuthRequired>[0],
+): boolean {
+  return ingress === "hub-management" || isApiAuthRequired(policy);
+}
+
 /**
  * Routes the Claude intercept TLS listener may reach. Everything else on that socket is relayed
  * to the real upstream by the listener itself, so a request that lands here with another path
@@ -1902,7 +1910,7 @@ export function createServeOptions(ctx: ServeOptionsContext) {
         undefined,
         guiSessionCandidate ?? undefined,
         config.runtimeRole ?? "standalone",
-        isApiAuthRequired(policy),
+        managementAuthRequiredForGuiDocument(ingress, policy),
       );
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {

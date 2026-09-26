@@ -53,6 +53,14 @@ export function isConnectedRuntime(): boolean {
  * fall back to the role so a hub dashboard still works against a server that predates the
  * tag, and everything else reads as loopback — the safe default this file already uses.
  */
+export function managementAuthRequiredFromDocument(): boolean {
+  if (typeof document === "undefined") return false;
+  return document
+    .querySelector('meta[name="opencodex-management-auth-required"]')
+    ?.getAttribute("content")
+    ?.trim() === "1";
+}
+
 export function adminTokenPromptAllowed(): boolean {
   if (typeof document !== "undefined") {
     const declared = document

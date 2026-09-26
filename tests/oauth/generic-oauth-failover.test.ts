@@ -142,7 +142,8 @@ describe("#2568 generic OAuth account failover", () => {
     const ids = await seed(5);
     const cfg = config();
     expect(genericOAuthFailoverLimit(cfg, "xai")).toBe(4);
-    expect(genericOAuthFailoverBudgetExtension(cfg, "xai")).toBe(1);
+    // Four additional credentials each inherit the platform's three-attempt transient ladder.
+    expect(genericOAuthFailoverBudgetExtension(cfg, "xai")).toBe(12);
     const visited = [ids[0]!];
     let current = ids[0]!;
     for (let i = 0; i < 4; i++) {

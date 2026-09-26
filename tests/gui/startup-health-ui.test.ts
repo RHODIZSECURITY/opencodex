@@ -8,6 +8,33 @@ import {
   settingsPollMayCommit,
   startupRiskDetailKey,
 } from "../../gui/src/startup-health-ui";
+import { externallyManagedLinuxServiceDiagnostic } from "../../src/service/diagnostics";
+
+describe("externally managed Linux service startup safety", () => {
+  test("requires both the managed marker and a systemd invocation", () => {
+    expect(externallyManagedLinuxServiceDiagnostic({}, "logs: test")).toBeNull();
+    expect(externallyManagedLinuxServiceDiagnostic({ OCX_SERVICE_MANAGED: "1" }, "logs: test")).toBeNull();
+    expect(externallyManagedLinuxServiceDiagnostic({ INVOCATION_ID: "abc" }, "logs: test")).toBeNull();
+  });
+
+  test("credits a real externally managed systemd process as viable", () => {
+    expect(externallyManagedLinuxServiceDiagnostic({
+      OCX_SERVICE_MANAGED: "1",
+      INVOCATION_ID: "abc123",
+    }, "logs: /tmp/opencodex.log")).toEqual({
+      supported: true,
+      installed: true,
+      enabled: true,
+      running: true,
+      viable: true,
+      startable: true,
+      stale: false,
+      conflict: false,
+      backend: "systemd",
+      summary: "running under a managed systemd supervisor (logs: /tmp/opencodex.log)",
+    });
+  });
+});
 
 describe("startup health UI decisions", () => {
   test("selects the shared risk-detail message", () => {

@@ -285,9 +285,9 @@ describe("upstream sends per logical request", () => {
 
   test("combo policy reserves credential-roster sends without changing the legacy default", () => {
     const legacy = comboExecutionBudgetPolicy(2);
-    const withFiveAccountTarget = comboExecutionBudgetPolicy(2, 1);
+    const withFiveAccountTarget = comboExecutionBudgetPolicy(2, 12);
     expect(legacy.maxTotalModelSends).toBe(COMBO_TARGET_BASE_SENDS + 2);
-    expect(withFiveAccountTarget.maxTotalModelSends).toBe(legacy.maxTotalModelSends + 1);
+    expect(withFiveAccountTarget.maxTotalModelSends).toBe(legacy.maxTotalModelSends + 12);
     expect(withFiveAccountTarget.baseSendAllowance).toBe(withFiveAccountTarget.maxTotalModelSends - 1);
   });
 

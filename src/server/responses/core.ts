@@ -44,8 +44,10 @@ export async function handleResponses(
   const ownsBudget = options.translatorBudget === undefined;
   const translatorBudget = options.translatorBudget ?? createTranslatorBudget();
   try {
+    const ownsSendBudget = options.sendBudget === undefined;
     const response = await handleResponsesInner(req, config, logCtx, {
       ...options,
+      credentialRosterExpansion: options.credentialRosterExpansion ?? ownsSendBudget,
       openAiSidecarAuth: options.openAiSidecarAuth === undefined
         ? captureExplicitOpenAiCallerAuth(req.headers, config) : options.openAiSidecarAuth,
       nativeCallerAuth: options.nativeCallerAuth === undefined
@@ -112,7 +114,9 @@ async function handleResponsesInner(
     );
     const sendBudgetState = createResponsesSendBudget(
       requestContext,
-      genericOAuthFailoverBudgetExtension(config, requestState.route.providerName),
+      options.credentialRosterExpansion === true
+        ? genericOAuthFailoverBudgetExtension(config, requestState.route.providerName)
+        : 0,
     );
     if (sendBudgetState instanceof Response) return sendBudgetState;
     if ("passthrough" in transportState.adapter && transportState.adapter.passthrough && !sidecarState.routedCompaction) {

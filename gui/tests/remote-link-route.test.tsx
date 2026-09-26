@@ -20,17 +20,26 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-function mountWindow(role: "standalone" | "hub"): void {
-  testWindow = new Window({ url: "http://localhost/#remote" });
+function mountWindow(
+  role: "standalone" | "hub",
+  options: { session?: boolean; url?: string; managementAuthTag?: "0" | "1" } = {},
+): void {
+  const url = options.url ?? "http://localhost/#remote";
+  const session = options.session ?? true;
+  testWindow = new Window({ url });
   Object.defineProperty(testWindow.navigator, "language", { configurable: true, value: "en-US" });
   const head = testWindow.document.head;
-  for (const [name, content] of [
+  const metaEntries: Array<readonly [string, string]> = [
     ["opencodex-runtime-role", role],
-    ["opencodex-session-token", "ocx_session_route_test"],
-    ["opencodex-session-csrf", "route-test-csrf"],
-    ["opencodex-session-origin", "http://localhost"],
-    ["opencodex-session-server-origin", "http://localhost"],
-  ] as const) {
+    ...(options.managementAuthTag ? [["opencodex-management-auth-required", options.managementAuthTag]] as const : []),
+    ...(session ? [
+      ["opencodex-session-token", "ocx_session_route_test"],
+      ["opencodex-session-csrf", "route-test-csrf"],
+      ["opencodex-session-origin", new URL(url).origin],
+      ["opencodex-session-server-origin", new URL(url).origin],
+    ] as const : []),
+  ];
+  for (const [name, content] of metaEntries) {
     const meta = testWindow.document.createElement("meta");
     meta.setAttribute("name", name);
     meta.setAttribute("content", content);
@@ -107,5 +116,50 @@ for (const role of ["standalone", "hub"] as const) {
     expect(container.textContent).not.toContain("Sign in to the local dashboard session");
     expect(container.querySelector('[role="switch"]')).not.toBeNull();
     expect(linkStatusReads).toBeGreaterThan(0);
+  });
+}
+
+test("an authenticated remote hub without a GUI session offers one-time pairing", async () => {
+  mountWindow("hub", {
+    session: false,
+    url: "https://hub.example.test/#remote",
+    managementAuthTag: "1",
+  });
+  const { resetApiAuthFetchForTests, installApiAuthFetch } = await import("../src/api");
+  resetApiAuthFetchForTests();
+  installApiAuthFetch();
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: window.fetch });
+  const [{ createRoot }, { LanguageProvider }, { default: App }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/App"),
+  ]);
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LanguageProvider><App /></LanguageProvider>);
+  });
+  await waitFor(() => (container.textContent ?? "").includes("Connect this dashboard to the hub"));
+  expect(container.textContent).not.toContain("Sign in to the local dashboard session");
+  expect(container.textContent).toContain('ocx gui pair --origin "https://hub.example.test"');
+  expect(linkStatusReads).toBe(0);
+});
+
+for (const managementAuthTag of [undefined, "0"] as const) {
+  test(`a remote hub without an explicit auth-required declaration does not force pairing (${managementAuthTag ?? "missing"})`, async () => {
+    mountWindow("hub", { session: false, url: "https://hub.example.test/#remote", managementAuthTag });
+    const { resetApiAuthFetchForTests, installApiAuthFetch } = await import("../src/api");
+    resetApiAuthFetchForTests();
+    installApiAuthFetch();
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: window.fetch });
+    const [{ createRoot }, { LanguageProvider }, { default: App }] = await Promise.all([
+      import("react-dom/client"), import("../src/i18n/provider"), import("../src/App"),
+    ]);
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LanguageProvider><App /></LanguageProvider>);
+    });
+    await waitFor(() => (container.textContent ?? "").includes("Sign in to the local dashboard session"));
+    expect(container.textContent).not.toContain("Connect this dashboard to the hub");
+    expect(container.textContent).not.toContain("ocx gui pair --origin");
   });
 }
