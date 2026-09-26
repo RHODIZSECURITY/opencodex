@@ -54,6 +54,11 @@ function responsesInputNodeHasImage(value: unknown): boolean {
   return false;
 }
 
+/**
+ * Clone a logical combo request for one concrete target and apply the combo's reasoning policy.
+ * Force mode overrides every valid declared caller effort only when the target ladder proves the
+ * configured default is representable; unknown capabilities stay conservative.
+ */
 export function concreteComboRequestBody(
   body: unknown,
   target: Pick<OcxComboTarget, "provider" | "model">,
