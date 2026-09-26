@@ -30,10 +30,15 @@ export function createPackageTreeIntegrityGuardForServer(
   const restartOntoNewPackageTree = () => {
     const beforeScheduledDrain = () => !isServiceChild() || serviceHomeOwned();
     if (!beforeScheduledDrain()) throw new Error("service home ownership changed");
-    acceptPackageTreeRestart(undefined, {
-      onAccepted: veto => { vetoAcceptedRestart = veto; },
+    let admitted = false;
+    const result = acceptPackageTreeRestart(undefined, {
+      onAccepted: veto => { admitted = true; vetoAcceptedRestart = veto; },
       beforeScheduledDrain,
     });
+    // An automatic restart that could not take the drain lease (another drain owns the lifecycle
+    // gate) reports alreadyDraining without admitting it. Throw so the caller retries instead of
+    // treating the restart as done and leaving the service on the old package.
+    if (result.alreadyDraining && !admitted) throw new Error("restart admission is busy");
   };
   const guard = createRuntimePackageTreeIntegrityGuard(
     deps.packageTreeInstaller ?? detectInstall(),

@@ -114,6 +114,15 @@ test.each([false, true])("first text is replayed once and later errors stay SSE 
   expect(calls).toBe(1);
 });
 
+test("a disabled stall watchdog still gives Devin a finite preflight", async () => {
+  // stallTimeoutSec: 0 disables the stream watchdog (#5876); it must not turn into a zero-length
+  // preflight that commits SSE before the first event.
+  const response = await run({ stallTimeoutSec: 0 });
+  expect(response.status).toBe(429);
+  expect(response.headers.get("retry-after")).toBe("60");
+  expect(calls).toBe(1);
+});
+
 test("a replay-unsafe heartbeat leaves the error in SSE", async () => {
   events = [{ type: "heartbeat", replayUnsafe: true }, limit];
   const response = await run();

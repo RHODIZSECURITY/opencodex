@@ -166,6 +166,7 @@ describe("server package-tree guard with a launcher plan", () => {
     let current: LauncherTarget | null = target(RUNNING);
     let pending: (() => void) | null = null;
     const accepted: string[] = [];
+    let busy = 0;
     const guard = createPackageTreeIntegrityGuardForServer({
       packageTreeInstaller: "mise",
       observePackageTree: () => manifest(1n),
@@ -178,11 +179,15 @@ describe("server package-tree guard with a launcher plan", () => {
       },
       acceptSystemRestart: (() => {
         accepted.push("restart");
+        if (busy > 0) { busy--; return { accepted: true, alreadyDraining: true, activeTurnCount: 0, drainTimeoutMs: 0 }; }
         return { accepted: true, alreadyDraining: false, activeTurnCount: 0, drainTimeoutMs: 0 };
       }) as never,
     }, () => owned, () => serviceChild);
     const tick = () => { const run = pending; pending = null; run?.(); };
-    return { guard, accepted, tick, retarget: (next: LauncherTarget | null) => { current = next; } };
+    return {
+      guard, accepted, tick, busyFor: (n: number) => { busy = n; },
+      retarget: (next: LauncherTarget | null) => { current = next; },
+    };
   }
 
   test("a mise upgrade restarts through the shared handler without fencing requests", () => {
@@ -193,6 +198,16 @@ describe("server package-tree guard with a launcher plan", () => {
     expect(s.accepted).toEqual(["restart"]);
     expect(s.guard.status()).toEqual({ ok: true });
     expect(s.guard.installedVersion?.()).toBe("2.66.0");
+    s.guard.dispose();
+  });
+
+  test("a busy restart admission is asked again instead of stopping the watch", () => {
+    const s = serverGuard(true, true);
+    s.busyFor(1);
+    s.retarget(target(NEXT));
+    for (let i = 0; i < 6; i++) s.tick();
+    // The first admission was busy (another drain held the gate); the watch asks again.
+    expect(s.accepted).toEqual(["restart", "restart"]);
     s.guard.dispose();
   });
 

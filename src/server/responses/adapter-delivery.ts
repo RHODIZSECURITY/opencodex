@@ -148,6 +148,7 @@ export async function deliverAdapterResponse(
           toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, toolSearchToolNames,
         },
         stallTimeoutSec: config.stallTimeoutSec,
+        localUpstream,
         turnAdmissionLease: options.turnAdmissionLease,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
         stopUpstream: () => { cancelResponseCompletion(); upstream.abort(); },

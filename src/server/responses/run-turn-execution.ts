@@ -33,7 +33,7 @@ import { formatErrorResponse, bridgeToResponsesSSE, buildResponseJSON } from "..
 import { redactSecretString } from "../../lib/redact";
 import { adapterFailureFromEvent } from "../../bridge/internal";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
-import { resolveStallTimeoutSec } from "../../stall-timeout";
+import { DEFAULT_STALL_TIMEOUT_SEC, resolveStallTimeoutSec } from "../../stall-timeout";
 import { jsonUtf8Bytes } from "../../lib/json-byte-size";
 import { isTranslatorBudgetExceededError } from "../../lib/translator-budget";
 import {
@@ -534,8 +534,10 @@ export async function executeResponsesRunTurn(
       void runTurn();
       let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
       const stallTimeoutSec = wsPlan?.stallTimeoutSec ?? config.stallTimeoutSec;
+      // A disabled watchdog (0) is not a zero preflight: it would commit SSE before Devin's first
+      // event and deliver a pre-output 429 in-stream. Fall back to the default finite bound.
       const preflightDeadlineAt = grokDevinPreflight
-        ? Date.now() + resolveStallTimeoutSec(stallTimeoutSec) * 1_000
+        ? Date.now() + (resolveStallTimeoutSec(stallTimeoutSec) || DEFAULT_STALL_TIMEOUT_SEC) * 1_000
         : undefined;
       if (runTurnFailoverArmed()) {
         // Preflight holds only heartbeats and the first meaningful event. A first-event 429 can be
