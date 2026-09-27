@@ -21,6 +21,7 @@ import {
   ANTHROPIC_MODEL_INPUT_MODALITIES,
   ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
   ANTHROPIC_MODEL_REASONING_EFFORTS,
+  ANTHROPIC_NO_TEMPERATURE_MODELS,
   ZAI_GLM_52_REASONING_EFFORTS,
   ZAI_GLM_53_REASONING_EFFORTS,
   OPENAI_GPT56_MODELS,
@@ -479,6 +480,7 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
     modelInputModalities: { ...ANTHROPIC_MODEL_INPUT_MODALITIES },
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
+    noTemperatureModels: [...ANTHROPIC_NO_TEMPERATURE_MODELS],
     // Codex omits max_output_tokens; without a provider budget the Anthropic adapter
     // falls back to 8192, which truncates long answers with stop_reason=max_tokens.
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -508,6 +510,7 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
     modelInputModalities: { ...ANTHROPIC_MODEL_INPUT_MODALITIES },
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
+    noTemperatureModels: [...ANTHROPIC_NO_TEMPERATURE_MODELS],
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
     defaultModel: "claude-sonnet-5",
     fastWire: ANTHROPIC_FAST_WIRE,
@@ -720,6 +723,7 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     modelInputModalities: Object.fromEntries(META_MUSE_MODELS.map(id => [id, ["text", "image"] as ["text", "image"]])),
     modelReasoningEfforts: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_REASONING_EFFORTS])),
     modelReasoningEffortMap: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_REASONING_EFFORT_MAP])),
+    normalizeToolSchemaNullEscapes: true,
     // No defaultMaxOutputTokens: Meta publishes none. The only number in its docs
     // (131072) appears inside a third-party config sample, and the protocol pages call
     // the real limit "model-dependent".
@@ -762,6 +766,7 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     modelInputModalities: Object.fromEntries(META_MUSE_MODELS.map(id => [id, ["text", "image"] as ["text", "image"]])),
     modelReasoningEfforts: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_CODE_REASONING_EFFORTS])),
     modelReasoningEffortMap: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_CODE_REASONING_EFFORT_MAP])),
+    normalizeToolSchemaNullEscapes: true,
     note: "Signs in to Meta with a browser device code on any platform, then mints the Muse Code subscription key. That grant is reimplemented from the one the Muse Code CLI performs and has NOT been exercised against Meta from OpenCodex, so treat the first login as unverified. If the Muse Code CLI is already signed in on macOS, the existing key is imported instead of starting a new grant. A pasted key from https://dev.meta.ai still works as a fallback when a device login cannot complete, and faces the same format check and live validation. A device login authenticates as Meta own Muse Code client, which is a stronger claim than reusing a key the CLI already minted. Meta scopes that credential to the Muse Code CLI, so this is an UNSUPPORTED use: Meta does not authorize subscription coverage outside its own CLI, how these calls settle is not observable from the API, and you should treat every call as billable against your account. The key, imported or pasted, is copied into OpenCodex's auth store. For an account signed in with the device login, OpenCodex refreshes Meta's subscription windows on demand from the same key endpoint the login uses, at most once every five minutes. For an imported or pasted key there is no endpoint to query them on demand, so OpenCodex reads them from streaming responses and shows the last observed value with its age; refreshing one then requires another streaming turn, and translated (non-passthrough) turns report none. Rate limits apply per team, not per key. For a supported path use the meta-model provider with your own key (export it as META_MODEL_API_KEY).",
   },
   {

@@ -16,7 +16,7 @@ import type {
   OcxToolResultMessage,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolChoiceToolPredicate } from "../types";
+import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolChoiceToolPredicate } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
@@ -1078,7 +1078,9 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         body.system = [{ type: "text", text: system }];
       }
       if (tools) body.tools = tools;
-      if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
+      if (parsed.options.temperature !== undefined && !modelInList(provider.noTemperatureModels, parsed.modelId)) {
+        body.temperature = parsed.options.temperature;
+      }
       if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
 

@@ -93,6 +93,7 @@ export const PROVIDER_MODEL_RENAME_ROLES = {
   xaiResponsesDefaultVersion: "none",
   zaiResponsesDefaultVersion: "none",
   supportsResponsesCustomTools: "none",
+  normalizeToolSchemaNullEscapes: "none",
   unsupportedHostedTools: "none",
   responsesSnapshotRepair: "none",
   webSearchBridge: "none",

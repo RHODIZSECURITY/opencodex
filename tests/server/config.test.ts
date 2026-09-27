@@ -1547,6 +1547,40 @@ describe("opencodex config defaults", () => {
     expect(readConfigDiagnostics().error).toContain("responsesSnapshotRepair");
   });
 
+  test("accepts only a boolean normalizeToolSchemaNullEscapes opt-in", () => {
+    for (const value of [true, false] as const) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          custom: {
+            adapter: "openai-responses",
+            baseUrl: "https://example.test/v1",
+            normalizeToolSchemaNullEscapes: value,
+          },
+        },
+        defaultProvider: "custom",
+      });
+      expect(readConfigDiagnostics().error).toBeNull();
+      expect(readConfigDiagnostics().config.providers.custom.normalizeToolSchemaNullEscapes).toBe(value);
+    }
+
+    for (const value of ["true", { enabled: true }]) {
+      writeConfig({
+        port: 12345,
+        providers: {
+          custom: {
+            adapter: "openai-responses",
+            baseUrl: "https://example.test/v1",
+            normalizeToolSchemaNullEscapes: value,
+          },
+        },
+        defaultProvider: "custom",
+      });
+      expect(readConfigDiagnostics().source).toBe("fallback");
+      expect(readConfigDiagnostics().error).toContain("normalizeToolSchemaNullEscapes");
+    }
+  });
+
   test("accepts only a boolean xaiResponsesXSearch provider opt-in", () => {
     const provider = {
       adapter: "openai-responses",

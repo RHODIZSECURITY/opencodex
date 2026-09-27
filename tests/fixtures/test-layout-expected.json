@@ -1135,6 +1135,7 @@
   "openai-provider-option-tooling.test.ts": "adapters/openai",
   "openai-provider-option.test.ts": "adapters/openai",
   "openai-responses-passthrough.test.ts": "responses",
+  "claude-code-provider-400-compat.test.ts": "responses",
   "responses-forward-output-cap.test.ts": "responses",
   "opencode-cli.test.ts": "providers",
   "opencode-free-provider.test.ts": "providers",

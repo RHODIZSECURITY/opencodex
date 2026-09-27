@@ -184,7 +184,10 @@ capabilities. In particular, `src/providers/registry/entries-core.ts` assigns Op
 routed-model fallback.
 Meta's two direct surfaces keep separate reasoning contracts: `meta-model` remains capped at
 `xhigh`, while `meta-muse` advertises `max` and sends the transparent Muse compatibility
-User-Agent required by that credential surface. The existing registry header merge keeps an
+User-Agent required by that credential surface. Claude Code's explicit `none` effort maps to
+Meta's lowest accepted wire value, `minimal`, because Meta rejects `none` with HTTP 400. Both
+Meta Responses presets also opt into the lossless JSON-Schema pattern rewrite `\\0` → `\\x00`;
+other providers keep caller patterns byte-for-byte. The existing registry header merge keeps an
 operator-supplied User-Agent authoritative.
 The same registry declares the first-party `deepseek-flash` model with `text` and `image` input,
 so it bypasses the vision sidecar by default; explicit `noVisionModels` or text-only declarations

@@ -12,7 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { repoPath } from "../helpers/repo-root";
 import { SPAWN_BUDGET_MS } from "../helpers/test-budget";
@@ -75,6 +75,7 @@ describe("the release preflight job", () => {
 
 type Scenario = {
   version?: string;
+  desktopVersion?: string;
   ref?: string;
   distTag?: string;
   tags?: string[];
@@ -85,15 +86,12 @@ type Scenario = {
   resume?: boolean;
 };
 
-// The script checks the real version sources (package.json and the desktop manifests) through its own
-// repository root, so the scenarios release the checkout's own version; only the tag set, dev, gh
-// and npm are fixtures.
-const OWN_VERSION = (JSON.parse(readFileSync(repoPath("package.json"), "utf8")) as { version: string }).version;
-const [MAJOR, MINOR] = OWN_VERSION.split(/[.-]/).map(Number) as [number, number];
-const OWN_IS_PREVIEW = OWN_VERSION.includes("-preview.");
-const OWN_REF = OWN_IS_PREVIEW ? "refs/heads/preview" : "refs/heads/main";
-const OWN_TAG = OWN_IS_PREVIEW ? "preview" : "latest";
-const NEXT_CORE = `${MAJOR}.${MINOR + 1}.0`;
+// Execute unchanged release scripts in a hermetic checkout with all four version sources.
+// A private developer-build suffix must not poison fixtures for official stable/preview releases.
+const FIXTURE_VERSION = "2.62.0";
+const FIXTURE_REF = "refs/heads/main";
+const FIXTURE_TAG = "latest";
+const NEXT_CORE = "2.63.0";
 
 const FAKE_GH = [
   "#!/bin/sh",
@@ -137,8 +135,20 @@ function preflight(scenario: Scenario): { status: number | null; output: string;
       GIT_COMMITTER_EMAIL: "fixture@example.test",
     };
     run(repo, gitEnv, "git", "init", "-q", "-b", "release");
-    writeFileSync(join(repo, "package.json"), JSON.stringify({ version: scenario.version ?? OWN_VERSION }));
-    run(repo, gitEnv, "git", "add", "package.json");
+    const version = scenario.version ?? FIXTURE_VERSION;
+    const fixtureScripts = ["scripts/ci/release-preflight.sh", "scripts/release-version-sources.ts", "scripts/version-line.ts"];
+    for (const relative of fixtureScripts) {
+      const destination = join(repo, relative);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(relative === "scripts/ci/release-preflight.sh" ? PREFLIGHT : repoPath(...relative.split("/"))));
+    }
+    const desktop = join(repo, "desktop", "src-tauri");
+    mkdirSync(desktop, { recursive: true });
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "@fixture/opencodex", version }));
+    writeFileSync(join(desktop, "tauri.conf.json"), JSON.stringify({ version: scenario.desktopVersion ?? version }));
+    writeFileSync(join(desktop, "Cargo.toml"), `[package]\nname = "opencodex-desktop"\nversion = "${version}"\n`);
+    writeFileSync(join(desktop, "Cargo.lock"), `[[package]]\nname = "opencodex-desktop"\nversion = "${version}"\n`);
+    run(repo, gitEnv, "git", "add", ".");
     run(repo, gitEnv, "git", "commit", "-q", "-m", "release");
     const head = run(repo, gitEnv, "git", "rev-parse", "HEAD");
     for (const tag of scenario.tags ?? []) run(repo, gitEnv, "git", "tag", tag);
@@ -151,14 +161,14 @@ function preflight(scenario: Scenario): { status: number | null; output: string;
     }
     const summary = join(directory, "summary.md");
     writeFileSync(summary, "");
-    const result = Bun.spawnSync(["bash", PREFLIGHT], {
+    const result = Bun.spawnSync(["bash", join(repo, "scripts", "ci", "release-preflight.sh")], {
       cwd: repo,
       env: {
         ...gitEnv,
         PATH: `${bin}${delimiter}${gitEnv.PATH}`,
-        RELEASE_VERSION: scenario.version ?? OWN_VERSION,
-        NPM_DIST_TAG: scenario.distTag ?? OWN_TAG,
-        GITHUB_REF: scenario.ref ?? OWN_REF,
+        RELEASE_VERSION: scenario.version ?? FIXTURE_VERSION,
+        NPM_DIST_TAG: scenario.distTag ?? FIXTURE_TAG,
+        GITHUB_REF: scenario.ref ?? FIXTURE_REF,
         GITHUB_SHA: head,
         DRY_RUN: String(scenario.dryRun ?? false),
         RESUME: String(scenario.resume ?? false),
@@ -181,12 +191,12 @@ function preflight(scenario: Scenario): { status: number | null; output: string;
 
 describe.skipIf(process.platform === "win32")("scripts/ci/release-preflight.sh, executed", () => {
   test("replays run 35783865160: a higher-core tag refuses the release before packaging", () => {
-    const blocker = OWN_IS_PREVIEW ? `v${NEXT_CORE}` : `v${NEXT_CORE}-preview.20260923`;
+    const blocker = `v${NEXT_CORE}-preview.20260923`;
     const result = preflight({ tags: ["v0.0.1", blocker] });
     expect(result.status, result.output).toBe(1);
-    expect(result.output).toContain(`${OWN_VERSION} does not outrank the current tag set`);
+    expect(result.output).toContain(`${FIXTURE_VERSION} does not outrank the current tag set`);
     expect(result.output).toContain("found 1 blocking problem(s)");
-    expect(result.summary).toContain(`Release preflight refused ${OWN_VERSION}`);
+    expect(result.summary).toContain(`Release preflight refused ${FIXTURE_VERSION}`);
   }, SPAWN_BUDGET_MS);
 
   test("passes a release every check can already approve", () => {
@@ -224,7 +234,7 @@ describe.skipIf(process.platform === "win32")("scripts/ci/release-preflight.sh, 
   }, SPAWN_BUDGET_MS);
 
   test("requires the dev pre-move", () => {
-    const behind = preflight({ tags: ["v0.0.1"], devVersion: OWN_VERSION });
+    const behind = preflight({ tags: ["v0.0.1"], devVersion: FIXTURE_VERSION });
     expect(behind.status, behind.output).toBe(1);
     expect(behind.output).toContain("merge the dev pre-move first");
     const missing = preflight({ tags: ["v0.0.1"], devVersion: null });
@@ -233,11 +243,36 @@ describe.skipIf(process.platform === "win32")("scripts/ci/release-preflight.sh, 
   }, SPAWN_BUDGET_MS);
 
   test("reports every problem in one run", () => {
-    const wrongTag = OWN_TAG === "latest" ? "preview" : "latest";
+    const wrongTag = FIXTURE_TAG === "latest" ? "preview" : "latest";
     const result = preflight({ tags: ["v0.0.1"], distTag: wrongTag, npm: "present" });
     expect(result.status, result.output).toBe(1);
-    expect(result.output).toContain(`npm dist-tag '${OWN_TAG}'`);
+    expect(result.output).toContain(`npm dist-tag '${FIXTURE_TAG}'`);
     expect(result.output).toContain("already exists on npm");
     expect(result.output).toContain("found 2 blocking problem(s)");
   }, SPAWN_BUDGET_MS);
 });
+
+
+test.skipIf(process.platform === "win32")("release preflight fixtures accept a stable version independent of the developer build", () => {
+  const result = preflight({ version: "2.62.0", ref: "refs/heads/main", distTag: "latest", devVersion: "2.63.0", tags: ["v0.0.1"] });
+  expect(result.status, result.output).toBe(0);
+}, SPAWN_BUDGET_MS);
+
+test.skipIf(process.platform === "win32")("release preflight fixtures exercise a matching preview channel independently", () => {
+  const result = preflight({ version: "2.63.0-preview.20260923", ref: "refs/heads/preview", distTag: "preview", devVersion: "2.63.0", tags: ["v0.0.1"] });
+  expect(result.status, result.output).toBe(0);
+}, SPAWN_BUDGET_MS);
+
+
+test.skipIf(process.platform === "win32")("hermetic preflight still rejects a mismatched desktop version source", () => {
+  const result = preflight({ tags: ["v0.0.1"], desktopVersion: "0.0.1" });
+  expect(result.status).toBe(1);
+  expect(result.output).toContain("a version source does not match");
+  expect(result.output).toContain("tauri.conf.json");
+}, SPAWN_BUDGET_MS);
+
+test.skipIf(process.platform === "win32")("private-build suffixes remain forbidden on the official main release channel", () => {
+  const result = preflight({ version: "2.62.0-private.1", tags: ["v0.0.1"] });
+  expect(result.status).toBe(1);
+  expect(result.output).toContain("main releases must use a stable semver version");
+}, SPAWN_BUDGET_MS);

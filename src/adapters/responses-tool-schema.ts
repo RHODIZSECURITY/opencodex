@@ -112,7 +112,11 @@ function usesUnicodePropertyEscape(pattern: string): boolean {
  * or one pending closure per sibling. The explicit stack still handles caller-controlled nesting
  * depth; the separate Responses-only encrypted-marker normalization is unchanged.
  */
-export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): unknown {
+function rewriteScalarPatterns(
+  node: unknown,
+  transform: (pattern: string) => string | undefined,
+  inNameBag = false,
+): unknown {
   interface Frame {
     node: unknown[] | Record<string, unknown>;
     inNameBag: boolean;
@@ -124,7 +128,6 @@ export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): 
   }
 
   function * ownEntries(value: Record<string, unknown>): IterableIterator<[string, unknown]> {
-    // Unlike Object.entries(), this does not materialize every key/value pair before traversal.
     for (const key in value) {
       if (Object.prototype.hasOwnProperty.call(value, key)) yield [key, value[key]];
     }
@@ -157,7 +160,6 @@ export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): 
 
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
-
     if (Array.isArray(frame.node)) {
       const index = frame.index ?? 0;
       if (index >= frame.node.length) {
@@ -181,13 +183,16 @@ export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): 
       continue;
     }
     const [key, value] = next.value;
-    if (!frame.inNameBag && key === "pattern" && typeof value === "string" && usesUnicodePropertyEscape(value)) {
-      delete (cloneContainer(frame) as Record<string, unknown>)[key];
-      continue;
+    if (!frame.inNameBag && key === "pattern" && typeof value === "string") {
+      const normalized = transform(value);
+      if (normalized !== value) {
+        const output = cloneContainer(frame) as Record<string, unknown>;
+        if (normalized === undefined) delete output[key];
+        else output[key] = normalized;
+        continue;
+      }
     }
-    if (!frame.inNameBag && (PRESERVED_PATTERN_SUBTREES.has(key) || SCHEMA_LITERAL_VALUE_KEYS.has(key))) {
-      continue;
-    }
+    if (!frame.inNameBag && (PRESERVED_PATTERN_SUBTREES.has(key) || SCHEMA_LITERAL_VALUE_KEYS.has(key))) continue;
     if (value && typeof value === "object") {
       stack.push({
         node: value as unknown[] | Record<string, unknown>,
@@ -197,6 +202,48 @@ export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): 
       });
     }
   }
-
   return root.output ?? node;
+}
+
+export function stripUnicodePropertyPatterns(node: unknown, inNameBag = false): unknown {
+  return rewriteScalarPatterns(
+    node,
+    pattern => usesUnicodePropertyEscape(pattern) ? undefined : pattern,
+    inNameBag,
+  );
+}
+
+function normalizeUnescapedNullEscape(pattern: string): string {
+  let changed = false;
+  let output = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    if (char !== "\\") {
+      output += char;
+      continue;
+    }
+    const next = pattern[index + 1];
+    if (next === "\\") {
+      output += "\\\\";
+      index += 1;
+      continue;
+    }
+    if (next === "0" && !/[0-9]/.test(pattern[index + 2] ?? "")) {
+      output += "\\x00";
+      index += 1;
+      changed = true;
+      continue;
+    }
+    output += char;
+  }
+  return changed ? output : pattern;
+}
+
+/**
+ * Some Responses-compatible validators reject the JSON-Schema/ECMAScript NUL spelling `\\0`
+ * while accepting the equivalent `\\x00`. Opt-in providers use this lossless rewrite only in
+ * ordinary scalar pattern positions; regex-keyed and polarity-sensitive subtrees stay untouched.
+ */
+export function normalizeToolSchemaNullEscapes(node: unknown, inNameBag = false): unknown {
+  return rewriteScalarPatterns(node, normalizeUnescapedNullEscape, inNameBag);
 }

@@ -81,6 +81,7 @@ export const REGISTRY_FIELD_MODEL_ID_ROLES = {
   supportsServiceTier: NONE,
   supportsOpenAiWebSearchToolFields: NONE,
   supportsResponsesCustomTools: NONE,
+  normalizeToolSchemaNullEscapes: NONE,
   modelSupportsServiceTier: RECORD_KEYS,
   keyAuthServiceTier: KEY_AUTH_SERVICE_TIER,
   fastTierDescription: NONE,

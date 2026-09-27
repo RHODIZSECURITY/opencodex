@@ -26,7 +26,7 @@
  * what HOME says. `assertLiveServiceManagerAllowed` in `src/service.ts` is the guard for
  * that, armed by the same flag set below.
  */
-import { afterAll } from "bun:test";
+import { afterAll, beforeAll } from "bun:test";
 import { isTestHomeGuardArmed, protectedHomeForTests } from "../src/lib/test-home-guard";
 import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV } from "../scripts/test";
 import {
@@ -98,11 +98,13 @@ const inheritedLock = resolveInheritedTestRunLock({
   env: process.env,
 });
 process.env[TEST_RUN_ID_ENV] = runId;
-// A bare Windows run also parents nested Bun tests. Resolve its validated path
-// once, then pass the complete capability to descendants just as the wrapper does.
+// A bare Windows run also parents nested Bun tests. Resolve its validated path once, then pass
+// the complete capability to descendants just as the wrapper does. Do not top-level-await this:
+// Bun can begin the test lifecycle while an async preload is suspended. The global beforeAll
+// below is the admission barrier that makes lock completion and cleanup setup precede every test.
 const lockPath = inheritedLock?.lockPath
   ?? (process.platform === "win32" ? resolveWrappedTestRunLockPath() : undefined);
-const runLock = await acquireTestRunLock({
+const runLockPromise = acquireTestRunLock({
   runId,
   ownerPid: bareIdentity.ownerPid,
   lockPath,
@@ -113,31 +115,32 @@ const runLock = await acquireTestRunLock({
   ),
 });
 
-if (process.platform === "win32" && lockPath && runLock.owner) {
-  process.env[TEST_RUN_LOCK_PATH_ENV] = lockPath;
-  process.env[TEST_RUN_LOCK_TOKEN_ENV] = runLock.owner.token;
-}
+let cleanupOnExit: (() => void) | undefined;
+const cleanupReady = runLockPromise.then(async runLock => {
+  if (process.platform === "win32" && lockPath && runLock.owner) {
+    process.env[TEST_RUN_LOCK_PATH_ENV] = lockPath;
+    process.env[TEST_RUN_LOCK_TOKEN_ENV] = runLock.owner.token;
+  }
 
-// Clean up only the root this preload created. The `bun run test` wrapper owns its own.
-// Bun test workers do not reliably run process `exit` handlers, so the test lifecycle hook
-// is primary; the process hook retries only an already-drained root. Setup failures
-// leave an ownership-marked root for stale recovery rather than blocking on child handles.
-// Load cleanup dependencies only AFTER home isolation, guard arming, and run-lock admission.
-const { createTestSandboxCleanup } = await import("./helpers/test-sandbox-cleanup");
-const { flushWindowsSecretAclReapsBeforeRemoval, windowsSecretAclReapPendingAtOrBelow } =
-  await import("../src/lib/windows-secret-acl");
-// Resolve cleanup owners during protected setup, not for the first time inside a timed
-// afterAll hook. Cleanup must drain existing producers rather than initialize their graph.
-const { flushConfigDirHardeningForTests } = await import("../src/config/paths");
-const { flushNativeMainStartupReleases } = await import("../src/codex/native-profile-startup");
-const cleanup = createTestSandboxCleanup({
-  drainProducers: async () => {
-    await flushNativeMainStartupReleases();
-    await flushConfigDirHardeningForTests();
-  },
-  waitForReaps: () => flushWindowsSecretAclReapsBeforeRemoval(isolated.root),
-  hasPendingReaps: () => windowsSecretAclReapPendingAtOrBelow(isolated.root),
-  remove: () => isolated.cleanup(),
+  // Load cleanup dependencies only AFTER home isolation, guard arming, and run-lock admission.
+  const { createTestSandboxCleanup } = await import("./helpers/test-sandbox-cleanup");
+  const { flushWindowsSecretAclReapsBeforeRemoval, windowsSecretAclReapPendingAtOrBelow } =
+    await import("../src/lib/windows-secret-acl");
+  const { flushConfigDirHardeningForTests } = await import("../src/config/paths");
+  const { flushNativeMainStartupReleases } = await import("../src/codex/native-profile-startup");
+  const cleanup = createTestSandboxCleanup({
+    drainProducers: async () => {
+      await flushNativeMainStartupReleases();
+      await flushConfigDirHardeningForTests();
+    },
+    waitForReaps: () => flushWindowsSecretAclReapsBeforeRemoval(isolated.root),
+    hasPendingReaps: () => windowsSecretAclReapPendingAtOrBelow(isolated.root),
+    remove: () => isolated.cleanup(),
+  });
+  cleanupOnExit = cleanup.onExit;
+  return cleanup;
 });
-afterAll(cleanup.afterAll);
-process.on("exit", cleanup.onExit);
+
+beforeAll(async () => { await cleanupReady; }, 120_000);
+afterAll(async () => { await (await cleanupReady).afterAll(); }, 30_000);
+process.on("exit", () => cleanupOnExit?.());

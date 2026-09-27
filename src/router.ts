@@ -411,6 +411,9 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.supportsResponsesCustomTools === undefined && registryEntry.supportsResponsesCustomTools !== undefined
       ? { supportsResponsesCustomTools: registryEntry.supportsResponsesCustomTools }
       : {}),
+    ...(provider.normalizeToolSchemaNullEscapes === undefined && registryEntry.normalizeToolSchemaNullEscapes !== undefined
+      ? { normalizeToolSchemaNullEscapes: registryEntry.normalizeToolSchemaNullEscapes }
+      : {}),
     ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
       ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
       : {}),

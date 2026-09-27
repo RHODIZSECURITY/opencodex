@@ -206,7 +206,11 @@ outside any item and is read directly by the undeclared-tool guard.
 The restorable map is narrowed by `tool_choice` the same way `authorizedAliases` narrows the
 namespace layer: upstream still receives the whole aliased catalog, but a tool the caller
 disabled for the turn cannot be restored back into an executable client name.
-Arguments, user text, and schema property names are never rewritten.
+Arguments, user text, and schema property names are never rewritten. On the same direct Meta
+Responses destinations, scalar JSON-Schema `pattern` values normalize the ECMAScript NUL escape
+`\\0` to the equivalent `\\x00` because Meta's validator rejects the former spelling. Lookarounds
+and ordinary pattern constraints remain intact; the policy is registry-gated and does not alter
+unclassified or non-Meta providers.
 
 > Decision record: [ADR-0042](../decisions/ADR-0042-responses-http-sse.md)
 

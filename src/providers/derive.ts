@@ -279,6 +279,9 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.responsesPath !== undefined ? { responsesPath: entry.responsesPath } : {}),
     ...(entry.chatCompletionsPath !== undefined ? { chatCompletionsPath: entry.chatCompletionsPath } : {}),
     ...(entry.statelessResponses !== undefined ? { statelessResponses: entry.statelessResponses } : {}),
+    ...(entry.normalizeToolSchemaNullEscapes !== undefined
+      ? { normalizeToolSchemaNullEscapes: entry.normalizeToolSchemaNullEscapes }
+      : {}),
     ...(entry.requiresAdjacentResponsesToolResults !== undefined
       ? { requiresAdjacentResponsesToolResults: entry.requiresAdjacentResponsesToolResults }
       : {}),
@@ -588,6 +591,9 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   }
   if (prov.supportsResponsesCustomTools === undefined && entry.supportsResponsesCustomTools !== undefined) {
     prov.supportsResponsesCustomTools = entry.supportsResponsesCustomTools;
+  }
+  if (prov.normalizeToolSchemaNullEscapes === undefined && entry.normalizeToolSchemaNullEscapes !== undefined) {
+    prov.normalizeToolSchemaNullEscapes = entry.normalizeToolSchemaNullEscapes;
   }
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
   if (prov.dropResponsesReasoningItems === undefined && entry.dropResponsesReasoningItems !== undefined) prov.dropResponsesReasoningItems = entry.dropResponsesReasoningItems;

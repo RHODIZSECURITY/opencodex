@@ -249,6 +249,8 @@ export interface ProviderRegistryEntry {
   supportsOpenAiWebSearchToolFields?: boolean;
   /** Registry default for native Responses custom-tool support. */
   supportsResponsesCustomTools?: boolean;
+  /** Registry default for provider-scoped JSON-Schema NUL-escape normalization. */
+  normalizeToolSchemaNullEscapes?: boolean;
   /** Registry default for exact model service-tier capability; explicit config keys win. */
   modelSupportsServiceTier?: Record<string, boolean>;
   /**

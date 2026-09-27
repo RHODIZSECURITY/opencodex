@@ -423,9 +423,23 @@ function withoutParallelOverride(requested: string[]): string[] {
   return requested.filter(arg => arg !== "--parallel" && !arg.startsWith("--parallel="));
 }
 
+function isChangedSuiteRun(requested: string[]): boolean {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  const passedThrough = delimiterIndex === -1 ? [] : requested.slice(delimiterIndex + 1);
+  if (passedThrough.length > 0 || !hasCliFlag(requested, "--changed")) return false;
+
+  for (let index = 0; index < wrapperArgs.length; index++) {
+    const arg = wrapperArgs[index];
+    if (arg === "-" || !arg.startsWith("-")) return false;
+    if (!arg.includes("=") && BUN_TEST_OPTIONS_REQUIRING_VALUES.has(arg)) index++;
+  }
+  return true;
+}
+
 function canUseSerialLanes(requested: string[]): boolean {
-  if (!isFullSuiteRun(requested)) return false;
-  return !["--changed", "--shard", "--reporter-outfile", "--update-timings"].some(flag => hasCliFlag(requested, flag));
+  if (!isFullSuiteRun(requested) && !isChangedSuiteRun(requested)) return false;
+  return !["--shard", "--reporter-outfile", "--update-timings"].some(flag => hasCliFlag(requested, flag));
 }
 
 /** Build the default full-suite plan: one bounded main lane plus isolated risky files. */
@@ -452,7 +466,7 @@ export function resolveBunTestPlan(
     { label: "parallel suite", args: mainArgs, timeoutMs: mainTimeout },
     ...SERIAL_FULL_SUITE_FILES.map(file => ({
       label: basename(file),
-      args: resolveBunTestArgs(["--parallel=1", ...serialRequested, `./tests/${file}`]),
+      args: resolveBunTestArgs(["--parallel=1", ...serialRequested, `./tests/${file}`], comparisonCommit),
       timeoutMs: SERIAL_LANE_TIMEOUT_MS[basename(file) as SerialLaneBasename] ?? 3 * 60 * 1000,
     })),
   ];

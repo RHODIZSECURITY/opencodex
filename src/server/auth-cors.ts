@@ -1057,6 +1057,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   xaiResponsesDefaultVersion: "runtime",
   zaiResponsesDefaultVersion: "runtime",
   supportsResponsesCustomTools: "editor",
+  normalizeToolSchemaNullEscapes: "editor",
   unsupportedHostedTools: "editor",
   responsesSnapshotRepair: "editor",
   webSearchBridge: "editor",

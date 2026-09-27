@@ -646,13 +646,27 @@ describe("bun test argv", () => {
     expect(inspectChangedRun(["--", "--changed=fixture"])).toBeNull();
   });
 
-  test("changed-mode stays explicitly filtered without redundant arguments", () => {
+  test("changed-mode stays filtered while shared-state files retain their serial lanes", () => {
     expect(resolveBunTestArgs(["--changed=dev"]))
       .toEqual(["--isolate", "--parallel=4", "--changed=dev"]);
     const mergeBase = "0123456789abcdef0123456789abcdef01234567";
     expect(resolveBunTestArgs(["--changed=dev"], mergeBase))
       .toEqual(["--isolate", "--parallel=4", "--changed=" + mergeBase]);
-    expect(resolveBunTestPlan(["--changed=dev"])).toHaveLength(1);
+
+    const plan = resolveBunTestPlan(["--changed=dev"], mergeBase);
+    expect(plan).toHaveLength(SERIAL_FULL_SUITE_FILES.length + 1);
+    expect(plan[0]?.label).toBe("parallel suite");
+    expect(plan[0]?.args).toContain("--parallel=4");
+    expect(plan[0]?.args).toContain("--changed=" + mergeBase);
+    for (const file of SERIAL_FULL_SUITE_FILES) {
+      expect(plan[0]?.args).toContain(`**/${basename(file)}`);
+      expect(plan.find(lane => lane.label === basename(file))?.args).toEqual([
+        "--isolate",
+        "--parallel=1",
+        "--changed=" + mergeBase,
+        `./tests/${file}`,
+      ]);
+    }
   });
 
   test("changed-mode prefers the first existing conventional dev ref", () => {

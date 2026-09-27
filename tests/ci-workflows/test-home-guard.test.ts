@@ -513,7 +513,7 @@ const canSymlink = (() => {
 
     const armAt = source.indexOf('process.env.OCX_TEST_HOME_GUARD = "1"');
     const assertAt = source.indexOf("test home guard failed to arm");
-    const lockAt = source.indexOf("await acquireTestRunLock(");
+    const lockAt = source.indexOf("acquireTestRunLock({");
     const sandboxAt = source.indexOf("createIsolatedTestEnvironment()");
 
     expect(armAt).toBeGreaterThan(-1);

@@ -766,6 +766,12 @@ export interface OcxProviderConfig {
    */
   supportsResponsesCustomTools?: boolean;
   /**
+   * Normalize JSON-Schema scalar pattern NUL escapes from \0 to \x00 for Responses
+   * destinations whose regex validator rejects the former spelling. The constraint is preserved;
+   * this never removes a pattern or changes providers that do not explicitly opt in.
+   */
+  normalizeToolSchemaNullEscapes?: boolean;
+  /**
    * Hosted tool declarations this Responses destination rejects, so they are stripped from
    * the request instead of being forwarded and 400'd.
    *

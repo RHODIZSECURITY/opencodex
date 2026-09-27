@@ -372,7 +372,10 @@ plaintext crosses: no signature, encrypted payload or provider item id is
 reconstructed, because those attest to content this proxy never received. Opaque
 reasoning replay across a Chat boundary remains unimplemented by design.
 `presence_penalty` and `frequency_penalty` are carried too; per-model
-`noPenaltyModels` opt-outs still apply at the adapter.
+`noPenaltyModels` opt-outs still apply at the adapter. The same final-adapter rule applies to
+Claude Code compatibility fields: an exact `noStopModels` entry can remove translated stop
+sequences only for a target that rejects them, and Anthropic's `noTemperatureModels` suppresses
+`temperature` for Opus models that deprecate it without changing sibling sampling controls.
 
 ## Explicit reasoning disable on the Chat ingress
 
