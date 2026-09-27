@@ -1,6 +1,6 @@
 [package]
 name = "opencodex-desktop"
-version = "2.66.11-rhodiz.20260926"
+version = "2.66.12-rhodiz.20260927"
 description = "OpenCodex desktop shell"
 authors = ["OpenCodex contributors"]
 license = "MIT"
