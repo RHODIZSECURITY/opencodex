@@ -805,6 +805,11 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     // Go rejects reasoning.encrypted_content with previous_response_id (#3838).
     // Use explicit replay history and the existing stateless Responses policy.
     statelessResponses: true,
+    // Live Claude Code Auto side-query on 2026-09-26: GPT 5.6 Luna on Console Go rejects
+    // Responses `stop` with HTTP 400 unknown_parameter. Claude inbound legitimately translates
+    // `stop_sequences` to `stop`; strip it only for the exact affected Go route so siblings
+    // keep caller stop behavior and routing/model selection remain unchanged.
+    noStopModels: ["gpt-5.6-luna"],
     /* [Decision Log]
     - 목적과 의도: Route the exact models OpenCode Go documents on the Responses endpoint — GPT 5.6 Luna, Grok 4.6/4.7, and Muse Spark Contributor (#2617; opencode.ai/docs/go).
     - 기존 구현 및 제약 조건: The provider is mixed-wire but its provider-wide `openai-chat` adapter sent Luna to `/chat/completions`; explicit user `modelAdapters` entries must remain authoritative.
