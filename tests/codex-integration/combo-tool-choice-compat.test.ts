@@ -58,3 +58,21 @@ test("combo routing skips an auto-tool-choice-only target for tool_choice none",
   expect(route.providerName).toBe("capable");
   expect(route.modelId).toBe("m2");
 });
+
+test("combo routing excludes auto-only targets for required, named, and allowed-tools choices", () => {
+  for (const toolChoice of [
+    "required",
+    { type: "tool", name: "probe" },
+    { type: "allowed_tools", mode: "required" },
+  ]) {
+    clearComboSelectionState();
+    const body = {
+      model: "combo/free",
+      tools: [{ type: "function", name: "probe" }],
+      tool_choice: toolChoice,
+    };
+    const route = routeModel(config(), "combo/free", evidenceFromBody(body));
+    expect(route.providerName).toBe("capable");
+    expect(route.modelId).toBe("m2");
+  }
+});

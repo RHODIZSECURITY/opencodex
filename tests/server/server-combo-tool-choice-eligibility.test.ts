@@ -54,12 +54,13 @@ afterEach(async () => {
   expect(pending).toBe(false);
 });
 
-function serve(label: string, hits: string[]) {
+function serve(label: string, hits: string[], bodies?: Array<{ label: string; body: Record<string, unknown> }>) {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: async () => {
+    fetch: async request => {
       hits.push(label);
+      if (bodies) bodies.push({ label, body: await request.json() as Record<string, unknown> });
       return Response.json({
         id: "resp_fixture",
         object: "response",
@@ -91,9 +92,9 @@ function provider(server: ReturnType<typeof Bun.serve>, extra: Partial<OcxProvid
   };
 }
 
-function config(hits: string[]): OcxConfig {
-  const limited = serve("limited", hits);
-  const capable = serve("capable", hits);
+function config(hits: string[], bodies?: Array<{ label: string; body: Record<string, unknown> }>): OcxConfig {
+  const limited = serve("limited", hits, bodies);
+  const capable = serve("capable", hits, bodies);
   return {
     port: 0,
     defaultProvider: "limited",
@@ -150,5 +151,26 @@ describe("combo tool_choice eligibility", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("limited");
     expect(hits).toEqual(["limited"]);
+  });
+
+  test("omitted tool_choice preserves configured combo priority", async () => {
+    const hits: string[] = [];
+    const response = await post(config(hits), undefined);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("limited");
+    expect(hits).toEqual(["limited"]);
+  });
+
+  test("forced hosted choice reaches the capable fallback unchanged", async () => {
+    const hits: string[] = [];
+    const bodies: Array<{ label: string; body: Record<string, unknown> }> = [];
+    const choice = { type: "web_search" };
+    const response = await post(config(hits, bodies), choice);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("capable");
+    expect(hits).toEqual(["capable"]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.label).toBe("capable");
+    expect(bodies[0]?.body.tool_choice).toEqual(choice);
   });
 });
