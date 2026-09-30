@@ -170,6 +170,29 @@ describe("combo stream preflight", () => {
     expect(await result.response.text()).toBe(expected);
   });
 
+  test("hold mode releases a clean tool-bearing success unchanged", async () => {
+    const original = [
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_item.added", item: { id: "fc1", type: "function_call", name: "Bash", arguments: "{}" } },
+      { type: "response.function_call_arguments.done", item_id: "fc1", arguments: "{\"command\":\"pwd\"}" },
+      {
+        type: "response.completed",
+        response: { id: "r1", status: "completed", output: [{ id: "fc1", type: "function_call" }] },
+      },
+    ];
+    const source = sse(...original);
+    const expected = await source.clone().text();
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("accepted");
+    expect(await result.response.text()).toBe(expected);
+  });
+
   test("commits an oversized next chunk without copying it beyond the preflight cap", async () => {
     const encoder = new TextEncoder();
     const preamble = encoder.encode(`data: ${JSON.stringify({
@@ -194,6 +217,36 @@ describe("combo stream preflight", () => {
     const second = await reader.read();
     expect(new TextDecoder().decode(first.value)).toBe(new TextDecoder().decode(preamble));
     expect(second.value).toBe(oversized);
+    await reader.cancel();
+  });
+
+  test("hold mode commits safely at the byte cap instead of waiting for a terminal", async () => {
+    const encoder = new TextEncoder();
+    const preamble = encoder.encode(`data: ${JSON.stringify({
+      type: "response.created",
+      response: { id: "r1", status: "in_progress" },
+    })}\n\n`);
+    const oversized = new Uint8Array(MAX_CLIENT_SSE_FRAME_BYTES + 1);
+    oversized.fill(121);
+    const chunks = [preamble, oversized];
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+
+    const result = await preflightComboStreamResponse(
+      response,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+    expect(result.kind).toBe("accepted");
+    const reader = result.response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(new TextDecoder().decode(preamble));
+    expect((await reader.read()).value).toBe(oversized);
     await reader.cancel();
   });
 
@@ -253,6 +306,66 @@ describe("combo stream preflight", () => {
     const replayedTail = await tailRead;
     expect(replayedTail.done).toBe(false);
     expect(replayedTail.value).toBe(tail);
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  test("hold mode commits at the retained-chunk cap without reading one more chunk", async () => {
+    const prefix = Array.from(
+      { length: preflightChunkLimit },
+      (_, index) => Uint8Array.of((index % 251) + 1),
+    );
+    const tail = Uint8Array.of(252, 253);
+    let sourceIndex = 0;
+    let releaseTail: (() => void) | undefined;
+    let reportNextPull!: () => void;
+    const nextPull = new Promise<void>(resolve => { reportNextPull = resolve; });
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sourceIndex < prefix.length) {
+          controller.enqueue(prefix[sourceIndex++]!);
+          return;
+        }
+        reportNextPull();
+        return new Promise<void>(resolve => {
+          releaseTail = () => {
+            controller.enqueue(tail);
+            controller.close();
+            resolve();
+          };
+        });
+      },
+    }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } });
+
+    const preflight = preflightComboStreamResponse(
+      response,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+    const winner = await Promise.race([
+      preflight.then(result => ({ kind: "preflight" as const, result })),
+      nextPull.then(() => ({ kind: "next-pull" as const })),
+    ]);
+    if (winner.kind === "next-pull") {
+      releaseTail!();
+      const late = await preflight;
+      await late.response.body?.cancel();
+    }
+    expect(winner.kind).toBe("preflight");
+    if (winner.kind !== "preflight") return;
+
+    expect(winner.result.kind).toBe("accepted");
+    const reader = winner.result.response.body!.getReader();
+    for (const expected of prefix) {
+      const next = await reader.read();
+      expect(next.done).toBe(false);
+      expect(next.value).not.toBe(expected);
+      expect(next.value).toEqual(expected);
+    }
+    const tailRead = reader.read();
+    await nextPull;
+    releaseTail!();
+    expect((await tailRead).value).toBe(tail);
     expect((await reader.read()).done).toBe(true);
   });
 
@@ -464,6 +577,83 @@ describe("combo stream preflight", () => {
     expect(await result.response.text()).toBe(expected);
   });
 
+  test("held tool-bearing clean completion releases the original buffered stream unchanged", async () => {
+    const source = sse(
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_text.delta", delta: "valid buffered output" },
+      { type: "response.completed", response: { id: "r1", status: "completed", output: [] } },
+    );
+    const expected = await source.clone().text();
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("accepted");
+    expect(await result.response.text()).toBe(expected);
+  });
+
+  test("held tool-bearing output still commits at the byte cap", async () => {
+    const encoder = new TextEncoder();
+    const preamble = encoder.encode(`data: ${JSON.stringify({
+      type: "response.created",
+      response: { id: "r1", status: "in_progress" },
+    })}\n\n`);
+    const oversized = new Uint8Array(MAX_CLIENT_SSE_FRAME_BYTES + 1);
+    oversized.fill(120);
+    const chunks = [preamble, oversized];
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+
+    const result = await preflightComboStreamResponse(
+      response,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+    expect(result.kind).toBe("accepted");
+    const reader = result.response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(new TextDecoder().decode(preamble));
+    expect((await reader.read()).value).toBe(oversized);
+    await reader.cancel();
+  });
+
+  test("held tool-bearing output still commits at the retained-chunk cap without an extra read", async () => {
+    const prefix = Array.from(
+      { length: preflightChunkLimit },
+      (_, index) => Uint8Array.of((index % 251) + 1),
+    );
+    let sourceIndex = 0;
+    let extraPulls = 0;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sourceIndex < prefix.length) {
+          controller.enqueue(prefix[sourceIndex++]!);
+          return;
+        }
+        extraPulls += 1;
+        controller.close();
+      },
+    }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } });
+
+    const result = await preflightComboStreamResponse(
+      response,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+    expect(result.kind).toBe("accepted");
+    expect(extraPulls).toBe(0);
+    await result.response.body?.cancel();
+  });
+
   test("held tool-bearing output can fail over on a retryable malformed-function terminal", async () => {
     const source = sse(
       { type: "response.created", response: { id: "r1", status: "in_progress" } },
@@ -488,6 +678,25 @@ describe("combo stream preflight", () => {
     expect(result.kind).toBe("failed");
     expect(result.response.status).toBe(502);
     expect(await result.response.text()).not.toContain("buffered partial tool prelude");
+  });
+
+  test("held tool-bearing output is released unchanged on a clean completed terminal", async () => {
+    const source = sse(
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "call_1", name: "Bash", arguments: "{}" } },
+      { type: "response.output_item.done", output_index: 0, item: { type: "function_call", id: "call_1", name: "Bash", arguments: "{\"command\":\"true\"}", status: "completed" } },
+      { type: "response.completed", response: { id: "r1", status: "completed", output: [] } },
+    );
+    const expected = await source.clone().text();
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("accepted");
+    expect(await result.response.text()).toBe(expected);
   });
 
   test("held tool-bearing output preserves a clean completed stream byte-for-byte", async () => {
