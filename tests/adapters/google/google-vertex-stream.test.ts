@@ -48,7 +48,13 @@ describe("vertex parseStream fail-closed truncation", () => {
     ]);
     expect(events.some(e => e.type === "tool_call_start")).toBe(true);
     const last = events[events.length - 1];
-    expect(last.type).toBe("error");
+    expect(last).toMatchObject({
+      type: "error",
+      status: 502,
+      errorType: "server_error",
+      code: "vertex_truncated_tool_call",
+      retryable: true,
+    });
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 
@@ -92,7 +98,13 @@ describe("vertex parseStream fail-closed truncation", () => {
       { candidates: [{ finishReason: "MALFORMED_FUNCTION_CALL" }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 0 } },
     ]);
     const last = events[events.length - 1];
-    expect(last.type).toBe("error");
+    expect(last).toMatchObject({
+      type: "error",
+      status: 502,
+      errorType: "server_error",
+      code: "malformed_function_call",
+      retryable: true,
+    });
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 
@@ -113,7 +125,12 @@ describe("vertex parseResponse fail-closed truncation (non-streaming)", () => {
     const adapter = createGoogleAdapter(vertexProvider);
     const body = JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: "get_x", args: {} } }] }, finishReason: "MAX_TOKENS" }] });
     const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
-    expect(events[events.length - 1].type).toBe("error");
+    expect(events[events.length - 1]).toMatchObject({
+      type: "error",
+      status: 502,
+      code: "vertex_truncated_tool_call",
+      retryable: true,
+    });
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 
@@ -121,7 +138,12 @@ describe("vertex parseResponse fail-closed truncation (non-streaming)", () => {
     const adapter = createGoogleAdapter(vertexProvider);
     const body = JSON.stringify({ candidates: [{ finishReason: "MALFORMED_FUNCTION_CALL" }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 0 } });
     const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
-    expect(events[events.length - 1].type).toBe("error");
+    expect(events[events.length - 1]).toMatchObject({
+      type: "error",
+      status: 502,
+      code: "malformed_function_call",
+      retryable: true,
+    });
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 

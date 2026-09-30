@@ -247,7 +247,11 @@ export async function preflightComboStreamResponse(
   response: Response,
   logCtx: RequestLogContext,
   retryableTerminal: (payload: unknown) => boolean = retryableZeroOutputTerminal,
-  options?: { allowMissingContentType?: boolean; replayReadErrors?: boolean },
+  options?: {
+    allowMissingContentType?: boolean;
+    replayReadErrors?: boolean;
+    holdOutputUntilTerminal?: boolean;
+  },
 ): Promise<ComboStreamPreflightResult> {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   const isEventStream = contentType.includes("text/event-stream")
@@ -259,6 +263,7 @@ export async function preflightComboStreamResponse(
   const reader = response.body.getReader();
   const buffered: Uint8Array[] = [];
   let bufferedBytes = 0;
+  const holdOutputUntilTerminal = options?.holdOutputUntilTerminal === true;
   let outputCommitted = false;
   let responseCreated = false;
   let terminalStatus: ResponsesTerminalStatus | undefined;
@@ -269,7 +274,7 @@ export async function preflightComboStreamResponse(
     // Committing on it is what keeps an unreadable frame from reading as an empty prelude.
     onOpaquePayload: () => { outputCommitted = true; },
     onParsedPayload: payload => {
-      if (terminalStatus !== undefined || outputCommitted || retryableTerminalPayload) return;
+      if (terminalStatus !== undefined || (!holdOutputUntilTerminal && outputCommitted) || retryableTerminalPayload) return;
       if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
         && (payload as { type?: unknown }).type === "response.created") responseCreated = true;
       const retryable = retryableTerminal(payload);
@@ -320,11 +325,11 @@ export async function preflightComboStreamResponse(
       // so its retryable classification doubles as the terminal evidence.
       if ((terminalStatus === "failed" || terminalStatus === "incomplete"
         || retryableTerminalPayload?.type === "error")
-        && !outputCommitted && retryableTerminalPayload) {
+        && (!outputCommitted || holdOutputUntilTerminal) && retryableTerminalPayload) {
         await reader.cancel("retrying zero-output combo stream terminal").catch(() => undefined);
         return { kind: "failed", response: failedTerminalResponse(response, retryableTerminalPayload, logCtx) };
       }
-      if (next.done || terminalStatus !== undefined || outputCommitted
+      if (next.done || terminalStatus !== undefined || (outputCommitted && !holdOutputUntilTerminal)
         || bufferedBytes >= COMBO_STREAM_PREFLIGHT_MAX_BYTES
         || buffered.length >= COMBO_STREAM_PREFLIGHT_MAX_CHUNKS) {
         return { kind: "accepted", response: replayBufferedResponse(response, reader, buffered) };

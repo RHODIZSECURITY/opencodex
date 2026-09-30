@@ -464,6 +464,32 @@ describe("combo stream preflight", () => {
     expect(await result.response.text()).toBe(expected);
   });
 
+  test("held tool-bearing output can fail over on a retryable malformed-function terminal", async () => {
+    const source = sse(
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_text.delta", delta: "buffered partial tool prelude" },
+      {
+        type: "error",
+        status: 502,
+        error: {
+          type: "upstream_error",
+          code: "malformed_function_call",
+          message: "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)",
+        },
+      },
+    );
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("failed");
+    expect(result.response.status).toBe(502);
+    expect(await result.response.text()).not.toContain("buffered partial tool prelude");
+  });
+
   test("a bare error before output in the same chunk keeps the retry decision", async () => {
     const result = await preflightComboStreamResponse(sse(
       { type: "error", message: "upstream failed" },

@@ -865,6 +865,81 @@ describe("server combo failover 030 activation matrix", () => {
     }
   });
 
+  test("tool-bearing Google malformed function output stays buffered and fails over", async () => {
+    await saveCredential("google-antigravity", {
+      access: "test-google-access",
+      refresh: "test-google-refresh",
+      expires: Date.now() + 3_600_000,
+      accountId: "google-test-account",
+      projectId: "google-test-project",
+      source: "oauth",
+    });
+    const backupHits: string[] = [];
+    const backup = serve(() => {
+      backupHits.push("backup");
+      return chatStream("safe backup after malformed function call");
+    });
+    const config = comboConfig({
+      "google-antigravity": {
+        adapter: "google",
+        baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+        authMode: "oauth",
+        googleMode: "cloud-code-assist",
+        project: "google-test-project",
+        models: ["gemini-3.8-flash"],
+      },
+      backup: provider("openai-chat", baseUrl(backup), "key-b"),
+    }, [
+      { provider: "google-antigravity", model: "gemini-3.8-flash" },
+      { provider: "backup", model: "m2" },
+    ]);
+    let googleHits = 0;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.includes("cloudcode-pa.googleapis.com")) return originalFetch(input as RequestInfo | URL, init);
+      googleHits += 1;
+      const frames = [
+        { response: { candidates: [{ content: { role: "model", parts: [{ text: "must stay buffered" }] } }] } },
+        { response: { candidates: [{ finishReason: "MALFORMED_FUNCTION_CALL" }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 0 } } },
+      ];
+      const body = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join("");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const response = await postLogged(config, {
+      stream: true,
+      tools: [{
+        type: "function",
+        name: "Bash",
+        description: "run a command",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      }],
+    });
+    expect(response.status).toBe(200);
+    const frames = JSON.stringify(await collectSse(response));
+    expect(frames).toContain("safe backup after malformed function call");
+    expect(frames).not.toContain("must stay buffered");
+    expect(googleHits).toBe(1);
+    expect(backupHits).toEqual(["backup"]);
+
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt).toMatchObject({
+        provider: "combo",
+        model: "combo/free",
+        resolvedModel: "m2",
+        attempts: [
+          { ordinal: 1, provider: "google-antigravity", model: "gemini-3.8-flash", status: 502 },
+          { ordinal: 2, provider: "backup", model: "m2", status: 200 },
+        ],
+      });
+    }
+  });
+
   for (const scenario of [
     {
       name: "quota incomplete", status: "incomplete", logStatus: 429,

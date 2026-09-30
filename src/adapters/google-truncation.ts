@@ -12,6 +12,19 @@ export function vertexTruncationErrorMessage(reason?: string): string {
   return `Vertex AI response truncated upstream before the turn completed${suffix}`;
 }
 
+export function vertexTruncationAdapterError(reason?: string) {
+  return {
+    type: "error" as const,
+    status: 502,
+    errorType: "server_error",
+    code: reason === "MALFORMED_FUNCTION_CALL"
+      ? "malformed_function_call"
+      : "vertex_truncated_tool_call",
+    retryable: true,
+    message: vertexTruncationErrorMessage(reason),
+  };
+}
+
 /**
  * Whether a finished turn must fail closed. A truncation reason arriving mid tool call always
  * does. MALFORMED_FUNCTION_CALL fails closed even with zero started calls: the malformed call

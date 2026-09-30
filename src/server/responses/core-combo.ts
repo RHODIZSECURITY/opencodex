@@ -827,7 +827,16 @@ export async function executeComboResponses(
       const eagerRelay = isEagerRelaySseResponse(response);
       let preflight;
       try {
-        preflight = await preflightComboStreamResponse(response, childLog);
+        const targetProvider = config.providers[pick.target.provider];
+        const holdGoogleToolStream = targetProvider?.adapter === "google"
+          && Array.isArray(childBody.tools)
+          && childBody.tools.length > 0;
+        preflight = await preflightComboStreamResponse(
+          response,
+          childLog,
+          undefined,
+          holdGoogleToolStream ? { holdOutputUntilTerminal: true } : undefined,
+        );
       } catch (error) {
         callbackGate.discard();
         if (options.abortSignal?.aborted) {
