@@ -490,6 +490,76 @@ describe("combo stream preflight", () => {
     expect(await result.response.text()).not.toContain("buffered partial tool prelude");
   });
 
+  test("held tool-bearing output preserves a clean completed stream byte-for-byte", async () => {
+    const source = sse(
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_text.delta", delta: "valid google output" },
+      { type: "response.completed", response: { id: "r1", status: "completed", output: [] } },
+    );
+    const expected = await source.clone().text();
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("accepted");
+    expect(await result.response.text()).toBe(expected);
+  });
+
+  test("held output never turns an explicit client 400 into a retryable hop", async () => {
+    const source = sse(
+      { type: "response.created", response: { id: "r1", status: "in_progress" } },
+      { type: "response.output_text.delta", delta: "buffered but invalid request remains terminal" },
+      {
+        type: "error",
+        status: 400,
+        error: { type: "invalid_request_error", code: "invalid_request_error", message: "bad request" },
+      },
+    );
+    const expected = await source.clone().text();
+    const result = await preflightComboStreamResponse(
+      source,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+
+    expect(result.kind).toBe("accepted");
+    expect(await result.response.text()).toBe(expected);
+  });
+
+  test("held output still commits at the existing byte cap instead of buffering unboundedly", async () => {
+    const encoder = new TextEncoder();
+    const preamble = encoder.encode(`data: ${JSON.stringify({
+      type: "response.created",
+      response: { id: "r1", status: "in_progress" },
+    })}\n\n`);
+    const oversized = new Uint8Array(MAX_CLIENT_SSE_FRAME_BYTES + 1);
+    oversized.fill(120);
+    const chunks = [preamble, oversized];
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+
+    const result = await preflightComboStreamResponse(
+      response,
+      { model: "m1", provider: "google-antigravity" },
+      undefined,
+      { holdOutputUntilTerminal: true },
+    );
+    expect(result.kind).toBe("accepted");
+    const reader = result.response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(new TextDecoder().decode(preamble));
+    expect((await reader.read()).value).toBe(oversized);
+    await reader.cancel();
+  });
+
   test("a bare error before output in the same chunk keeps the retry decision", async () => {
     const result = await preflightComboStreamResponse(sse(
       { type: "error", message: "upstream failed" },
