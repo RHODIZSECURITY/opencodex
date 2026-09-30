@@ -395,6 +395,9 @@ export const SERIAL_FULL_SUITE_FILES = [
   "service/service-wsl-home-ownership.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
+  // Combo editor fixtures intentionally repoint process-global OpenCodex/Claude homes while
+  // asserting persisted migrations. A fresh process keeps another worker's home out of scope.
+  "routing/combo-management-api.test.ts",
   // First-party Desktop discovery can exceed its fixed 5s test deadline only when competing
   // with the four-worker suite; isolated it completes in well under one second.
   "claude-integration/claude-desktop-first-party-guards.test.ts",

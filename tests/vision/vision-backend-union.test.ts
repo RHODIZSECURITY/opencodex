@@ -95,12 +95,14 @@ describe("routed vision backend (#2188 roadmap 170 revised)", () => {
   });
 });
 
+const routeDeps = { fetchClaudeAgentModels: async () => [] };
+
 describe("management routes: routed union + coherence", () => {
   async function putVision(cfg: OcxConfig, vision: Record<string, unknown>): Promise<Response> {
     const url = new URL("http://localhost/api/sidecar-settings");
     const response = await handleManagementAPI(
       new Request(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ vision }) }),
-      url, cfg,
+      url, cfg, routeDeps,
     );
     if (!response) throw new Error("route did not handle PUT");
     return response;
@@ -132,7 +134,7 @@ describe("management routes: routed union + coherence", () => {
   test("GET reports a routed backend's namespaced model verbatim (live-found regression)", async () => {
     const cfg = config({ visionSidecar: { backend: "routed", model: "xai/grok-4.6" } });
     const url = new URL("http://localhost/api/sidecar-settings");
-    const response = await handleManagementAPI(new Request(url, { method: "GET" }), url, cfg);
+    const response = await handleManagementAPI(new Request(url, { method: "GET" }), url, cfg, routeDeps);
     if (!response) throw new Error("route did not handle GET");
     const body = await response.json() as { vision: { model: string; backend?: string }; visionModels: Array<{ value: string; backend: string }> };
     expect(body.vision.backend).toBe("routed");
@@ -152,7 +154,7 @@ describe("management routes: routed union + coherence", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ visionSidecar: body }),
         }),
-        url, cfg,
+        url, cfg, routeDeps,
       );
       if (!response) throw new Error("route did not handle PUT");
       return response;

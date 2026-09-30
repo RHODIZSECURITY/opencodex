@@ -131,6 +131,8 @@ async function comboApi(
   });
   return handleManagementAPI(req, new URL(req.url), config, {
     createManagementConvergeCodex: catalogConvergenceFactory(refreshCodexCatalog),
+    // Combo mutations may resync Claude agent definitions; keep route tests offline.
+    fetchClaudeAgentModels: async () => [],
   });
 }
 
@@ -142,6 +144,7 @@ async function comboApiRaw(config: OcxConfig, method: string, path: string, body
   });
   return handleManagementAPI(req, new URL(req.url), config, {
     createManagementConvergeCodex: catalogConvergenceFactory(),
+    fetchClaudeAgentModels: async () => [],
   });
 }
 
