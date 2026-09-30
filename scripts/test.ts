@@ -405,6 +405,17 @@ export const SERIAL_FULL_SUITE_FILES = [
   // that deadline under the four-worker full-suite lane. Keep it a namespace-scrub assertion,
   // not a host-load benchmark.
   "responses/responses-self-named-namespace-scrub.test.ts",
+  // Native chat-completions cases open a real server with a fixed 5s deadline. Under the
+  // four-worker lane one timeout leaves the process-global spend-ledger owner live, then every
+  // later case in that file fails with SPEND_LEDGER_OWNER_HOME_CONFLICT. The same file is
+  // 122/122 in under 9s in a fresh process, so isolate the ownership domain rather than widening
+  // the production lease or masking the cascade with retries.
+  "responses/chat-completions-endpoint.test.ts",
+  // These are small read-only/status fixtures with fixed wall-clock deadlines. On a loaded host
+  // the parallel lane can spend the whole 5s/20s budget before their subprocess/server answers;
+  // isolated they complete in well under one second.
+  "server/logs-timezone.test.ts",
+  "codex-integration/codex-plugins-doctor.test.ts",
 ] as const;
 
 type SerialLaneBasename = (typeof SERIAL_FULL_SUITE_FILES)[number] extends infer P
