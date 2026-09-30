@@ -405,6 +405,11 @@ export const SERIAL_FULL_SUITE_FILES = [
   // that deadline under the four-worker full-suite lane. Keep it a namespace-scrub assertion,
   // not a host-load benchmark.
   "responses/responses-self-named-namespace-scrub.test.ts",
+  // Sidecar settings discovery is a small status fixture with a fixed 5s deadline. Under the
+  // four-worker changed/full lane it can spend that entire budget competing with provider
+  // discovery, while five isolated runs complete in under 0.5s. Keep the assertion deterministic
+  // without widening its product timeout.
+  "vision/sidecar-settings-web-search-stream.test.ts",
   // Native chat-completions cases open a real server with a fixed 5s deadline. Under the
   // four-worker lane one timeout leaves the process-global spend-ledger owner live, then every
   // later case in that file fails with SPEND_LEDGER_OWNER_HOME_CONFLICT. The same file is
