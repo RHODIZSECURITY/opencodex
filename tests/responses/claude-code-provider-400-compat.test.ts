@@ -89,3 +89,8 @@ test.each(["claude-opus-5", "claude-opus-5-5"])(
     expect(sent.top_p).toBe(0.9);
   },
 );
+
+test("Meta Muse advertises forced tool-choice incompatibility for every Muse model", () => {
+  const provider = seeded("meta-muse");
+  for (const model of provider.models ?? []) expect(provider.autoToolChoiceOnlyModels).toContain(model);
+});

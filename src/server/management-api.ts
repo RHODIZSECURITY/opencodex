@@ -275,7 +275,7 @@ export async function handleManagementAPI(
       }
       try {
         const [models, { buildClaudeContextWindows }, { visibleNativeSlugs }] = await Promise.all([
-          fetchAllModels(config),
+          (deps.fetchClaudeAgentModels ?? fetchAllModels)(config),
           import("../claude/context-windows"),
           import("../codex/catalog"),
         ]);

@@ -34,7 +34,9 @@ function emptyConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
     port: 10100,
     defaultProvider: "dummy",
-    providers: { dummy: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } },
+    // Keep this settings test deterministic: response serialization asks for picker rows, so a
+    // provider without a static catalog would perform live DNS/model discovery after each PUT.
+    providers: { dummy: { adapter: "openai-chat", baseUrl: "https://example.test/v1", liveModels: false, models: ["gpt-5.6-luna"] } },
     ...overrides,
   } as OcxConfig;
 }

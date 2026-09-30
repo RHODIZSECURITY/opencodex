@@ -13,7 +13,7 @@ import type {
   RequestExecutionBudgetPolicy,
   RequestExecutionBudget,
 } from "../../lib/request-execution-budget";
-import type { OcxComboDefaultEffort, OcxConfig } from "../../types";
+import { modelInList, type OcxComboDefaultEffort, type OcxConfig } from "../../types";
 import type { RequestLogContext } from "../request-log";
 import type { HandleResponsesOptions, ResponsesDispatchers, ConsumedComboFailure } from "./core-options";
 import type { TranslatorBudget } from "../../lib/translator-budget";
@@ -45,6 +45,7 @@ import {
 } from "../../responses/state";
 import { hasUnreadableEncryptedAgentTask } from "./encrypted-payload";
 import { routeConcreteModel, comboRouteDecisionTrace } from "../../router";
+import { evidenceFromBody } from "../../routing/request-evidence";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import type { AgentTaskRecoveryFailureReason } from "./agent-task-recovery";
 import {
@@ -392,10 +393,23 @@ export async function executeComboResponses(
   let comboPayloadReadable = false;
   const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
     comboPayloadReadable || !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
+  const nonAutoToolChoiceRequired = evidenceFromBody(body).nonAutoToolChoiceRequired === true;
+  const nonAutoToolChoiceEligible = (target: (typeof combo.targets)[number]): boolean => {
+    if (!nonAutoToolChoiceRequired) return true;
+    try {
+      const route = routeConcreteModel(config, `${target.provider}/${target.model}`);
+      return !modelInList(route.provider.autoToolChoiceOnlyModels, route.modelId);
+    } catch {
+      // A routing failure has its own existing failure surface; it is not evidence that the target
+      // cannot force tools, so do not turn it into a synthetic compatibility refusal here.
+      return true;
+    }
+  };
   const targetEligible = (target: (typeof combo.targets)[number]): boolean =>
     (combo.strategy !== "jev" || target.provider !== JEV_PROVIDER_ID)
     && payloadEligible(target)
     && reasoningReplayEligible(target)
+    && nonAutoToolChoiceEligible(target)
     && (protocolLanes?.pickable(target) ?? true);
   const onlyReplayIncompatibleTargetsRemain = (excluded: Iterable<string> = []): boolean => {
     const excludedKeys = new Set(excluded);

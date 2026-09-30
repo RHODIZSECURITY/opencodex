@@ -543,11 +543,15 @@ export function clearComboSelectionState(comboId?: string): void {
   selectionState.delete(comboId);
 }
 
-export function tryPickComboModel(config: OcxConfig, modelId: string): ComboPick | null {
+export function tryPickComboModel(
+  config: OcxConfig,
+  modelId: string,
+  options: Pick<NonNullable<Parameters<typeof pickComboTarget>[2]>, "eligible"> = {},
+): ComboPick | null {
   const comboId = resolveComboId(config, modelId);
   if (!comboId) return null;
   if (!getCombo(config, comboId)) throw new UnknownComboError(comboId);
-  const picked = pickComboTarget(config, comboId);
+  const picked = pickComboTarget(config, comboId, options);
   if (!picked) throw new NoAvailableComboTargetsError(comboId);
   return picked;
 }

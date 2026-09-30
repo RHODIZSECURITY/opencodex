@@ -557,6 +557,7 @@
   "combo-management-api.test.ts": "routing",
   "combo-stream-preflight.test.ts": "routing",
   "combo-workspace-data.test.ts": "gui",
+  "combo-tool-choice-compat.test.ts": "codex-integration",
   "combos.test.ts": "codex-integration",
   "command-code-error-finish.test.ts": "providers",
   "command-code-provider.test.ts": "providers",

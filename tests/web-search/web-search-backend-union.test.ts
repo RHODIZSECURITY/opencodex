@@ -6,7 +6,7 @@ import { ManagementRequest as Request } from "../helpers/management-auth";
 import { redactSecrets } from "../../src/lib/redact";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 
-const routed: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://routed.test/v1", apiKey: "routed-key" };
+const routed: OcxProviderConfig = { adapter: "openai-chat", baseUrl: "https://routed.test/v1", apiKey: "routed-key", liveModels: false, models: ["model"] };
 const forward: OcxProviderConfig = { adapter: "openai-responses", baseUrl: "https://chatgpt.test/v1", authMode: "forward" };
 
 function config(overrides: Partial<OcxConfig> = {}): OcxConfig {

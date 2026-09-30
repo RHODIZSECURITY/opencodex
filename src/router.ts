@@ -1,4 +1,4 @@
-import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "./types";
+import { modelInList, type CodexAccountMode, type OcxConfig, type OcxProviderConfig } from "./types";
 import { createHash } from "node:crypto";
 import { peekAuthStore } from "./oauth/store";
 import { resolveDevinApiBaseUrl, validateDevinApiBaseUrl } from "./oauth/devin/api-base";
@@ -697,7 +697,15 @@ function routeModelInternal(
   }
 
   if (!bypassCombos && !preservesPhysicalComboProvider(config)) {
-    const combo = tryPickComboModel(config, modelId);
+    const combo = tryPickComboModel(config, modelId, {
+      eligible: target => {
+        if (policyEvidence?.nonAutoToolChoiceRequired !== true) return true;
+        const configured = config.providers[target.provider];
+        if (!configured) return true; // ordinary combo availability handles the missing provider
+        const effective = routedProviderConfig(target.provider, configured);
+        return !modelInList(effective.autoToolChoiceOnlyModels, target.model);
+      },
+    });
     if (combo) {
       const concrete = `${combo.target.provider}/${combo.target.model}`;
       // The selected target is already a concrete provider/model reference. Resolve it without

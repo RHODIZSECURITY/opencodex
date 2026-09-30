@@ -486,7 +486,7 @@ Renamed fixed-key providers receive [missing reasoning metadata](catalog.md#rena
 Translated audio/file admission follows the [final-adapter input contract](adapters/registry.md#untranslated-input-media); native raw passthrough remains separate.
 ## Request-local target compatibility
 
-Google's final adapter compiler may emit an opt-in, content-free [tool-schema loss diagnostic](providers/google.md#google-tool-schema-loss-reporting). It observes adapter-local narrowing only and changes neither provider routing nor the serialized request body.
+Google's final adapter compiler may emit an opt-in, content-free [tool-schema loss diagnostic](providers/google.md#google-tool-schema-loss-reporting). It observes adapter-local narrowing only and changes neither provider routing nor the serialized request body. `src/routing/request-evidence.ts` records a non-auto tool-choice requirement; both initial combo routing and `core-combo` child selection exclude resolved models in `autoToolChoiceOnlyModels`, so fallback preserves the caller contract instead of rewriting it to `auto`. Omitted/`auto` choices keep the configured combo order; `none`, `required` and named/typed choices skip auto-only targets.
 
 `src/adapters/openai-responses.ts` omits only top-level `user` at the canonical ChatGPT Codex forward destination. Claude translation retains its original identity and prompt-cache key; public API and noncanonical gateways retain their `user` field. Input roles, tool-schema properties, safety identifiers and original replay bodies are not changed.
 
@@ -503,7 +503,6 @@ This is also why the classifier cannot duplicate visible output. Native byte str
 Regression coverage: `tests/responses/responses-forward-prompt-envelope.test.ts`, `tests/routing/router-combo-failover-classification.test.ts`, `tests/routing/routing-policy-fallback.test.ts`, `tests/helpers/combo-context-overflow-cases.ts`, and `tests/server/server-combo-failover-e2e.test.ts`.
 
 `src/combos/failover.ts` caps explicit upstream `Retry-After` target cooldowns at 24 hours while reset-derived, configured, and fallback cooldowns remain capped at 10 minutes.
-
 ## Combo default effort precedence
 
 `src/combos/request.ts` keeps `reasoningEffortMode` and `defaultEffortMode` independent.

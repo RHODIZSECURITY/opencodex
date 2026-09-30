@@ -61,6 +61,8 @@ export interface ManagementApiDeps {
   createManagementConvergeCodex?: (config: Readonly<OcxConfig>) => ConvergeCodex;
   /** Test-only destination for best-effort Claude agent-definition sync. */
   claudeAgentConfigDir?: string;
+  /** Test-only catalog seam for that agent-definition sync; production uses real discovery. */
+  fetchClaudeAgentModels?: (config: OcxConfig) => Promise<CatalogModel[]>;
   /** Startup-health seam keeps route tests from launching platform probes. */
   getCachedStartupHealth?: (config: Pick<OcxConfig, "codexAutoStart">) => Promise<StartupHealth>;
   /**

@@ -41,6 +41,8 @@ export interface PolicyRequestEvidence {
   /** Required context window for this request (tokens). */
   contextWindow?: number;
   toolsRequired?: boolean;
+  /** Caller requires a tool to be selected (required/named/allowed-tools required). */
+  nonAutoToolChoiceRequired?: boolean;
   imageInputRequired?: boolean;
   structuredOutputRequired?: boolean;
   reasoningEffort?: string;

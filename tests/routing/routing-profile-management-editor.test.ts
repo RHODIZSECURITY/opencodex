@@ -63,6 +63,9 @@ function baseConfig(): OcxConfig {
 function deps(onSave: () => void = () => {}, onRefresh: () => void = () => {}) {
   return {
     saveConfigPreservingClaudeCode: () => onSave(),
+    // Routing-profile tests must never hit provider discovery/DNS while syncing
+    // generated Claude agent definitions after an alias migration.
+    fetchClaudeAgentModels: async () => [],
     createManagementConvergeCodex: () => async () => {
       onRefresh();
       return {

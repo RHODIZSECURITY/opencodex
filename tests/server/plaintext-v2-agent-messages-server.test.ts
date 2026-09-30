@@ -664,9 +664,10 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
     });
   });
 
-  test("fails closed for over-limit streamed responses in both relay modes", async () => {
-    takeInheritedSpendHome();
-    for (const streamMode of ["legacy-tee", "eager-relay"] as const) {
+  test.each(["legacy-tee", "eager-relay"] as const)(
+    "fails closed for an over-limit streamed response in %s mode",
+    async streamMode => {
+      takeInheritedSpendHome();
       globalThis.fetch = (async () => new Response(
         `event: response.completed\ndata: ${JSON.stringify({
           type: "response.completed",
@@ -688,8 +689,8 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
       expect(clientBody).toContain("data: [DONE]");
       expect(clientBody).not.toContain(PLAINTEXT_V2_COLLABORATION_NAMESPACE);
       expect(clientBody).not.toContain("start_delegated_task");
-    }
-  });
+    },
+  );
 
   test("rejects over-limit bounded JSON before HTTP or WebSocket reframing", async () => {
     takeInheritedSpendHome();

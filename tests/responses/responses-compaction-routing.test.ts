@@ -863,7 +863,6 @@ describe("compaction terminal handling (#422)", () => {
  * fired, three means it recursed.
  */
 describe("compact alternate-account attempt (#913)", () => {
-  beforeEach(takeSpendHome);
   function withPoolEnv<T>(name: string, run: (config: OcxConfig) => Promise<T>): Promise<T> {
     const testDir = mkdtempSync(join(tmpdir(), name));
     const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -1022,6 +1021,10 @@ describe("compact alternate-account attempt (#913)", () => {
   }
 
   test("official key-auth native 404 decodes synthetic fallback into replacement user history", async () => {
+    // This is the only case in the block that does not install a private OpenCodex home.
+    // Take the real spend-ledger lease here instead of contending on the inherited home
+    // in a describe-wide beforeEach that every withPoolEnv case immediately discarded.
+    takeSpendHome();
     const config = { providers: { "openai-apikey": {
       adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authMode: "key", apiKey: "test-key",
     } } } as OcxConfig;
