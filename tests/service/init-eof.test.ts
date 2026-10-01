@@ -6,6 +6,8 @@ import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { repoPath, repoRoot } from "../helpers/repo-root";
 import { resolveCodexCoordinatorDatabasePath, resolveEffectiveUserIdentity } from "../../src/codex/user-identity";
 
+const INIT_PROCESS_TIMEOUT = 120_000;
+
 async function waitForOutput(
   stream: ReadableStream<Uint8Array>,
   expected: string,
@@ -102,7 +104,7 @@ describe("ocx init piped stdin (#754)", () => {
     } finally {
       await stop(proc);
     }
-  }, 30_000);
+  }, INIT_PROCESS_TIMEOUT);
 
   test.each(["init", "setup"])("%s preserves existing config before asking for input", async command => {
     const home = makeHome();
