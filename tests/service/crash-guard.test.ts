@@ -90,10 +90,16 @@ describe("crash-guard diagnostics", () => {
 
   test("dumps recent fetch origins (pending/rejected) in the breadcrumb", async () => {
     installCrashGuards(); // idempotent; wraps global fetch once
-    await fetch("https://opencodex.invalid.test/v1/models?token=secret").catch(() => {});
+    // Use a known-closed loopback port instead of public DNS. The old invalid.test
+    // fixture could spend the whole 5s test budget in resolver timeout on loaded hosts.
+    const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+    const url = new URL("/v1/models?token=secret", fixture.url);
+    const visible = `${url.hostname}:${url.port}/v1/models`;
+    await fixture.stop(true);
+    await fetch(url).catch(() => {});
     const entry = formatCrashEntry("unhandledRejection", new TypeError("null is not an object"));
     expect(entry).toContain("fetches:");
-    expect(entry).toContain("opencodex.invalid.test/v1/models");
+    expect(entry).toContain(visible);
     expect(entry).not.toContain("token=secret"); // query redacted
   });
 

@@ -158,6 +158,7 @@ function installOAuthFetch(
     tokenErrorDescription?: string;
     refreshedProjectId?: string | null;
     beforeFirstUnauthorized?: () => Promise<void>;
+    streamBody?: string;
   } = {},
 ): { chatAuth: string[]; chatProjects: string[]; requestPaths: string[]; counts: { refresh: number } } {
   const chatAuth: string[] = [];
@@ -270,7 +271,7 @@ function installOAuthFetch(
         });
       }
       if (url.includes("alt=sse")) {
-        return new Response(sseSuccessBody("ok after google refresh"), {
+        return new Response(options.streamBody ?? sseSuccessBody("ok after google refresh"), {
           status: 200,
           headers: { "content-type": "text/event-stream" },
         });
@@ -303,6 +304,80 @@ describe("Google Antigravity OAuth upstream 401 replay", () => {
       expect(observed.chatAuth).toEqual(["Bearer rejected-access", "Bearer fresh-access"]);
     } finally {
       await server.stop(true);
+    }
+  });
+
+  test("tool-bearing Google malformed function output stays buffered and fails over", async () => {
+    await seedOAuth();
+    const backupHits: string[] = [];
+    const backup = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async request => {
+        backupHits.push(new URL(request.url).pathname);
+        const body = [
+          'data: {"choices":[{"index":0,"delta":{"content":"safe backup after malformed function call"},"finish_reason":null}]}',
+          'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n");
+        return new Response(body, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    const malformed = [
+      { response: { candidates: [{ content: { role: "model", parts: [{ text: "must stay buffered" }] } }] } },
+      { response: { candidates: [{ finishReason: "MALFORMED_FUNCTION_CALL" }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 0 } } },
+    ].map(frame => `data: ${JSON.stringify(frame)}\n\n`).join("");
+    const config = antigravityConfig();
+    config.providers.backup = {
+      adapter: "openai-chat",
+      baseUrl: `${backup.url.toString().replace(/\/$/, "")}/v1`,
+      authMode: "key",
+      apiKey: "backup-key",
+      allowPrivateNetwork: true,
+      models: ["m2"],
+    };
+    config.combos = {
+      free: {
+        strategy: "failover",
+        targets: [
+          { provider: "google-antigravity", model: "gemini-3.8-flash" },
+          { provider: "backup", model: "m2" },
+        ],
+      },
+    };
+    saveConfig(config);
+    const observed = installOAuthFetch([200], { streamBody: malformed });
+    const server = startServer(0);
+    try {
+      const response = await originalFetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "combo/free",
+          input: "hello",
+          stream: true,
+          tools: [{
+            type: "function",
+            name: "Bash",
+            description: "run a command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+              required: ["command"],
+            },
+          }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain("safe backup after malformed function call");
+      expect(text).not.toContain("must stay buffered");
+      expect(observed.requestPaths).toEqual(["/v1internal:streamGenerateContent"]);
+      expect(backupHits).toEqual(["/v1/chat/completions"]);
+    } finally {
+      await server.stop(true);
+      await backup.stop(true);
     }
   });
 
