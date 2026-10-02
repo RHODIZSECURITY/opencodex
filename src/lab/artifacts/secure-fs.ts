@@ -142,6 +142,24 @@ function detectArtifactIoMode(dir: TrustedArtifactDir): ArtifactIoMode {
     artifactIoMode = "dirfd";
   } catch {
     artifactIoMode = "win32_pinned";
+  } finally {
+    // Both early-exit paths (existsSync miss, thrown error) previously leaked
+    // the probe on disk — one orphan per process across worktrees, none gitignored.
+    // Sweep both names: the pre-rename `probe` (left when renameSync failed) and the
+    // post-rename `finalName` (left by the early return above). Try the dirfd
+    // namespace first, then the plain path, so a filesystem that rejected the
+    // dirfd variant still gets cleaned.
+    for (const stale of [probe, finalName]) {
+      try {
+        (unlinkSync as unknown as UnlinkSyncWithDir)(stale, { dir: dir.fd });
+      } catch {
+        try {
+          unlinkSync(join(dir.path, stale));
+        } catch {
+          /* already gone or never created */
+        }
+      }
+    }
   }
   return artifactIoMode;
 }
