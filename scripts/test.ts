@@ -395,6 +395,12 @@ export const SERIAL_FULL_SUITE_FILES = [
   "service/service.test.ts",
   "service/service-claim.test.ts",
   "service/service-wsl-home-ownership.test.ts",
+  // CLI help/models spawn synchronous Bun children with bounded deadlines. Under the
+  // long-lived four-file pool, unrelated neighbours can delay those children enough
+  // to turn healthy sub-second CLI exits into ETIMEDOUT. Fresh one-worker lanes keep
+  // these assertions about CLI behavior rather than scheduler contention.
+  "cli/cli-help.test.ts",
+  "cli/cli-models.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;

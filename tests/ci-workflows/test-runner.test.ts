@@ -45,6 +45,7 @@ import {
 } from "../../scripts/test-run-lock";
 import {
   recoverStaleTestTempArtifacts,
+  removeOwnedTestTempRoot,
   removeTestTempTree,
   TEST_TEMP_OWNER_FILE,
   TEST_TEMP_RECOVERY_AGE_MS,
@@ -513,6 +514,26 @@ describe("Windows test TEMP recovery", () => {
     }
   });
 
+  test("exact owned-root cleanup refuses live, mismatched and linked trees", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "opencodex-recovery-fixture-"));
+    const owned = join(tempRoot, "opencodex-test-Ab12Cd");
+    const linked = join(tempRoot, "opencodex-test-Cc22Dd");
+    const target = join(tempRoot, "target");
+    mkdirSync(owned); mkdirSync(linked); mkdirSync(target);
+    ownRoot(owned, Date.now(), 424242);
+    ownRoot(linked, Date.now(), 434343);
+    symlinkSync(target, join(linked, "redirect"), process.platform === "win32" ? "junction" : "dir");
+    try {
+      expect(removeOwnedTestTempRoot(owned, 424242, { processIsAlive: () => true })).toBe(false);
+      expect(removeOwnedTestTempRoot(owned, 7, { processIsAlive: () => false })).toBe(false);
+      expect(removeOwnedTestTempRoot(linked, 434343, { processIsAlive: () => false })).toBe(false);
+      expect(removeOwnedTestTempRoot(owned, 424242, { processIsAlive: () => false })).toBe(true);
+      expect(existsSync(owned)).toBe(false);
+      expect(existsSync(linked)).toBe(true);
+      expect(existsSync(target)).toBe(true);
+    } finally { removeTreeWithRetry(tempRoot); }
+  });
+
   test("retries transient release races and preserves terminal failures", () => {
     let attempts = 0;
     const sleeps: number[] = [];
@@ -827,6 +848,8 @@ describe("bun test argv", () => {
         });
 
         expect(result.exitCode).toBe(outcome === "pass" ? 0 : 1);
+        const deadline = Date.now() + 2_000;
+        while (readdirSync(sentinelTemp).length > 0 && Date.now() < deadline) Bun.sleepSync(25);
         expect(readdirSync(sentinelTemp)).toEqual([]);
       } finally {
         removeTreeWithRetry(fixtureRoot);

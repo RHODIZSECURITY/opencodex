@@ -27,6 +27,7 @@
  * that, armed by the same flag set below.
  */
 import { afterAll } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { isTestHomeGuardArmed, protectedHomeForTests } from "../src/lib/test-home-guard";
 import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV } from "../scripts/test";
 import {
@@ -98,6 +99,18 @@ const inheritedLock = resolveInheritedTestRunLock({
   wrappedRunId,
   env: process.env,
 });
+// TEST_RUN_ID alone is not wrapper authority: nested bare `bun test` calls inherit it
+// from their parent preload. Only a complete validated inherited lock capability proves
+// that scripts/test.ts owns the outer sandbox. Bare processes get an exact-root janitor.
+if (!inheritedLock) {
+  const janitor = Bun.spawn([
+    process.execPath,
+    fileURLToPath(new URL("../scripts/test-temp-janitor.ts", import.meta.url)),
+    isolated.root,
+    String(process.pid),
+  ], { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+  janitor.unref();
+}
 process.env[TEST_RUN_ID_ENV] = runId;
 // A bare Windows run also parents nested Bun tests. Resolve its validated path
 // once, then pass the complete capability to descendants just as the wrapper does.

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const TEST_TEMP_OWNER_FILE = ".opencodex-test-owner.json";
 export const TEST_TEMP_RECOVERY_AGE_MS = 48 * 60 * 60 * 1000;
@@ -199,6 +199,37 @@ export function removeTestTempTree(path: string, options: RemoveTreeOptions = {}
       sleep(delays[attempt]!);
     }
   }
+}
+
+/** Remove one exact ownership-marked root after its recorded owner process has exited. */
+export function removeOwnedTestTempRoot(
+  root: string,
+  ownerPid: number,
+  options: { processIsAlive?: (pid: number) => boolean } = {},
+): boolean {
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false;
+  let entry: ReturnType<typeof lstatSync>;
+  let canonicalRoot: string;
+  try {
+    entry = lstatSync(root);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) return false;
+    canonicalRoot = realpathSync(root);
+  } catch {
+    return false;
+  }
+  if (!WRAPPED_TEST_ROOT.test(basename(canonicalRoot))) return false;
+  const owner = parseOwner(canonicalRoot);
+  if (!owner || owner.pid !== ownerPid || !samePath(owner.root, canonicalRoot, process.platform)) return false;
+  const isAlive = options.processIsAlive ?? processIsAlive;
+  if (isAlive(ownerPid)) return false;
+  const inspected = inspectTree(canonicalRoot, {
+    entries: DEFAULT_MAX_TREE_ENTRIES,
+    deadlineMs: Date.now() + DEFAULT_MAX_DURATION_MS,
+    now: Date.now,
+  });
+  if (!inspected.safe) return false;
+  removeTestTempTree(canonicalRoot);
+  return true;
 }
 
 /** Stamp a newly created root so future runs can prove its OpenCodex test ownership. */
