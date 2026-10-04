@@ -1496,3 +1496,85 @@ describe("ensureGuiDependencies", () => {
     expect(result).toEqual({ kind: "failed", detail: "lockfile had changes" });
   });
 });
+
+
+describe("bare test janitor parent lifetime", () => {
+  function ownedFixture(ownerPid: number) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "opencodex-test-")));
+    writeFileSync(join(root, TEST_TEMP_OWNER_FILE), JSON.stringify({
+      schemaVersion: 1, kind: "opencodex-test-root", root, createdAtMs: Date.now(), pid: ownerPid,
+    }), { mode: 0o600 });
+    writeFileSync(join(root, "fixture.txt"), "owned fixture", { mode: 0o600 });
+    return root;
+  }
+  function startJanitor(root: string, ownerPid: number, fastReapClock = false) {
+    const moduleUrl = new URL("../../scripts/test-temp-janitor.ts", import.meta.url).href;
+    const clock = "Date.now=()=>0; setTimeout(()=>{ Date.now=()=>600001; },20).unref();";
+    const reapClock = fastReapClock
+      ? "let reapCalls=0; performance.now=()=>reapCalls++===0?0:600001;"
+      : "";
+    return Bun.spawn([process.execPath, "--eval",
+      `process.argv=[process.execPath,'janitor',${JSON.stringify(root)},${JSON.stringify(String(ownerPid))}]; ${clock}${reapClock} await import(${JSON.stringify(moduleUrl)});`],
+    { stdin: "pipe", stdout: "ignore", stderr: "pipe", env: { PATH: process.env.PATH ?? "" } });
+  }
+  async function boundedExit(child: ReturnType<typeof startJanitor>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([child.exited, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("janitor did not settle after owner/pipe closure")), 2500);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  test("an elapsed wall-clock budget cannot retire the janitor before its owner", async () => {
+    const owner = Bun.spawn([process.execPath, "--eval", "setInterval(() => {}, 1000)"],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+    const root = ownedFixture(owner.pid);
+    const janitor = startJanitor(root, owner.pid);
+    let settled = false;
+    void janitor.exited.then(() => { settled = true; });
+    try {
+      await Bun.sleep(200);
+      expect(settled, "the parent pipe, not elapsed wall time, owns the monitor lifetime").toBe(false);
+      expect(existsSync(root)).toBe(true);
+      owner.kill("SIGTERM");
+      await owner.exited;
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(0);
+      expect(await new Response(janitor.stderr).text()).toBe("");
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      if (owner.exitCode === null) owner.kill("SIGKILL");
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await Promise.all([owner.exited, janitor.exited]);
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+  test("early parent-pipe closure never authorizes deleting a still-live owner root", async () => {
+    const root = ownedFixture(process.pid);
+    const janitor = startJanitor(root, process.pid, true);
+    try {
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(0);
+      expect(existsSync(root)).toBe(true);
+      expect(readFileSync(join(root, "fixture.txt"), "utf8")).toBe("owned fixture");
+    } finally {
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await janitor.exited;
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+  test("the lifetime pipe carries no commands or payload and unexpected bytes fail closed", async () => {
+    const root = ownedFixture(process.pid);
+    const janitor = startJanitor(root, process.pid, true);
+    try {
+      janitor.stdin.write("unexpected");
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(2);
+      expect(existsSync(root)).toBe(true);
+    } finally {
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await janitor.exited;
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+});

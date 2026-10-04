@@ -108,8 +108,13 @@ if (!inheritedLock) {
     fileURLToPath(new URL("../scripts/test-temp-janitor.ts", import.meta.url)),
     isolated.root,
     String(process.pid),
-  ], { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+  ], { stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
   janitor.unref();
+  // Retain the pipe until exit even if Bun omits normal test cleanup. The OS
+  // also closes it on abrupt termination; no arbitrary test lifetime is imposed.
+  process.once("exit", () => {
+    try { void Promise.resolve(janitor.stdin.end()).catch(() => {}); } catch { /* already closed */ }
+  });
 }
 process.env[TEST_RUN_ID_ENV] = runId;
 // A bare Windows run also parents nested Bun tests. Resolve its validated path
