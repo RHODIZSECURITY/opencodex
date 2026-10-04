@@ -5294,6 +5294,16 @@ describe("GitHub Actions hardening", () => {
     expect(rootPkg).toContain("bun run typecheck && bun run lint:gui:if-changed && bun run test");
     expect(rootPkg).toContain("bun run privacy:scan && bun run doctor:gui:if-changed");
   });
+
+
+  test("GUI Oxlint runs under Bun so TypeScript JS plugins do not depend on Node type-stripping", async () => {
+    const guiPkg = await readText("gui/package.json");
+    expect(guiPkg).toContain('"lint": "bun node_modules/oxlint/bin/oxlint ."');
+    expect(guiPkg).toContain(
+      '"lint:i18n": "bun node_modules/oxlint/bin/oxlint src/pages src/components src/App.tsx src/main.tsx src/ui.tsx src/provider-workspace-data.ts"',
+    );
+    expect(guiPkg).not.toMatch(/"lint(?::i18n)?": "oxlint(?: |")/);
+  });
 });
 
 describe("doctor-gui-if-changed", () => {
