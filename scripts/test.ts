@@ -401,6 +401,13 @@ export const SERIAL_FULL_SUITE_FILES = [
   // these assertions about CLI behavior rather than scheduler contention.
   "cli/cli-help.test.ts",
   "cli/cli-models.test.ts",
+  // These also spawn bounded subprocesses or exercise real cross-process/config locks.
+  // They pass quickly in fresh processes but hit their own deadlines under the long-lived
+  // parallel pool, so keep the assertions about product behavior rather than host contention.
+  "cli/cli-provider.test.ts",
+  "routing/combo-management-api.test.ts",
+  "routing/routing-profile-management-editor.test.ts",
+  "update/update-restart-lease.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;

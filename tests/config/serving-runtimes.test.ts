@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants as fsConstants, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,6 +39,13 @@ function freshDir(): string {
 function fakeBinary(dir: string, name: string): string {
   const path = join(dir, name);
   writeFileSync(path, "fake");
+  return path;
+}
+
+function trustedBunFixture(dir: string): string {
+  const path = join(dir, process.platform === "win32" ? "trusted-bun.exe" : "trusted-bun");
+  copyFileSync(process.execPath, path, fsConstants.COPYFILE_FICLONE);
+  if (process.platform !== "win32") chmodSync(path, 0o700);
   return path;
 }
 
@@ -335,8 +342,8 @@ describe("deferToNewerServiceRuntime", () => {
     writeFileSync(script, `import { markDelegatedServiceReady } from ${JSON.stringify(source)};
 markDelegatedServiceReady();
 process.exit(42);
-`);
-    recordServingRuntime(record([process.execPath, script], "2.68.0"), dir);
+`, { mode: 0o600 });
+    recordServingRuntime(record([trustedBunFixture(dir), script], "2.68.0"), dir);
     const previous = process.env.OPENCODEX_HOME;
     process.env.OPENCODEX_HOME = dir;
     try {
@@ -446,8 +453,8 @@ process.exit(42);
   test("a delegated child receives the parent's SIGTERM and its status survives", async () => {
     const dir = freshDir();
     const script = join(dir, "sleeper.ts");
-    writeFileSync(script, 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);\n');
-    recordServingRuntime(record([process.execPath, script], "2.68.0"), dir);
+    writeFileSync(script, 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);\n', { mode: 0o600 });
+    recordServingRuntime(record([trustedBunFixture(dir), script], "2.68.0"), dir);
     const deferred = deferToNewerServiceRuntime("2.67.0", selfCommand, undefined, {
       dir,
       exists: () => true,

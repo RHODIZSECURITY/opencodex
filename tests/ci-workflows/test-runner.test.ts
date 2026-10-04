@@ -596,6 +596,22 @@ describe("bun test argv", () => {
     }
   });
 
+  test("deadline- and lock-sensitive CLI/routing fixtures stay out of the shared pool", () => {
+    const plan = resolveBunTestPlan([]);
+    for (const file of [
+      "cli/cli-provider.test.ts",
+      "routing/combo-management-api.test.ts",
+      "routing/routing-profile-management-editor.test.ts",
+      "update/update-restart-lease.test.ts",
+    ]) {
+      const name = basename(file);
+      expect(plan[0]?.args).toContain(`**/${name}`);
+      expect(plan.find(lane => lane.label === name)?.args).toEqual([
+        "--isolate", "--parallel=1", `./tests/${file}`,
+      ]);
+    }
+  });
+
   test("server admission fixtures finish in a dedicated process", () => {
     const plan = resolveBunTestPlan([]);
     expect(plan[0]?.args).toContain("**/active-registry-admission.test.ts");
