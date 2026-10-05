@@ -29,6 +29,27 @@ bun run build:gui
 That command installs/builds this dashboard and copies the production assets into
 the package layout used by `ocx gui`.
 
+## Production chunk boundaries
+
+`build-chunks.ts` keeps translation modules in stable, separate chunks and bounds
+vendor, page, and shared-module groups. The catalog API remains synchronous:
+this is cache/packaging partitioning, not on-demand language loading. It does not
+claim to reduce the total JavaScript downloaded on a cold start.
+
+Manual chunk groups can otherwise move module initialization earlier. The build
+therefore retains source execution order; the regression executes real generated
+modules to check static translations, shared initialization, and deferred effects.
+Vite's default size warning stays enabled and is not raised to hide large bundles.
+
+```bash
+cd gui
+bun test tests/build-chunks.test.ts
+bun run build
+```
+
+A passing fixture or DOM test does not replace testing the packaged application
+in a browser. Browser sandbox restrictions must be reported, not silently disabled.
+
 ## Lint and React Doctor
 
 ```bash
