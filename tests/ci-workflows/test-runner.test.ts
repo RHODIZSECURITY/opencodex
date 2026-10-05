@@ -1578,3 +1578,45 @@ describe("bare test janitor parent lifetime", () => {
     }
   }, 10_000);
 });
+
+
+describe("proxy environment fixture boundaries", () => {
+  const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+
+  test("a test environment excludes inherited proxy settings without mutating its caller", () => {
+    const source = { ...Object.fromEntries(proxyKeys.map(key => [key, "fixture-value"])), PATH: process.env.PATH, FIXTURE_KEEP: "keep" };
+    const isolated = createIsolatedTestEnvironment(source);
+    try {
+      for (const key of proxyKeys) {
+        expect(isolated.env[key]).toBeUndefined();
+        expect(source[key as keyof typeof source]).toBe("fixture-value");
+      }
+      expect(isolated.env.PATH).toBe(source.PATH);
+      expect(isolated.env.FIXTURE_KEEP).toBe("keep");
+    } finally { isolated.cleanup(); }
+  });
+
+  test("the real per-file preload clears proxy residue before a reused Bun worker starts its next fixture", async () => {
+    const root = mkdtempSync(join(tmpdir(), "opencodex-proxy-boundary-"));
+    const config = join(root, "bunfig.toml");
+    writeFileSync(config, `[test]\npreload = [${JSON.stringify(repoPath("tests", "preload.ts"))}]\n`);
+    for (let i = 0; i < 8; i++) {
+      const source = i % 2 === 0
+        ? `const keys=${JSON.stringify(proxyKeys)}; test("fixture explicitly configures its own proxy",async()=>{const old=Object.fromEntries(keys.map(k=>[k,process.env[k]]));try{for(const key of keys)process.env[key]=key.toLowerCase()==='no_proxy'?'fixture.invalid':'http://proxy.example:8080';await Bun.sleep(30);expect(process.env.HTTP_PROXY).toBe('http://proxy.example:8080');}finally{for(const key of keys){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key];}}});`
+        : `const keys=${JSON.stringify(proxyKeys)}; test("next file gets no stale proxy",()=>{for(const key of keys)expect(process.env[key]).toBeUndefined();console.log('FIXTURE_PROXY_BOUNDARY_OK');});`;
+      writeFileSync(join(root, `${i.toString().padStart(2, "0")}-proxy.test.ts`), `import {test,expect} from "bun:test";\n${source}\n`);
+    }
+    try {
+      const runId = process.env[TEST_RUN_ID_ENV]!;
+      const result = await runTestLane(
+        { label: "proxy boundary fixture", args: ["--isolate", "--parallel=4", "--config", config, root], timeoutMs: INTERNAL_DEADLINE_MS },
+        runId, resolveInheritedTestRunLock({ wrappedRunId: runId, env: process.env }), true,
+        { stdout: () => {}, stderr: () => {} },
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.output).toMatch(/8 pass/);
+      expect(result.output).toMatch(/0 fail/);
+      expect(result.output.match(/FIXTURE_PROXY_BOUNDARY_OK/g)).toHaveLength(4);
+    } finally { removeTreeWithRetry(root); }
+  }, SPAWN_BUDGET_MS);
+});

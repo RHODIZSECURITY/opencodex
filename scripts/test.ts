@@ -34,6 +34,14 @@ export const LIVE_INSTALL_CREDENTIAL_ENV = [
   "OCX_API_TOKEN_FILE",
 ] as const;
 
+// Bun 1.4.0's reused isolated globals can carry a preceding file's proxy settings.
+// Test networking must be explicit fixture state, not inherited host/previous-file state.
+// Keep the pinned runtime: later Bun releases have separate, tracked CI crash regressions.
+export const TEST_PROXY_ENV = [
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+] as const;
+
 export function createIsolatedTestEnvironment(
   baseEnv: Record<string, string | undefined> = process.env,
 ): IsolatedTestEnvironment {
@@ -66,7 +74,7 @@ export function createIsolatedTestEnvironment(
   }
   writeTestTempOwner(root, baseEnv[TEST_RUN_ID_ENV]);
   const inherited = { ...baseEnv };
-  for (const name of LIVE_INSTALL_CREDENTIAL_ENV) delete inherited[name];
+  for (const name of [...LIVE_INSTALL_CREDENTIAL_ENV, ...TEST_PROXY_ENV]) delete inherited[name];
 
   return {
     root,

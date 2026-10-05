@@ -29,7 +29,7 @@
 import { afterAll } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { isTestHomeGuardArmed, protectedHomeForTests } from "../src/lib/test-home-guard";
-import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV } from "../scripts/test";
+import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV, TEST_PROXY_ENV } from "../scripts/test";
 import {
   acquireTestRunLock,
   resolveBareTestRunIdentity,
@@ -49,7 +49,9 @@ for (const [key, value] of Object.entries(isolated.env)) {
   if (value !== undefined) process.env[key] = value;
 }
 // The sandbox drops these from its env, but this process started with them, so remove them here.
-for (const name of LIVE_INSTALL_CREDENTIAL_ENV) delete process.env[name];
+// Omitting a value from isolated.env is not deletion in Bun's next per-file global.
+// Remove proxy residue before this file imports product code or spawns its children.
+for (const name of [...LIVE_INSTALL_CREDENTIAL_ENV, ...TEST_PROXY_ENV]) delete process.env[name];
 
 // Arm the guard once the sandbox is in place, and BEFORE the run lock.
 //
