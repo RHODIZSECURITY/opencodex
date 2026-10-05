@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { guiOutputOptions } from './build-chunks'
+import { guiOutputOptions } from './build-chunks.ts'
 
 // Bake the parent package version into the bundle as a fallback for moments when the runtime
 // `/healthz` version is not reachable yet.

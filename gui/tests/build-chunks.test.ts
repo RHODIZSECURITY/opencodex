@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { rolldown } from "rolldown";
-import { guiOutputOptions, i18nChunkName } from "../build-chunks";
+import { guiOutputOptions, i18nChunkName } from "../build-chunks.ts";
 
 for (const separator of ["/", "\\"]) {
   test(`i18n chunk names stay stable with ${JSON.stringify(separator)} paths`, () => {
