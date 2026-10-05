@@ -601,14 +601,24 @@ describe("bun test argv", () => {
     for (const file of [
       "cli/cli-provider.test.ts",
       "routing/combo-management-api.test.ts",
-      "routing/routing-profile-management-editor.test.ts",
-      "update/update-restart-lease.test.ts",
     ]) {
       const name = basename(file);
       expect(plan[0]?.args).toContain(`**/${name}`);
       expect(plan.find(lane => lane.label === name)?.args).toEqual([
         "--isolate", "--parallel=1", `./tests/${file}`,
       ]);
+    }
+  });
+
+  test("self-contained routing and lease fixtures remain in the parallel pool", () => {
+    const plan = resolveBunTestPlan([]);
+    for (const file of [
+      "routing/routing-profile-management-editor.test.ts",
+      "update/update-restart-lease.test.ts",
+    ]) {
+      const name = basename(file);
+      expect(plan[0]?.args).not.toContain("**/" + name);
+      expect(plan.find(lane => lane.label === name)).toBeUndefined();
     }
   });
 

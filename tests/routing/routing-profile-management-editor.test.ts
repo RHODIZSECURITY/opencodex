@@ -1,23 +1,36 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fallbackCodexAccountLogLabel } from "../../src/codex/account-label";
 import { handleManagementAPI } from "../../src/server/management-api";
+import * as managementShared from "../../src/server/management/shared";
 import { ManagementRequest } from "../helpers/management-auth";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import type { OcxConfig } from "../../src/types";
 
 let testDir = "";
 let previousHome: string | undefined;
+let restoreDiscovery: (() => void) | undefined;
+let discoveryCalls = 0;
 
 beforeEach(() => {
+  // Alias migration also renders Claude agent definitions. Keep that discovery
+  // dependency deterministic instead of contacting example provider endpoints.
+  discoveryCalls = 0;
+  const discovery = spyOn(managementShared, "fetchAllModels").mockImplementation(async () => {
+    discoveryCalls += 1;
+    return [];
+  });
+  restoreDiscovery = () => { discovery.mockRestore(); };
   previousHome = process.env.OPENCODEX_HOME;
   testDir = mkdtempSync(join(tmpdir(), "ocx-profile-editor-"));
   process.env.OPENCODEX_HOME = testDir;
 });
 
 afterEach(() => {
+  restoreDiscovery?.();
+  restoreDiscovery = undefined;
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   // Cleanup must not be able to fail a passing test.
@@ -440,6 +453,7 @@ describe("routing profile management editor API", () => {
     expect(config.claudeCode?.model).toBe("ocx/faster");
     expect(config.claudeCode?.smallFastModel).toBe("a/m1");
     expect(config.claudeCode?.modelMap).toEqual({ "ocx/faster": "a/m1", "a/m2": "ocx/faster" });
+    expect(discoveryCalls).toBe(1);
     expect(saves).toBe(1);
   });
 

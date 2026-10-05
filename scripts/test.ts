@@ -414,8 +414,6 @@ export const SERIAL_FULL_SUITE_FILES = [
   // parallel pool, so keep the assertions about product behavior rather than host contention.
   "cli/cli-provider.test.ts",
   "routing/combo-management-api.test.ts",
-  "routing/routing-profile-management-editor.test.ts",
-  "update/update-restart-lease.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;
