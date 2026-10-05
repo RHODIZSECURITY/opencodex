@@ -1,10 +1,15 @@
 import { isolateCodexShimEnvironment, withInstalledShim } from "../helpers/codex-shim-install-fixture";
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { collectCodexEnvKeyReadiness, formatCodexShimDoctorLines } from "../../src/cli/doctor";
-import { diagnoseCodexShim, type CodexShimDiagnostic } from "../../src/codex/shim";
+import { diagnoseCodexShim, setCodexShimProbeObservationMsForTests, type CodexShimDiagnostic } from "../../src/codex/shim";
 import { join } from "node:path";
 
 isolateCodexShimEnvironment();
+// These cases validate doctor guidance around an installed shim, not the production
+// five-second descendant observation dwell itself. Use the existing test seam so
+// successful fixture installs stay well inside Bun's per-test deadline.
+setCodexShimProbeObservationMsForTests(20);
+afterAll(() => setCodexShimProbeObservationMsForTests(null));
 
 const config = `
 model_provider = "opencodex"
