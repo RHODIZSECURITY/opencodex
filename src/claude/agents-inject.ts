@@ -15,14 +15,13 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileS
 import { join } from "node:path";
 import type { OcxConfig } from "../types";
 import { renameAtomicFile } from "../lib/windows-atomic-replace";
-import { claudeCodeAlias, claudeCodeNativeAlias } from "./alias";
-import { AUTO_CONTEXT_OFF, shouldMarkOneMillion, stripOneMillionMarker, withOneMillionMarker } from "./context-windows";
+import { entryParts, SAFE_AGENT_MODEL_ID, withSubagentContextMarker } from "./subagent-model";
+import { stripOneMillionMarker } from "./context-windows";
 import { claudeConfigDir } from "./gateway-cache";
-import { DEFAULT_SUBAGENT_MODELS, hasOwnProvider } from "../config";
+import { DEFAULT_SUBAGENT_MODELS } from "../config";
 import { effectiveBlockedSkillNames, resolveInboundModel } from "./inbound";
 import { AnthropicRequestError } from "./inbound-records";
-import { knownModelIdsForProvider } from "../router";
-import { decodeRoutedModelIdOrThrow } from "../providers/slug-codec";
+import { siblingOfLivePort } from "../codex/sibling-start";
 
 export interface ClaudeAgentDef {
   file: string;
@@ -36,7 +35,7 @@ export interface ClaudeAgentDef {
 const OWNED_PREFIX = "ocx-";
 /** Ownership proof (audit 071 #2): a file without this marker is NEVER touched. */
 const GENERATED_MARKER = "generated-by: opencodex";
-const SAFE_AGENT_MODEL_ID = /^[a-z0-9][a-z0-9._:/@+\[\]~-]*$/i;
+
 
 function sanitizeName(value: string): string {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -56,43 +55,6 @@ function pickerDefaultModel(configDir: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** Roster entry -> alias + display parts. Entries are bare native slugs or "provider/id".
- * Codex-facing encoded ids (`provider/vendor-model`) decode to the native slash id first
- * so the alias joins the raw-native context-window map (context-windows.ts). */
-
-/**
- * Generated subagent defs cannot rely on the parent's auto-context compaction
- * pairing, so their [1m] marker follows the AUTHORITATIVE window only: mark when
- * the effective window (exact selector, then the canonical [1m] form, then bare)
- * is genuinely >= 1M; strip an inherited unsafe marker back to the bare selector;
- * with no window information, keep the selector as it was. Genuine routed [1m]
- * ids are preserved through the canonical-exact lookup. (#854)
- */
-function withSubagentContextMarker(selector: string, windows: Record<string, number>): string {
-  const bare = stripOneMillionMarker(selector);
-  const wasMarked = selector !== bare;
-  const canonicalExact = wasMarked ? `${bare}[1m]` : selector;
-  const authoritativeWindow = windows[selector] ?? windows[canonicalExact] ?? windows[bare];
-  if (typeof authoritativeWindow === "number" && authoritativeWindow > 0) {
-    return shouldMarkOneMillion(authoritativeWindow, AUTO_CONTEXT_OFF)
-      ? (withOneMillionMarker(selector, windows) ?? selector)
-      : bare;
-  }
-  return wasMarked ? selector : bare;
-}
-function entryParts(entry: string, config: OcxConfig): { alias: string; id: string; provider: string } {
-  const slash = entry.indexOf("/");
-  if (slash > 0) {
-    const provider = entry.slice(0, slash);
-    const prov = hasOwnProvider(config.providers, provider) ? config.providers[provider] : undefined;
-    const id = prov
-      ? decodeRoutedModelIdOrThrow(entry.slice(slash + 1), knownModelIdsForProvider(provider, prov, config))
-      : entry.slice(slash + 1);
-    return { alias: claudeCodeAlias(provider, id), id, provider };
-  }
-  return { alias: claudeCodeNativeAlias(entry), id: entry, provider: "native" };
 }
 
 export function buildClaudeAgentDefs(
@@ -285,6 +247,9 @@ export function injectClaudeAgentDefs(
   /** Hub-sourced roster on a connected client; see `buildClaudeAgentDefs`. */
   rosterOverride?: readonly string[],
 ): string[] | null {
+  // `~/.claude/agents` is shared with the live proxy a sibling instance runs beside, which owns
+  // both its roster and its pruning (`src/codex/sibling-start.ts`).
+  if (siblingOfLivePort() !== null) return null;
   if (config.claudeCode?.enabled === false || config.claudeCode?.injectAgents === false) {
     // Disabled: prune verified-owned files so stale definitions stop loading
     // in future sessions (audit 071 #3). The roster override is irrelevant here by

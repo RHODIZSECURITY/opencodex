@@ -638,7 +638,7 @@ describe("runReady --wait deadline correctness", () => {
 // that the SAME identifier `readinessGate` is (1) created in handleStart via
 // createReadinessGate(), (2) passed to startServer in the retry path, and
 // (3) passed to reconcileClientStartupBeforeReady before that helper gives a
-// deferred gate to syncCodexOnStartIfEnabled. The successful transition is held
+// deferred gate through catalog observation to syncCodexOnStartIfEnabled. The successful transition is held
 // until the Claude roster fence settles; this source guard complements the
 // executable delayed-roster test in tests/claude-integration/claude-agent-startup-sync.test.ts.
 describe("handleStart readinessGate wiring (source-level)", () => {
@@ -656,19 +656,24 @@ describe("handleStart readinessGate wiring (source-level)", () => {
     );
     expect(reconcileMatch, "startup reconciliation must receive the server readinessGate").not.toBeNull();
 
+    const observationMatch = cliSource.match(
+      /gate\s*=>\s*syncCodexBeforeCatalogObservation\s*\(\s*gate\s*,/,
+    );
+    expect(observationMatch, "catalog observation must preserve the deferred reconciliation gate").not.toBeNull();
     const syncMatch = cliSource.match(
-      /gate\s*=>\s*syncCodexOnStartIfEnabled\s*\(\s*port\s*,\s*config\s*,\s*undefined\s*,\s*gate\s*\)/,
+      /forwarding\s*=>\s*syncCodexOnStartIfEnabled\s*\(\s*port\s*,\s*config\s*,\s*undefined\s*,\s*forwarding\s*\)/,
     );
     expect(syncMatch, "Codex startup sync must receive the deferred reconciliation gate").not.toBeNull();
 
-    // Source order must be: create → startServer → reconciliation → Codex sync.
+    // Source order must be: create → startServer → reconciliation → observation → Codex sync.
     const createIdx = createMatch!.index!;
     const startIdx = startMatch!.index!;
     const reconcileIdx = reconcileMatch!.index!;
     const syncIdx = syncMatch!.index!;
     expect(createIdx).toBeLessThan(startIdx);
     expect(startIdx).toBeLessThan(reconcileIdx);
-    expect(reconcileIdx).toBeLessThan(syncIdx);
+    expect(reconcileIdx).toBeLessThan(observationMatch!.index!);
+    expect(observationMatch!.index!).toBeLessThan(syncIdx);
   });
 
   test("the readinessGate identifier is the SAME symbol at all three call sites", () => {
@@ -844,8 +849,8 @@ describe("runReady production findLiveProxy deadline wiring (source-level)", () 
 
 // ── handleStart service-wrapper exit guard (source-level) ─────────────────────
 // #764 follow-up: in OCX_SERVICE context a healthy proxy from ANY source must
-// end handleStart with exit 0, so the opencodex-service.cmd `:loop` wrapper
-// (retry on non-zero) does not respawn every 5s against a listener it can never
+// end handleStart with the intentional stay-out code, so the service wrapper
+// does not respawn every 5s against a listener it can never
 // claim. Source-level pin so a future edit cannot drop the guard silently.
 describe("handleStart OCX_SERVICE exit guard (source-level)", () => {
   const cliSource = readFileSync(repoPath("src/cli/index.ts"), "utf8");
@@ -854,14 +859,14 @@ describe("handleStart OCX_SERVICE exit guard (source-level)", () => {
     // The `OCX_SERVICE === "1"` comparison moved into `decideStartWithLiveOwner`
     // (src/cli/dispatch.ts), where the sentinel semantics are asserted at runtime
     // across the whole matrix (tests/cli/cli-dispatch.test.ts). This oracle pins the
-    // typed exits that the decision routes to: stay-out returns 0, the conflict returns 1.
+    // typed exits: stay-out uses the wrapper protocol, the conflict returns 1.
     expect(cliSource).toMatch(/decideStartWithLiveOwner\(\{/);
     // Anchor after the lease transaction begins. The earlier preflight has the same decision
     // pair but does not need a typed exit because it owns no lease yet.
     const transaction = cliSource.slice(cliSource.indexOf("bindAndPublishStartOwnership({"));
     const ownerBranch = transaction.slice(transaction.indexOf("decideStartWithLiveOwner({"));
-    const stayOut = ownerBranch.match(/decision === "service-stay-out"[\s\S]{0,800}?StartCommandExit\(0\)/);
-    expect(stayOut, "the service stay-out decision must return 0 when the port is already served").not.toBeNull();
+    const stayOut = ownerBranch.match(/decision === "service-stay-out"[\s\S]{0,800}?StartCommandExit\(serviceStayOutExitCode\(\)\)/);
+    expect(stayOut, "the service stay-out decision must signal the wrapper when the port is already served").not.toBeNull();
     const nonService = ownerBranch.match(/decision === "refuse"[\s\S]{0,500}?StartCommandExit\(1\)/);
     expect(nonService, "non-service refusal keeps the exit 1 conflict error").not.toBeNull();
   });

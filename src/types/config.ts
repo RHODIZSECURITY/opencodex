@@ -1,6 +1,13 @@
 import type { OcxProviderConfig } from "./provider";
 import type { CodexAccount } from "./accounts";
 
+export interface AnthropicModelRoute {
+  name: string;
+  match: string;
+  accounts: string[];
+  fallback?: boolean;
+}
+
 /** Public inference API exposure. Responses and Chat Completions are always served. */
 export interface OcxApiSurfacesConfig {
   /**
@@ -37,6 +44,9 @@ export interface OcxProtocolsConfig {
  * /v1/messages surface, the `ocx claude` launcher, and the GUI Claude page.
  */
 export interface OcxClaudeCodeConfig {
+  /** Route the standalone Claude Code CLI through the first-party intercept (settings.json env).
+   * Independent of Desktop's first-party mode. Absent/false = off. */
+  cliFirstParty?: boolean;
   /**
    * Opt-in relocation of supported trailing Claude harness notices from system instructions
    * to a user input message on translated routes. Changes the Desktop cache-key prefix.
@@ -209,6 +219,8 @@ export interface OcxClaudeCodeConfig {
    * definition. Unset inherits the parent session effort.
    */
   subagentEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** Optional roster-style model forced on subagents at the next routed Claude Code launch. */
+  subagentModelForce?: string;
   /** Claude-originated web-search override. Unset fields inherit the global sidecar settings. */
   webSearchSidecar?: { backend?: "openai" | "anthropic" | "xai" | "gemini" | "exa"; model?: string };
   /** Claude-originated vision override. Unset fields inherit the global sidecar settings. */
@@ -359,6 +371,18 @@ export interface OcxConfigRebaseProvenance {
   deletedTopLevelKeys: string[];
 }
 
+
+export type SkillsCatalogRefresh = "per_session" | "per_turn";
+
+export interface OcxSkillsConfig {
+  /**
+   * Refresh policy for the runtime skills catalog (#5569).
+   * `per_session` (default): snapshots incoming `<skills_instructions>` on the first turn of a trustworthy session and reuses it across turns to preserve the Anthropic prompt cache.
+   * `per_turn`: re-derives/passes through incoming skills instructions every turn (previous behavior).
+   */
+  catalog_refresh?: SkillsCatalogRefresh;
+}
+
 export type OcxRuntimeRole = "standalone" | "hub" | "client";
 
 export interface OcxHubConfig {
@@ -473,6 +497,8 @@ export interface OcxClientConnectionConfig {
 }
 
 export interface OcxConfig {
+  /** Experimental macOS app-server stdout shim; absent or false disables it. */
+  chatgptDesktop?: { appServerShim?: boolean };
   port: number;
   /** Runtime topology role. Absence preserves the historical standalone behavior. */
   runtimeRole?: OcxRuntimeRole;
@@ -484,6 +510,8 @@ export interface OcxConfig {
   client?: OcxClientConnectionConfig;
   /** Operator-facing redaction policy for management and CLI projections. */
   privacy?: OcxPrivacyConfig;
+  /** Runtime skills catalog session snapshotting settings (#5569). */
+  skills?: OcxSkillsConfig;
   /** Opt-in process-local aggregate request metrics on the authenticated management plane. */
   metricsExport?: { enabled?: boolean };
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
@@ -503,6 +531,8 @@ export interface OcxConfig {
    * the guess is wrong.
    */
   oauthOpenBrowser?: boolean;
+  /** Display Codex credits on account cards; display only, default off. */
+  showCodexCredits?: boolean;
   /**
    * @deprecated Compatibility-only limit for bounded legacy usage readers.
    * `GET /api/usage` always aggregates the complete ledger.
@@ -550,13 +580,15 @@ export interface OcxConfig {
    */
   ultraFastTier?: boolean;
   /**
-   * Stop new identity-matched main-account requests at observed 98% usage (#5694).
+   * Stop new identity-matched main-account requests at configured window usage (#5694).
    *
    * On by default: an absent key and `true` both enable it, and only an explicit `false`
    * opts out. While it blocks, the main account's Luna Reserve cannot activate, so an operator
    * who wants Reserve has to turn the setting off rather than delete the key.
    */
   codexMainAccountHardLock?: boolean;
+  /** Per-window percentages: short defaults to 90, long to 98; integers 80..100, short <= long. */
+  codexMainAccountHardLockThresholds?: { short?: number; long?: number };
   /** Explicit top-level deletion intent used by stale whole-config rebases. */
   configRebaseProvenance?: OcxConfigRebaseProvenance | Record<string, unknown>;
   /** OpenAI provider-contract migration marker (v2 = single `openai` provider with account mode). */
@@ -625,6 +657,11 @@ export interface OcxConfig {
    * reject the whole role file as an unknown field (#1190).
    */
   subagentModelFallbackByModel?: Record<string, string[]>;
+  /**
+   * Capability tier of named models for Codex role auto-assign, overriding its price-rank
+   * classification. Models no list names and no price covers are never proposed.
+   */
+  codexRoleTiers?: { fast?: string[]; standard?: string[]; frontier?: string[] };
   /**
    * TTL (ms) for cached sub-agent model availability probes. Default 60_000.
    */
@@ -715,9 +752,34 @@ export interface OcxConfig {
   modelPinnedEfforts?: Record<string, string>;
   compactionRouting?: {
     model: string;
+    /** Incoming model allowlist: exact selectors or provider/*; omitted means all models. */
+    sourceModels?: string[];
     reasoningEffort?: string;
     /** Compaction triggers this override covers; omission means `["manual"]`. */
     triggers?: ("manual" | "auto")[];
+  };
+  /** Opt-in failure-only recovery; never replaces the initial compaction model. */
+  compactionRecovery?: { enabled: boolean; model: string; allowDevinInvalidArgument?: boolean };
+  /**
+   * Destination model for Codex's own memory pipeline, per phase
+   * (src/server/responses/memory-models.ts).
+   *
+   * Codex runs Phase 1 ("extract") once per finished thread to summarize that thread's rollout,
+   * and Phase 2 ("consolidation") once as an agent run that merges the summaries into the files
+   * under `$CODEX_HOME/memories`. Without an entry here each phase keeps its existing route,
+   * including any configured shadow-call interception.
+   *
+   * A phase is recognized from Codex's turn metadata, never inferred from the model id, the timing
+   * or the token counts: Phase 1 shares `gpt-5.6-luna` with the app's title/commit helper calls,
+   * and `shadowCallIntercept` is the setting for those. A configured phase wins over that
+   * intercept, because the memory decision is the more specific one.
+   *
+   * `model` is required for a configured phase; omitting the phase leaves its route in place.
+   * `reasoningEffort` overrides the effort Codex hard-codes for that phase.
+   */
+  memoryModels?: {
+    extract?: { model: string; reasoningEffort?: string };
+    consolidation?: { model: string; reasoningEffort?: string };
   };
   /**
    * Models hidden from Codex discovery without blocking direct proxy calls. Routed provider ids
@@ -737,19 +799,22 @@ export interface OcxConfig {
   /**
   * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
   * commit messages, skill orchestration) to a user-chosen model. Default intercepted
-  * source model: gpt-5.6-luna (Codex 0.145.0+). Clients through 0.144.x emitted
-  * gpt-5.4-mini instead; that model is retired upstream, but it stays available as an
-  * opt-in `sourceModels` prefix so an old client's helper calls can still be intercepted.
+  * source models: gpt-6-luna (Codex 0.154.0+) and gpt-5.6-luna (0.145.0-0.153.x).
+  * Clients through 0.144.x emitted gpt-5.4-mini instead; that model is retired upstream,
+  * but it stays available as an opt-in `sourceModels` prefix so an old client's helper
+  * calls can still be intercepted.
   * Opt-in; disabled by default. Matching requests preserve their configured reasoning effort.
   * All requests for configured shadow source models are intercepted regardless of request kind,
-  * except when the replacement intersects the same provider+model source set.
+  * except when the replacement intersects the same provider+model source set, and except
+  * spawned sub-agent turns (x-openai-subagent: collab_spawn / subagent_kind thread_spawn),
+  * which keep the model they were spawned with.
   */
  shadowCallIntercept?: {
    /** When true, requests for known shadow/helper source models are rewritten to the configured model. */
    enabled?: boolean;
    /** Replacement model id (e.g. "gpt-5.5"). */
    model?: string;
-   /** Optional override of intercepted source-model prefixes (default: gpt-5.6-luna). */
+   /** Optional override of intercepted source-model prefixes (default: gpt-6-luna, gpt-5.6-luna). */
    sourceModels?: string[];
  };
   /**
@@ -803,13 +868,14 @@ export interface OcxConfig {
    */
   quotaResetNotify?: OcxQuotaResetNotifyConfig;
   /**
-   * Periodic provider model-catalog refresh (issue #3630). Absent means off: no timer, no
-   * refresh pass, no outcome record.
+   * Periodic provider model-catalog refresh (issue #3630). Absent means on at the hourly
+   * default; `enabled: false` or `intervalMinutes: 0` turns it off.
    *
-   * Off by default for the same reason every optional subsystem here is: a refresh spends a
-   * live /models call against every enabled provider, and this repository's rule is that a
-   * default install runs no detection code and starts no live timer work. Not in
-   * `getDefaultConfig()` — absence is the only default state this feature has.
+   * It started opt-in, and that is why GPT-6.1 Sol never reached an install without a
+   * release: nobody had turned the section on, so the authenticated Codex roster that
+   * announces a new model was never re-read. One hourly pass costs a live /models call per
+   * enabled provider, which is the price of new models appearing on their own. Not in
+   * `getDefaultConfig()` — absence is the default state.
    */
   catalogAutoRefresh?: OcxCatalogAutoRefreshConfig;
   /** Active provider context limits; native long windows remain within their supported ceilings. */
@@ -861,10 +927,12 @@ export interface OcxConfig {
    * HTTP URLs are mirrored into HTTP_PROXY/HTTPS_PROXY when unset. SOCKS5 URLs are mirrored
    * into ALL_PROXY, clear inherited HTTP(S)_PROXY, and use OpenCodex's SOCKS5 transport.
    * Loopback stays in NO_PROXY.
-   * The literal `"auto"` reads the Windows WinINET static proxy (`ProxyEnable`/`ProxyServer`)
-   * once at process start, preserving separate HTTP and HTTPS entries; on other platforms, or
-   * when the system proxy is off, SOCKS-only, or unreadable, it degrades to direct egress with
-   * one log line (#1525). PAC/WPAD and live changes are not followed.
+   * The literal `"auto"` reads Windows WinINET or macOS static HTTP/HTTPS proxy settings
+   * once at startup. Inherited scheme proxies win; on macOS, inherited ALL_PROXY also skips
+   * discovery. A macOS `*.<domain>` exception maps to `.<domain>` (including the apex),
+   * exact link-local CIDRs are omitted with a warning, and other unsafe exceptions
+   * refuse discovery without environment writes.
+   * PAC/WPAD, SOCKS-only settings, and live changes are not followed.
    */
   proxy?: string;
   /**
@@ -960,6 +1028,12 @@ export interface OcxConfig {
   codexAccounts?: CodexAccount[];
   /** Account ids administratively excluded from future pool selection until resumed. */
   pausedCodexAccountIds?: string[];
+  /**
+   * Account ids, `__main__` included, allowed to keep serving from ChatGPT credits once one of
+   * their usage windows is full. Every other account is skipped by selection at 100% until its
+   * window resets, so spending credits is opt-in.
+   */
+  creditCodexAccountIds?: string[];
   /**
    * Codex pool selection policy. Absent means no policy, so an existing install rotates exactly
    * as before.
@@ -1144,6 +1218,8 @@ export interface OcxConfig {
    */
   anthropicAccountPool?: {
     enabled?: boolean;
+    /** Preserve native Claude Messages while the pool is enabled. Default true; false selects legacy translation. */
+    nativeMessages?: boolean;
     /** Usage % threshold for new-session auto-pick. Default 80. 0 = disabled (affinity/active only). */
     autoSwitchThreshold?: number;
     /** New-session rotation strategy. Default quota (today's behaviour). */
@@ -1152,6 +1228,8 @@ export interface OcxConfig {
     stickyLimit?: number;
     /** Usage window for quota-based scoring. Default "five-hour" (today's behaviour). */
     quotaWindow?: OcxAccountPoolQuotaWindow;
+    /** Ordered model allowlists; inactive while the pool is disabled. Stored account IDs only. */
+    routes?: AnthropicModelRoute[];
   };
   /**
    * Generic OAuth multi-account PROACTIVE account preference (#2568, #695).
@@ -1219,6 +1297,11 @@ export interface OcxComboTarget {
    */
   reasoningEfforts?: OcxComboDefaultEffort[];
   /**
+   * Operator-authored capability description sent only to the JEV decision
+   * service for this target. The built-in model profile always applies.
+   */
+  modelProfile?: string;
+  /**
    * Marks an emergency-only target. Inert unless the combo sets
    * `cooldownWaitPolicy`, and never makes a target permanently ineligible —
    * see `OcxComboConfig.cooldownWaitPolicy` (#5691).
@@ -1280,6 +1363,21 @@ export interface OcxComboConfig {
   nativeAlias?: boolean;
   /** Display-only label for the public catalog row. Required for native aliases. */
   displayName?: string;
+  /**
+   * `strategy: "jev"` only: provider id of the decision service. Omitted or `"jev"` uses the
+   * canonical TypeSafe endpoint; any other id must name a configured `adapter: "jev-decision"`
+   * row, such as a self-hosted Ollama `tev1` endpoint. That row's baseUrl is the full decision
+   * endpoint and only its own apiKey is sent there.
+   */
+  decisionProvider?: string | null;
+  /** JEV only: an ordinary model route for decisions; null explicitly clears management input. */
+  decisionModel?: string | null;
+  /**
+   * `strategy: "jev"` only: decision deadline in milliseconds before failing open to the first
+   * eligible target. Default 4000; range 1000..120000. Raise it for a self-hosted decision model
+   * whose first call may include a cold model load.
+   */
+  decisionTimeoutMs?: number;
 }
 
 export type OcxRoutingUnknownEvidenceMode = "allow" | "penalize" | "exclude";
@@ -1508,6 +1606,8 @@ export interface OcxWebSearchSidecarConfig {
  * explicit account selection. Only automatic rotation skips it.
  */
 export interface OcxCodexPoolConfig {
+  /** Start idle Codex windows when the pool is initialized. */
+  startIdleWindows?: boolean;
   /**
    * Plan keys ordinary rotation skips, matched case-insensitively against the plan stored on each
    * account. Absent or empty means no policy.
@@ -1517,6 +1617,23 @@ export interface OcxCodexPoolConfig {
    * operator never meant to exclude.
    */
   excludedPlans?: string[];
+  /** Optional per-account response to fresh quota observations at or above a usage percentage. */
+  lowQuotaProtection?: CodexLowQuotaProtectionConfig;
+}
+
+/** Optional policy for pausing accounts and notifying when selected quota windows are low. */
+export interface CodexLowQuotaProtectionConfig {
+  enabled: boolean;
+  /** Inclusive usage percentage from 1 to 100. */
+  threshold: number;
+  actions: {
+    pause: boolean;
+    notify: boolean;
+  };
+  windows: {
+    short: boolean;
+    weekly: boolean;
+  };
 }
 
 /**
@@ -1567,14 +1684,12 @@ export interface OcxQuotaResetNotifyConfig {
 /**
  * Periodic model-catalog auto-refresh settings (issue #3630).
  *
- * Every field is optional and the whole section defaults to off. Each tick converges the
+ * Every field is optional and an absent section runs hourly. Each tick converges the
  * served catalog the same way `ocx sync` does, which costs a live /models call against
- * every enabled provider — so an install that never asked for this must run no refresh
- * code and start no timer, matching the optional-subsystem rule the rest of this file
- * follows.
+ * every enabled provider; set `enabled: false` to keep the catalog to explicit syncs.
  */
 export interface OcxCatalogAutoRefreshConfig {
-  /** Master switch. Default false — no scheduler, no tick, no upstream calls. */
+  /** Master switch. Default true; false leaves the timer dormant with no upstream calls. */
   enabled?: boolean;
   /**
    * Minutes between refresh ticks. Default 60, floor 15, and 0 keeps the timer dormant

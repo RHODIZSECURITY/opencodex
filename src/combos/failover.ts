@@ -11,6 +11,7 @@ import {
 
 interface TargetCooldown {
   cooldownUntil: number;
+  status?: number;
 }
 
 const DEFAULT_COOLDOWN_MS = 60_000;
@@ -18,8 +19,6 @@ const MAX_COOLDOWN_MS = 10 * 60_000;
 const MAX_SERVER_DELAY_MS = 24 * 60 * 60_000;
 /** Short cooldown for request-rate 429s (for example provider code 1302) that omit Retry-After. */
 export const COMBO_REQUEST_RATE_COOLDOWN_MS = 5_000;
-/** Slow failed attempts get a longer floor so short combo cooldowns do not re-pay the same stall. */
-export const COMBO_SLOW_FAILURE_THRESHOLD_MS = 15_000;
 
 const QUOTA_LIMIT_CODES = new Set([
   "1308",
@@ -197,6 +196,23 @@ export function remainingComboCooldownMs(comboId: string, now = Date.now()): num
   return soonest;
 }
 
+/** Snapshot active quota cooldowns without inspecting request eligibility or changing state. */
+export function snapshotComboQuotaCooldowns<T extends Pick<OcxComboTarget, "provider" | "model">>(
+  comboId: string,
+  targets: Iterable<T>,
+  now = Date.now(),
+): Array<{ target: T; cooldownUntil: number }> {
+  const snapshot: Array<{ target: T; cooldownUntil: number }> = [];
+  for (const target of targets) {
+    const key = cooldownMapKey(comboId, target);
+    const cooldown = targetCooldowns.get(key);
+    if (!cooldown || cooldown.cooldownUntil <= now) continue;
+    if (cooldown.status !== 429 && cooldown.status !== 402) continue;
+    snapshot.push({ target, cooldownUntil: cooldown.cooldownUntil });
+  }
+  return snapshot;
+}
+
 export function comboCooldownRetryAfterSeconds(comboId: string, now = Date.now()): string | undefined {
   const remainingMs = remainingComboCooldownMs(comboId, now);
   if (remainingMs === undefined) return undefined;
@@ -216,7 +232,6 @@ export function coolComboTarget(
     status?: number;
     code?: string | null;
     message?: string;
-    attemptDurationMs?: number;
   },
 ): boolean {
   const now = options?.now ?? Date.now();
@@ -230,29 +245,24 @@ export function coolComboTarget(
     preserveImmediate: true,
     preserveServerDelay: true,
   });
-  const resetDelayMs = parseResetCooldownMs(options?.resetAt, now);
-  const configuredFallbackMs = options?.cooldownMs
-    ?? (isTransientRequestRateLimit({
-      status: options?.status,
-      code: options?.code,
-      message: options?.message,
-    }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
-  const persistentProviderFailure = typeof options?.status === "number"
-    && comboFailureCooldownScope(options.status, options.message ?? "", { code: options.code }) === "provider";
-  const slowServerFailure = typeof options?.status === "number"
-    && options.status >= 500
-    && typeof options.attemptDurationMs === "number"
-    && Number.isFinite(options.attemptDurationMs)
-    && options.attemptDurationMs >= COMBO_SLOW_FAILURE_THRESHOLD_MS;
-  const fallbackCooldownMs = persistentProviderFailure || slowServerFailure
-    ? Math.max(configuredFallbackMs, DEFAULT_COOLDOWN_MS)
-    : configuredFallbackMs;
   const cooldownMs = serverDelayMs
-    ?? resetDelayMs
-    ?? fallbackCooldownMs;
+    ?? parseResetCooldownMs(options?.resetAt, now)
+    ?? options?.cooldownMs
+    // A spent account window or an unpaid/rejected credential does not turn over in a minute,
+    // so the 60s default would re-offer a target that cannot succeed. Only the duration
+    // changes; the scope and hop decisions are untouched.
+    ?? (isAccountWindowExhausted(options?.message ?? "", options?.code)
+      || PROVIDER_SCOPED_FAILURE_CODES.has(normalizedFailureCode(options?.code))
+      ? MAX_COOLDOWN_MS
+      : isTransientRequestRateLimit({
+        status: options?.status,
+        code: options?.code,
+        message: options?.message,
+      }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
   targetCooldowns.set(cooldownMapKey(comboId, target), {
     // Local fallbacks are capped at ten minutes; explicit server delays at one day.
     cooldownUntil: now + (serverDelayMs ?? Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS)),
+    status: options?.status,
   });
   sweepExpiredOnWrite(now);
   return true;
@@ -319,6 +329,30 @@ export type ComboFailureCooldownScope = "none" | "target" | "provider";
 
 function normalizedFailureCode(code?: string | null): string {
   return code?.trim().toLowerCase().replaceAll("-", "_") ?? "";
+}
+
+/**
+ * A spent account window, by structured code or upstream prose. Status is deliberately not
+ * consulted: the ChatGPT Codex backend reports a depleted plan window as HTTP 502
+ * `upstream_server_error` carrying `The usage limit has been reached`, never the documented 429,
+ * so any status gate misses it. Read in exactly ONE place -- the cooldown DURATION fallback. A
+ * status-blind prose match is safe for choosing how long to wait; it is not safe for choosing
+ * what to black out, so `isProviderScopedQuotaCap` and the scope/decision paths stay untouched
+ * and a Codex 502 still resolves `target` scope and `hop` through `status >= 500`.
+ */
+// `1308` is the vendor code for a spent five-hour window and carries no prose of its own when the
+// upstream reports it bare, so it belongs here too. The rest of QUOTA_LIMIT_CODES stays out: those
+// are quota-limit codes whose window length this gateway has no evidence for, and guessing long on
+// them would hold a target that may clear sooner.
+const ACCOUNT_EXHAUSTION_CODES = new Set(["usage_limit_exceeded", "usage_limit_reached", "1308"]);
+// Token-plan windows (Alibaba's DeepSeek/Qwen plans) report "Your token-plan 1-week quota has been
+// exhausted" (#5494). The match is anchored to that phrasing: a looser "quota ... exhausted" would
+// also catch per-minute limits, and this arm outranks the transient rate-limit duration.
+const ACCOUNT_EXHAUSTION_TEXT = /usage limit (?:has been )?reached|token-plan\s+\S+\s+quota has been exhausted/;
+
+function isAccountWindowExhausted(message: string, code?: string | null): boolean {
+  return ACCOUNT_EXHAUSTION_CODES.has(normalizedFailureCode(code))
+    || ACCOUNT_EXHAUSTION_TEXT.test(message.toLowerCase());
 }
 
 function isProviderScopedQuotaCap(
@@ -422,6 +456,50 @@ function isRequestLocalTargetIncompatibility(status: number, message: string, co
     return e.param === "input"
       && (errorCode === "" || errorCode === "invalid_request_error")
       && /^Model '[^']{1,256}' does not support image inputs\./.test(e.message);
+  }
+  return false;
+}
+
+const VERTEX_MALFORMED_FUNCTION_CALL_MESSAGE =
+  "Vertex AI response truncated upstream before the turn completed (MALFORMED_FUNCTION_CALL)";
+
+/**
+ * Vertex/Gemini can finish a zero-output turn with MALFORMED_FUNCTION_CALL after the model
+ * emitted a function call that the upstream could not parse. That is a verdict about THIS
+ * target's generated tool-call shape, not about the request itself or the next combo target.
+ *
+ * Keep this deliberately narrow: status 400, the exact structured invalid_request_error
+ * envelope, and the exact Vertex truncation message. Bare prose containing the marker is not
+ * enough to authorize replay. The combo layer only calls this policy before child output/tool
+ * commit; committed turns are fenced earlier and never reach this replay decision.
+ */
+function isVertexMalformedFunctionCallFailure(
+  status: number,
+  message: string,
+  code?: string | null,
+): boolean {
+  if (status !== 400 || message.length > 16_384) return false;
+  const allowedCodes = new Set(["", "invalid_request_error"]);
+  if (!allowedCodes.has(normalizedFailureCode(code))) return false;
+  let text = message.trim();
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (text.startsWith("Provider error 400: ")) text = text.slice("Provider error 400: ".length).trim();
+    let payload: unknown;
+    try { payload = JSON.parse(text); } catch { return false; }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const error = (payload as Record<string, unknown>).error;
+    if (!error || typeof error !== "object" || Array.isArray(error)) return false;
+    const e = error as Record<string, unknown>;
+    if (e.code !== undefined && e.code !== null && typeof e.code !== "string") return false;
+    const errorCode = normalizedFailureCode(typeof e.code === "string" ? e.code : undefined);
+    if (!allowedCodes.has(errorCode) || typeof e.message !== "string") return false;
+    if (e.type !== "invalid_request_error") return false;
+    if (e.message === VERTEX_MALFORMED_FUNCTION_CALL_MESSAGE) return true;
+    if (e.message.startsWith("Provider error 400: ") && e.param === undefined) {
+      text = e.message;
+      continue;
+    }
+    return false;
   }
   return false;
 }
@@ -540,6 +618,7 @@ export function comboFailureCooldownScope(
     || isProviderTargetContextOverflow(status, message, options?.code)
     || isDefiniteContextOverflow(status, message)
     || isRequestLocalTargetIncompatibility(status, message, options?.code)
+    || isVertexMalformedFunctionCallFailure(status, message, options?.code)
     // A capability gap says the target is healthy and the request did not fit it, which is the
     // same reason every other entry here refuses to cool a target.
     || isResponseFormatCapabilityRefusal(status, message, options?.code)
@@ -655,10 +734,84 @@ function isDefiniteContextOverflow(status: number, message: string): boolean {
   return false;
 }
 
+const CODEX_ACCOUNT_MODEL_REFUSAL = /^The '[^']{1,256}' model is not supported when using Codex with a ChatGPT account\.$/;
+
+export type CodexAccountModelRefusal = "other" | "refusal" | "ambiguous";
+
+/** Inspect only the original root and its own response record, before carrier selection. */
+export function hasConflictingCodexModelRefusalEnvelopes(status: number, payload: unknown): boolean {
+  if (status !== 400 || !payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const response = Object.hasOwn(payload, "response") ? (payload as Record<string, unknown>).response : undefined;
+  const nested = response && typeof response === "object" && !Array.isArray(response) ? response : undefined;
+  return (Object.hasOwn(payload, "detail") || !!nested && Object.hasOwn(nested, "detail"))
+    && (Object.hasOwn(payload, "error") || !!nested && Object.hasOwn(nested, "error"));
+}
+
+/** Inspect an already parsed, bounded error frame without copying or walking its body. */
+export function codexAccountModelRefusalPayload(status: number, payload: unknown): CodexAccountModelRefusal {
+  if (status !== 400 || !payload || typeof payload !== "object" || Array.isArray(payload)) return "other";
+  if (Object.hasOwn(payload, "detail") && Object.hasOwn(payload, "error")) return "ambiguous";
+  const { detail, error } = payload as { detail?: unknown; error?: unknown };
+  const field = typeof detail === "string" ? detail
+    : error && typeof error === "object" && !Array.isArray(error)
+      && typeof (error as Record<string, unknown>).message === "string"
+      ? (error as { message: string }).message : undefined;
+  return field !== undefined && CODEX_ACCOUNT_MODEL_REFUSAL.test(field) ? "refusal" : "other";
+}
+
+/** One complete, bounded HTTP envelope; accept only a single exact status prefix. */
+function parseCodexRefusalEnvelope(status: number, message: string): { text: string; payload: unknown } | undefined {
+  if (status !== 400 || message.length > 16_384) return undefined;
+  let text = message.trim();
+  if (text.startsWith("Provider error 400: ")) text = text.slice("Provider error 400: ".length);
+  let payload: unknown;
+  try { payload = JSON.parse(text); } catch { /* Bare refusal text is also a supported carrier. */ }
+  return { text, payload };
+}
+
+/** Only allowlisted hard stops cross the same HTTP boundary as positive refusal evidence. */
+export function codexAccountModelRefusalHardStopCode(status: number, message: string): string | undefined {
+  const payload = parseCodexRefusalEnvelope(status, message)?.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const root = payload as Record<string, unknown>;
+  const response = Object.hasOwn(root, "response") ? root.response : undefined;
+  const records = response && typeof response === "object" && !Array.isArray(response)
+    ? [root, response as Record<string, unknown>] : [root];
+  for (const record of records) {
+    const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+      ? record.error as Record<string, unknown> : undefined;
+    // Diagnostic type is never code evidence, even when a code is absent or malformed.
+    for (const code of [error?.code, record.code]) {
+      if (typeof code !== "string") continue;
+      if (isNonReplayableUpstreamCode(code) || isCyberPolicyCode(code)) return code;
+      if (normalizedFailureCode(code) === "origin_rejected") return "origin_rejected";
+    }
+  }
+  return undefined;
+}
+
+/** A bounded fallback signal, never credential or account-entitlement evidence. */
+export function codexAccountModelRefusal(
+  status: number, message: string, options?: { allowNestedResponse?: boolean },
+): CodexAccountModelRefusal {
+  const envelope = parseCodexRefusalEnvelope(status, message);
+  if (!envelope) return "other";
+  if (CODEX_ACCOUNT_MODEL_REFUSAL.test(envelope.text)) return "refusal";
+  const payload = envelope.payload;
+  if (hasConflictingCodexModelRefusalEnvelopes(status, payload)) return "ambiguous";
+  // A present root carrier stays authoritative, even when malformed or nonmatching.
+  if (options?.allowNestedResponse !== false && payload && typeof payload === "object" && !Array.isArray(payload)
+    && !Object.hasOwn(payload, "detail") && !Object.hasOwn(payload, "error")
+    && Object.hasOwn(payload, "response")) {
+    return codexAccountModelRefusalPayload(status, (payload as Record<string, unknown>).response);
+  }
+  return codexAccountModelRefusalPayload(status, payload);
+}
+
 export function comboFailureDecision(
   status: number,
   message: string,
-  options?: { code?: string | null },
+  options?: { code?: string | null; codexModelRefusal?: CodexAccountModelRefusal },
 ): ComboFailureDecision {
   if (status === 499) return "stop";
   if (message.toLowerCase().includes("origin_rejected")) return "stop";
@@ -673,6 +826,12 @@ export function comboFailureDecision(
   // Cyber policy is a hard non-retryable refusal — honor structured code even when
   // classificationText was truncated before the JSON code field.
   if (isCyberPolicyCode(options?.code)) return "stop";
+  // HTTP consumers retain hard codes before truncation; SSE metadata owns its selected carrier.
+  if (options?.codexModelRefusal === undefined && codexAccountModelRefusalHardStopCode(status, message)) return "stop";
+  const modelRefusal = status === 400
+    ? options?.codexModelRefusal ?? codexAccountModelRefusal(status, message) : "other";
+  // Competing envelopes cannot grant a hop through an earlier structured-code rule either.
+  if (modelRefusal === "ambiguous") return "stop";
   // HTTP 410 is normally terminal. A model-specific lifecycle verdict is target-local,
   // however: another provider/model in the declared combo can still serve the request.
   // Require structured lifecycle code or explicit model+lifecycle prose so unrelated
@@ -723,10 +882,12 @@ export function comboFailureDecision(
   if (["model_not_found", "model_unavailable", "unsupported_model"].includes(failureCode)) {
     return "hop";
   }
+  if (modelRefusal === "refusal") return "hop";
   // `free_rate_limited` no longer routes through `isProviderScopedQuotaCap` (it is a
   // per-request cap, not provider-wide evidence), so keep its hop verdict explicit here.
   if (failureCode === "free_rate_limited") return "hop";
   if (isRequestLocalTargetIncompatibility(status, message, options?.code)) return "hop";
+  if (isVertexMalformedFunctionCallFailure(status, message, options?.code)) return "hop";
   // Must precede the generic `invalid_request_error` stop below, which is where this refusal
   // ended the chain: the gateway reports `type: "invalid_request_error"`, so the classifier
   // reaches that list and returns terminal before anything can ask whether the next target

@@ -1,4 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import * as modelRowsModule from "../../src/server/management/model-rows";
+
+mock.module("../../src/server/management/model-rows", () => ({
+  ...modelRowsModule,
+  listManagementModelRows: async () => [],
+}));
+
 import { parseRequest } from "../../src/responses/parser";
 import { planWebSearch, resolveSidecarBackend, shouldResolveOpenAiWebSearchSidecar } from "../../src/web-search";
 import { handleManagementAPI } from "../../src/server/management-api";

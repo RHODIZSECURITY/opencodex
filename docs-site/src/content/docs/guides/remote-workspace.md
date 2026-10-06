@@ -27,6 +27,16 @@ lifecycle owner can retain cleanup authority through cancellation. Missing comma
 falls back to executing on the Hub.
 :::
 
+## RPC compatibility and timeouts
+
+Remote Workspace uses encrypted RPC v2. The Hub and every Executor must support v2; RPC v1 peers
+fail closed instead of falling back to immediate execution, so upgrade the Hub and Executors
+together.
+
+A timeout requests executor cancellation but does not confirm it. A grant may already be in transit,
+or its operation may already be running. The default RPC timeout is 65 seconds, and `timeoutMs`
+accepts inclusive values from 1 through 120,000 milliseconds.
+
 ## Set up the Hub
 
 Computer 1 owns every coding-agent login and model session. Install and log in to whichever agents
@@ -50,6 +60,36 @@ Codex Remote Workspace uses current App Server permission profiles. If the Hub's
 configuration still sets legacy `sandbox_mode` or `sandbox_workspace_write`, the dashboard reports
 Codex as unavailable instead of starting with a weaker boundary. Migrate that Codex profile before
 using the feature; do not configure both the legacy sandbox and a permission profile.
+
+## Inspect the Hub without starting a session
+
+```bash
+ocx remote-workspace hub --help
+ocx remote-workspace hub status --json
+ocx remote-workspace hub runtimes --json
+ocx remote-workspace hub sessions --json
+```
+
+These use the selected running management Hub. Existing `remote-workspace status`
+continues to read local Executor state. Status returns
+`{available:true,devices,runtimes,sessions}`; runtimes returns
+`{runtimes:{codex:{available,...},claude:{available,...},pi:{available,...}}}`;
+sessions returns `{sessions:[...]}`. Runtime availability is an object, not an
+array, and checking it may probe executable availability. Device roots expose IDs
+and labels, not Executor filesystem paths. Sessions include public recent events;
+human terminal output escapes control characters.
+
+An available Hub with empty device/session lists exits 0. When Hub activation is
+off, the outer dispatcher can return HTTP 200 with `available:false`, empty devices
+and sessions, and `runtimes:{}`. The CLI emits that narrow unavailable observation
+with a fixed Hub/activation instruction and exits 1. It does not present unavailable
+as empty success. An inner non-Hub HTTP 409 returns exit 5 with stderr guidance;
+client-role, transport and malformed replies also remain failures.
+
+Check the intended Hub and its `OCX_REMOTE_WORKSPACE_ENABLED=1` activation when
+unavailable; do not silently change configuration as recovery. These observations
+do not authorize or perform pairing, session creation, prompts, revocation or
+trust changes. Those remain the separate dashboard/session workflows below.
 
 ## Pair an Executor
 

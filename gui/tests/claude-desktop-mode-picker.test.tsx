@@ -173,7 +173,8 @@ test("the picker follows the effective mode reported by /status and shows the pr
 
   const bar = container.querySelector(".claude-status-bar")!;
   expect(bar.className).toContain("applied");
-  expect(bar.textContent ?? "").toContain("First-party: Code tab routed through the local proxy");
+  expect(bar.textContent ?? "").toContain("First-party: Desktop Code tab routed through the local proxy");
+  expect(container.textContent ?? "").toContain("the standalone CLI has its own switch");
   expect(bar.textContent ?? "").toContain("127.0.0.1:10200");
   expect(applyButton().textContent).toBe("Save & apply");
 });
@@ -183,7 +184,11 @@ test("a stopped intercept proxy is surfaced in first-party mode", async () => {
     firstParty: { applied: true, stale: false, interceptEnabled: true, interceptRunning: false, proxyPort: 10200, caCertPath: "/tmp/ca.pem" },
   }));
   await mount();
-  expect(container.querySelector(".claude-status-bar")?.textContent ?? "").toContain("is not running");
+  // A stopped proxy names the problem and offers an in-place start; it never asks for a restart.
+  const bar = container.querySelector(".claude-status-bar")?.textContent ?? "";
+  expect(bar).toContain("Interception could not start");
+  expect(bar).toContain("Start interception");
+  expect(bar.toLowerCase()).not.toContain("restart");
 });
 
 test("an applied first-party warning stays visible below status while gateway is selected", async () => {

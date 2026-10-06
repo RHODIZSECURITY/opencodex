@@ -25,6 +25,8 @@ function carriesTranslatableWords(value: string): boolean {
 }
 
 const INTENTIONAL_ENGLISH = new Set<TKey>([
+  "nav.claude", // Product name.
+  "nav.codexSet", // Product name: the sidebar row reads "Codex" in every locale.
   // Units, symbols, protocol values, machine labels, and product names.
   "integrations.cursor.noControl",
   "uptime.hour",
@@ -32,6 +34,8 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // "auto" is the same word in French, and it labels a machine-derived alias source rather
   // than prose. Translating it would invent a difference the UI does not have.
   "models.aliasAuto",
+  // "Zoom" is the ordinary French word for page zoom too.
+  "zoom.label",
   "common.github",
   // Product names and ordinary French words whose correct spelling is identical to English.
   "remote.pairingCommandWindows",
@@ -56,8 +60,6 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   "nav.grok",
   "grok.title",
   "claude.pageTitle",
-  "claude.tabCode",
-  "claude.tabDesktop",
   // A literal Claude Desktop picker model id shown as the input placeholder; model ids are
   // identical in every locale.
   "claudeDesktop.firstParty.bindings.pickerPlaceholder",
@@ -146,6 +148,11 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // Cline product name and CLI acronym are intentionally preserved.
   "integrations.tab.cline",
   "api.clientConfig.clientCline",
+  "integrations.tab.kilo",
+  "api.clientConfig.clientKilo",
+  // Factory Droid is a product name, identical in every locale.
+  "integrations.tab.droid",
+  "api.clientConfig.clientDroid",
   "models.reasoningEffort.minimal",
   "models.reasoningEffort.max",
   "models.reasoningEffort.ultra",
@@ -199,6 +206,8 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // Both labels are ordinary French words with the same spelling and meaning.
   "cws.jev.stats.efforts",
   "cws.jev.stats.total",
+  // The TypeSafe decision method is a product name, rendered as written in every locale.
+  "cws.jev.backend.typesafe",
   "claudeDesktop.alias",
   "lab.filter.verdict",
   "lab.col.suite",
@@ -218,6 +227,10 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   "logs.protocol.wire.chat",
   "logs.protocol.wire.messages",
   "logs.protocol.hop.ir",
+  // The consolidation phase's name is the ordinary French noun, spelled exactly as in English.
+  // Inventing a synonym would also break the pair with the extract row, whose French label is
+  // "Extraction".
+  "memoryModels.consolidation",
 ]);
 
 function placeholders(value: string): string[] {

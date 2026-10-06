@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -65,6 +65,7 @@ test.skipIf(process.platform === "win32")("valid existing token permissions are 
   mkdirSync(join(root, "claude-intercept"), { recursive: true });
   const path = claudeInterceptProxyTokenPath(root);
   writeFileSync(path, "B".repeat(43) + "\n", { mode: 0o644 });
+  chmodSync(path, 0o644); // Model the loose pre-existing credential even under a hardened process umask.
   expect(readClaudeInterceptProxyToken(root)).toBeNull();
   expect(ensureClaudeInterceptProxyToken(root)).toBe("B".repeat(43));
   expect(statSync(path).mode & 0o077).toBe(0);

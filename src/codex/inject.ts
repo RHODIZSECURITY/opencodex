@@ -7,12 +7,15 @@ import {
   readConfigAdmissionSnapshot,
   withConfigMutationLockSync,
 } from "../config";
+import { assertCodexHomeOwner, codexHomeOwnerBlocksCompensation, CodexHomeOwnerRefusal, type CodexHomeOwnerRefusalReason } from "./codex-home-owner";
 import { CodexWriteLockSkipped, withCodexWriteLock } from "./codex-write-lock";
 import {
   localClientSkipMessage,
   localClientSkipReason,
   shouldSyncCodexOnStart,
+  type LocalClientSkipReason,
 } from "./desired-state";
+import { siblingOfLivePort, siblingSkipMessage } from "./sibling-start";
 import { resolveCodexHistoryTransition } from "./history-transition";
 import {
   buildInjectWitness,
@@ -63,6 +66,7 @@ import {
 import type { OcxConfig } from "../types";
 import {
   configuredManagedSubagentDefaults,
+  remoteThreadListCompatibilityWarning,
   standaloneCodexRoutingTarget,
   validateCodexRoutingTarget,
   type CodexRoutingTarget,
@@ -131,6 +135,7 @@ function runClientWriteGuard(guard: InjectCodexOptions["beforeClientWrite"]): vo
 
 
 export interface CodexInjectResult {
+  ownershipRefusal?: CodexHomeOwnerRefusalReason;
   success: boolean;
   message: string;
   /** False when injection intentionally preserves configuration owned by another provider. */
@@ -147,7 +152,7 @@ export interface CodexInjectResult {
   /** Busy write lock, emitted by `codexInjectLockOutcome` and undeclared here until #4809. */
   retryable?: boolean;
   /** `hub-gated` is the hub-role gate (#4236), distinct from the user's own OFF switch. */
-  skippedReason?: "desired_disabled" | "desired_enabled" | "hub-gated";
+  skippedReason?: LocalClientSkipReason | "desired_enabled";
   nativeSubagentDefaultsWarning?: string;
 }
 
@@ -184,8 +189,14 @@ export async function injectCodexConfig(
   config?: OcxConfig,
   options: InjectCodexOptions = {},
 ): Promise<CodexInjectResult> {
-  try { return await injectCodexConfigImpl(port, config, options); }
+  // First, before the external-provider branch below removes the SHARED journal: a sibling owns
+  // none of this home's routing, not even the courtesy cleanup.
+  if (siblingOfLivePort() !== null) {
+    return { success: true, status: "skipped", skippedReason: "sibling", message: siblingSkipMessage() };
+  }
+  try { assertCodexHomeOwner(getCodexHome()); return await injectCodexConfigImpl(port, config, options); }
   catch (error) {
+    if (error instanceof CodexHomeOwnerRefusal) return { success: false, ownershipRefusal: error.reason, message: error.message };
     if (error instanceof CodexHistoryPreflightRefusal) return { success: false, historyPreflightFailureReason: error.message, message: `Codex config injection refused: ${error.message}. Existing configuration and history were preserved.` };
     if (error instanceof CodexInjectRefusal) return error.result;
     throw error;
@@ -407,6 +418,7 @@ async function injectCodexConfigImpl(
    * flip included — before the result is reported.
    */
   const reconcileAndDerivePlan = (): { plan: CodexInjectionPlanOk; nativeInput: string } => {
+    assertCodexHomeOwner(getCodexHome());
     if (missingConfig) createEmptyCodexConfigInBoundary();
     let nativeInput = rawContent;
     let plan = admittedPlan;
@@ -445,6 +457,7 @@ async function injectCodexConfigImpl(
     beforeHistoryArtifactCommitForTests?.(eligibility.kind);
     plan.historyRelabelRefusal = observeHistoryRefusalOrThrow(plan);
     historyArtifactStageForTests?.("after-preflight");
+    assertCodexHomeOwner(getCodexHome());
     writeJournal({
       currentStateIsNative: journalBaselineIsNative(nativeInput),
       configContent: plan.baselineContent,
@@ -455,6 +468,7 @@ async function injectCodexConfigImpl(
     if (hasUnverifiedJournalBaseline(plan.baselineContent, readCurrentProfile())) throw new Error(unverifiedJournalMessage);
     atomicWriteFile(CODEX_CONFIG_PATH, plan.content);
     historyArtifactStageForTests?.("after-config");
+    assertCodexHomeOwner(getCodexHome());
     atomicWriteFile(CODEX_PROFILE_PATH, plan.profileContent);
     markJournalInjectedState(plan.content, plan.profileContent, {
       // A root override is ours whenever we wrote one and no user-owned value won. That is
@@ -518,6 +532,7 @@ async function injectCodexConfigImpl(
         };
       }
       runClientWriteGuard(options.beforeClientWrite);
+      assertCodexHomeOwner(getCodexHome());
       /*
        * One preimage covers the reconcile and the artifact commit together: a
        * refusal after the feature transition hands back the exact bytes the
@@ -529,6 +544,7 @@ async function injectCodexConfigImpl(
         applyNativeArtifacts(resolved.plan, resolved.nativeInput);
         effectivePlan = resolved.plan;
       } catch (error) {
+        if (codexHomeOwnerBlocksCompensation(getCodexHome(), error)) throw error;
         const restored = restoreCodexPreImages(preImages);
         if (!restored.complete) throw new CodexPartialWriteError(restored.unrestored);
         throw error;
@@ -574,6 +590,7 @@ async function injectCodexConfigImpl(
         // transition or capturing preimages; rejection must not compensate over
         // a disconnect's restored files.
         runClientWriteGuard(options.beforeClientWrite);
+        assertCodexHomeOwner(getCodexHome());
         /*
          * Exact pre-images, captured under the lock and used for compensation.
          *
@@ -622,6 +639,7 @@ async function injectCodexConfigImpl(
           }
           applyNativeArtifacts(resolved.plan, resolved.nativeInput);
         } catch (error) {
+          if (codexHomeOwnerBlocksCompensation(getCodexHome(), error)) throw error;
           // Compensate, then ALWAYS throw. Returning a partial result would let the
           // lock commit a row describing an apply that did not finish.
           const restored = restoreCodexPreImages(preImages);
@@ -711,6 +729,7 @@ async function injectCodexConfigImpl(
   const catalogMessage = effectivePlan.catalogPath
     ? `  Codex model catalog: ${effectivePlan.catalogPath}\n`
     : `  Codex model catalog not injected because no opencodex catalog file exists yet.\n`;
+  const remoteHistoryMessage = remoteThreadListCompatibilityWarning(routingTarget);
   const ejected = (history as { ejectedRows?: number }).ejectedRows ?? 0;
   const migratedRows = (history.rows ?? 0) + ejected;
   const historyMessage =
@@ -746,6 +765,7 @@ async function injectCodexConfigImpl(
         `  Your root openai_base_url was left exactly as you set it, so opencodex did not add its own.\n` +
         catalogMessage +
         historyMessage +
+        remoteHistoryMessage +
         effectivePlan.managedDefaultsMessage +
         `  New threads use the injected opencodex provider and route through the proxy.\n` +
         `  Threads already tagged openai resolve through Codex's built-in provider, which your root openai_base_url points at.\n` +
@@ -784,6 +804,7 @@ async function injectCodexConfigImpl(
       headline +
       catalogMessage +
       historyMessage +
+      remoteHistoryMessage +
       effectivePlan.managedDefaultsMessage +
       `  All models now route through opencodex proxy (like OpenRouter).\n` +
       `  OpenAI models (gpt-5.5, etc.) are passed through to OpenAI.\n` +

@@ -29,6 +29,27 @@ bun run build:gui
 That command installs/builds this dashboard and copies the production assets into
 the package layout used by `ocx gui`.
 
+## Production chunk boundaries
+
+`build-chunks.ts` keeps translation modules in stable, separate chunks and bounds
+vendor, page, and shared-module groups. The catalog API remains synchronous:
+this is cache/packaging partitioning, not on-demand language loading. It does not
+claim to reduce the total JavaScript downloaded on a cold start.
+
+Manual chunk groups can otherwise move module initialization earlier. The build
+therefore retains source execution order; the regression executes real generated
+modules to check static translations, shared initialization, and deferred effects.
+Vite's default size warning stays enabled and is not raised to hide large bundles.
+
+```bash
+cd gui
+bun test tests/build-chunks.test.ts
+bun run build
+```
+
+A passing fixture or DOM test does not replace testing the packaged application
+in a browser. Browser sandbox restrictions must be reported, not silently disabled.
+
 ## Lint and React Doctor
 
 ```bash
@@ -52,6 +73,18 @@ bun run setup:hooks             # pre-push runs doctor when gui/ changed
 | **React Doctor** (`bun run doctor`) | Gating React health check pinned to react-doctor 0.9.11 (`blocking: warning`). Pre-push runs it only if `gui/` changed and fails the push on findings. The CI workflow fails the job on any finding |
 
 Fix ESLint errors first. Use `doctor` / `doctor:full` for deeper React triage.
+
+## Quota popover hover browser regression
+
+```bash
+cd gui
+bun run build
+bun run test:quota-hover
+```
+
+This opt-in check is not part of CI. It moves a real pointer from a quota chip into its popover in an
+installed Chrome/Chromium (`CHROME_BIN` when not on PATH), which happy-dom unit tests cannot hit-test.
+Rebuild after changing CSS: it uses the production CSS in `dist`.
 
 ## Sidebar version browser regression
 

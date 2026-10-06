@@ -27,8 +27,9 @@
  * that, armed by the same flag set below.
  */
 import { afterAll } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { isTestHomeGuardArmed, protectedHomeForTests } from "../src/lib/test-home-guard";
-import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV } from "../scripts/test";
+import { createIsolatedTestEnvironment, LIVE_INSTALL_CREDENTIAL_ENV, TEST_PROXY_ENV } from "../scripts/test";
 import {
   acquireTestRunLock,
   resolveBareTestRunIdentity,
@@ -48,7 +49,9 @@ for (const [key, value] of Object.entries(isolated.env)) {
   if (value !== undefined) process.env[key] = value;
 }
 // The sandbox drops these from its env, but this process started with them, so remove them here.
-for (const name of LIVE_INSTALL_CREDENTIAL_ENV) delete process.env[name];
+// Omitting a value from isolated.env is not deletion in Bun's next per-file global.
+// Remove proxy residue before this file imports product code or spawns its children.
+for (const name of [...LIVE_INSTALL_CREDENTIAL_ENV, ...TEST_PROXY_ENV]) delete process.env[name];
 
 // Arm the guard once the sandbox is in place, and BEFORE the run lock.
 //
@@ -75,6 +78,7 @@ process.env.OCX_TEST_HOME_GUARD = "1";
 // Lets a test assert one preload per process rather than assuming Bun's scheduling.
 process.env.OCX_TEST_PRELOAD_PID = String(process.pid);
 process.env.OCX_DISABLE_UPDATE_CHECK = "1";
+process.env.OPENCODEX_KIRO_MODEL_DISCOVERY = "0";
 
 if (!isTestHomeGuardArmed() || !protectedHomeForTests()) {
   throw new Error("test home guard failed to arm; refusing to run tests unprotected");
@@ -97,6 +101,23 @@ const inheritedLock = resolveInheritedTestRunLock({
   wrappedRunId,
   env: process.env,
 });
+// TEST_RUN_ID alone is not wrapper authority: nested bare `bun test` calls inherit it
+// from their parent preload. Only a complete validated inherited lock capability proves
+// that scripts/test.ts owns the outer sandbox. Bare processes get an exact-root janitor.
+if (!inheritedLock) {
+  const janitor = Bun.spawn([
+    process.execPath,
+    fileURLToPath(new URL("../scripts/test-temp-janitor.ts", import.meta.url)),
+    isolated.root,
+    String(process.pid),
+  ], { stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+  janitor.unref();
+  // Retain the pipe until exit even if Bun omits normal test cleanup. The OS
+  // also closes it on abrupt termination; no arbitrary test lifetime is imposed.
+  process.once("exit", () => {
+    try { void Promise.resolve(janitor.stdin.end()).catch(() => {}); } catch { /* already closed */ }
+  });
+}
 process.env[TEST_RUN_ID_ENV] = runId;
 // A bare Windows run also parents nested Bun tests. Resolve its validated path
 // once, then pass the complete capability to descendants just as the wrapper does.

@@ -34,6 +34,14 @@ export const LIVE_INSTALL_CREDENTIAL_ENV = [
   "OCX_API_TOKEN_FILE",
 ] as const;
 
+// Bun 1.4.0's reused isolated globals can carry a preceding file's proxy settings.
+// Test networking must be explicit fixture state, not inherited host/previous-file state.
+// Keep the pinned runtime: later Bun releases have separate, tracked CI crash regressions.
+export const TEST_PROXY_ENV = [
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+] as const;
+
 export function createIsolatedTestEnvironment(
   baseEnv: Record<string, string | undefined> = process.env,
 ): IsolatedTestEnvironment {
@@ -66,7 +74,7 @@ export function createIsolatedTestEnvironment(
   }
   writeTestTempOwner(root, baseEnv[TEST_RUN_ID_ENV]);
   const inherited = { ...baseEnv };
-  for (const name of LIVE_INSTALL_CREDENTIAL_ENV) delete inherited[name];
+  for (const name of [...LIVE_INSTALL_CREDENTIAL_ENV, ...TEST_PROXY_ENV]) delete inherited[name];
 
   return {
     root,
@@ -371,6 +379,13 @@ export const SERIAL_FULL_SUITE_FILES = [
   // Synchronous injection subprocesses can wedge the long-lived macOS isolate
   // parent while reaping a history Worker; contain them in a fresh bounded lane.
   "codex-integration/codex-inject-write-lock.test.ts",
+  // Its management API import stalled the long-lived macOS isolate pool before
+  // any case ran; the complete file finishes in under a second in a fresh process.
+  "routing/subagent-roster-retention.test.ts",
+  // Linux run 36610213506 stalled this file after its WebSocket admission case
+  // in a multi-file process; all 11 cases completed in the attribution process.
+  // Keep its real listener lifecycle in a fresh process on every platform.
+  "codex-integration/active-registry-admission.test.ts",
   "update/update-stop-first.test.ts",
   // Relays a 50 MiB WebSocket frame end to end against a 15s deadline, so its result is a
   // measurement of the whole process, not of the relay. On a healthy 3-CPU macOS runner the
@@ -381,24 +396,26 @@ export const SERIAL_FULL_SUITE_FILES = [
   // changing. Quarantining it here is what keeps it a test of the relay instead of a test of
   // its neighbours.
   "server/server-live.test.ts",
-  // Aborted-body inspection and server teardown have a fixed 30s budget; under the four-worker
-  // lane the abort case can spend that entire budget despite passing in ~17s in isolation.
-  "server/server-auth.test.ts",
   // These exercise the default-home service authority, shared by parallel Bun workers.
   // A fresh process/home prevents another file's authority from becoming this fixture's input.
   "service/service-ownership-state.test.ts",
   "service/service-sqlite-home.test.ts",
   "service/service.test.ts",
-  // These also read or mutate service/native-integration ownership state and are stable alone,
-  // but race under the four-worker full-suite lane with neighbouring authority fixtures.
   "service/service-claim.test.ts",
   "service/service-wsl-home-ownership.test.ts",
+  // CLI help/models spawn synchronous Bun children with bounded deadlines. Under the
+  // long-lived four-file pool, unrelated neighbours can delay those children enough
+  // to turn healthy sub-second CLI exits into ETIMEDOUT. Fresh one-worker lanes keep
+  // these assertions about CLI behavior rather than scheduler contention.
+  "cli/cli-help.test.ts",
+  "cli/cli-models.test.ts",
+  // These also spawn bounded subprocesses or exercise real cross-process/config locks.
+  // They pass quickly in fresh processes but hit their own deadlines under the long-lived
+  // parallel pool, so keep the assertions about product behavior rather than host contention.
+  "cli/cli-provider.test.ts",
+  "routing/combo-management-api.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
-  // The scrub suite has a 5s per-test deadline and completes in ~2.6s isolated, but can exceed
-  // that deadline under the four-worker full-suite lane. Keep it a namespace-scrub assertion,
-  // not a host-load benchmark.
-  "responses/responses-self-named-namespace-scrub.test.ts",
 ] as const;
 
 type SerialLaneBasename = (typeof SERIAL_FULL_SUITE_FILES)[number] extends infer P

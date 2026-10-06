@@ -45,6 +45,7 @@ import {
 } from "../../scripts/test-run-lock";
 import {
   recoverStaleTestTempArtifacts,
+  removeOwnedTestTempRoot,
   removeTestTempTree,
   TEST_TEMP_OWNER_FILE,
   TEST_TEMP_RECOVERY_AGE_MS,
@@ -513,6 +514,26 @@ describe("Windows test TEMP recovery", () => {
     }
   });
 
+  test("exact owned-root cleanup refuses live, mismatched and linked trees", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "opencodex-recovery-fixture-"));
+    const owned = join(tempRoot, "opencodex-test-Ab12Cd");
+    const linked = join(tempRoot, "opencodex-test-Cc22Dd");
+    const target = join(tempRoot, "target");
+    mkdirSync(owned); mkdirSync(linked); mkdirSync(target);
+    ownRoot(owned, Date.now(), 424242);
+    ownRoot(linked, Date.now(), 434343);
+    symlinkSync(target, join(linked, "redirect"), process.platform === "win32" ? "junction" : "dir");
+    try {
+      expect(removeOwnedTestTempRoot(owned, 424242, { processIsAlive: () => true })).toBe(false);
+      expect(removeOwnedTestTempRoot(owned, 7, { processIsAlive: () => false })).toBe(false);
+      expect(removeOwnedTestTempRoot(linked, 434343, { processIsAlive: () => false })).toBe(false);
+      expect(removeOwnedTestTempRoot(owned, 424242, { processIsAlive: () => false })).toBe(true);
+      expect(existsSync(owned)).toBe(false);
+      expect(existsSync(linked)).toBe(true);
+      expect(existsSync(target)).toBe(true);
+    } finally { removeTreeWithRetry(tempRoot); }
+  });
+
   test("retries transient release races and preserves terminal failures", () => {
     let attempts = 0;
     const sleeps: number[] = [];
@@ -573,6 +594,40 @@ describe("bun test argv", () => {
     for (const value of ["", "-1", "59999", "3600001", "Infinity", "1e6", "900000.5"]) {
       expect(() => resolveBunTestPlan([], undefined, { OCX_TEST_MAIN_TIMEOUT_MS: value })).toThrow("OCX_TEST_MAIN_TIMEOUT_MS");
     }
+  });
+
+  test("deadline- and lock-sensitive CLI/routing fixtures stay out of the shared pool", () => {
+    const plan = resolveBunTestPlan([]);
+    for (const file of [
+      "cli/cli-provider.test.ts",
+      "routing/combo-management-api.test.ts",
+    ]) {
+      const name = basename(file);
+      expect(plan[0]?.args).toContain(`**/${name}`);
+      expect(plan.find(lane => lane.label === name)?.args).toEqual([
+        "--isolate", "--parallel=1", `./tests/${file}`,
+      ]);
+    }
+  });
+
+  test("self-contained routing and lease fixtures remain in the parallel pool", () => {
+    const plan = resolveBunTestPlan([]);
+    for (const file of [
+      "routing/routing-profile-management-editor.test.ts",
+      "update/update-restart-lease.test.ts",
+    ]) {
+      const name = basename(file);
+      expect(plan[0]?.args).not.toContain("**/" + name);
+      expect(plan.find(lane => lane.label === name)).toBeUndefined();
+    }
+  });
+
+  test("server admission fixtures finish in a dedicated process", () => {
+    const plan = resolveBunTestPlan([]);
+    expect(plan[0]?.args).toContain("**/active-registry-admission.test.ts");
+    expect(plan.find(lane => lane.label === "active-registry-admission.test.ts")?.args).toEqual([
+      "--isolate", "--parallel=1", "./tests/codex-integration/active-registry-admission.test.ts",
+    ]);
   });
 
   test("serial lanes override caller parallelism without changing the main lane", () => {
@@ -819,6 +874,8 @@ describe("bun test argv", () => {
         });
 
         expect(result.exitCode).toBe(outcome === "pass" ? 0 : 1);
+        const deadline = Date.now() + 2_000;
+        while (readdirSync(sentinelTemp).length > 0 && Date.now() < deadline) Bun.sleepSync(25);
         expect(readdirSync(sentinelTemp)).toEqual([]);
       } finally {
         removeTreeWithRetry(fixtureRoot);
@@ -1448,4 +1505,128 @@ describe("ensureGuiDependencies", () => {
 
     expect(result).toEqual({ kind: "failed", detail: "lockfile had changes" });
   });
+});
+
+
+describe("bare test janitor parent lifetime", () => {
+  function ownedFixture(ownerPid: number) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "opencodex-test-")));
+    writeFileSync(join(root, TEST_TEMP_OWNER_FILE), JSON.stringify({
+      schemaVersion: 1, kind: "opencodex-test-root", root, createdAtMs: Date.now(), pid: ownerPid,
+    }), { mode: 0o600 });
+    writeFileSync(join(root, "fixture.txt"), "owned fixture", { mode: 0o600 });
+    return root;
+  }
+  function startJanitor(root: string, ownerPid: number, fastReapClock = false) {
+    const moduleUrl = new URL("../../scripts/test-temp-janitor.ts", import.meta.url).href;
+    const clock = "Date.now=()=>0; setTimeout(()=>{ Date.now=()=>600001; },20).unref();";
+    const reapClock = fastReapClock
+      ? "let reapCalls=0; performance.now=()=>reapCalls++===0?0:600001;"
+      : "";
+    return Bun.spawn([process.execPath, "--eval",
+      `process.argv=[process.execPath,'janitor',${JSON.stringify(root)},${JSON.stringify(String(ownerPid))}]; ${clock}${reapClock} await import(${JSON.stringify(moduleUrl)});`],
+    { stdin: "pipe", stdout: "ignore", stderr: "pipe", env: { PATH: process.env.PATH ?? "" } });
+  }
+  async function boundedExit(child: ReturnType<typeof startJanitor>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([child.exited, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("janitor did not settle after owner/pipe closure")), 2500);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  test("an elapsed wall-clock budget cannot retire the janitor before its owner", async () => {
+    const owner = Bun.spawn([process.execPath, "--eval", "setInterval(() => {}, 1000)"],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+    const root = ownedFixture(owner.pid);
+    const janitor = startJanitor(root, owner.pid);
+    let settled = false;
+    void janitor.exited.then(() => { settled = true; });
+    try {
+      await Bun.sleep(200);
+      expect(settled, "the parent pipe, not elapsed wall time, owns the monitor lifetime").toBe(false);
+      expect(existsSync(root)).toBe(true);
+      owner.kill("SIGTERM");
+      await owner.exited;
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(0);
+      expect(await new Response(janitor.stderr).text()).toBe("");
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      if (owner.exitCode === null) owner.kill("SIGKILL");
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await Promise.all([owner.exited, janitor.exited]);
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+  test("early parent-pipe closure never authorizes deleting a still-live owner root", async () => {
+    const root = ownedFixture(process.pid);
+    const janitor = startJanitor(root, process.pid, true);
+    try {
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(0);
+      expect(existsSync(root)).toBe(true);
+      expect(readFileSync(join(root, "fixture.txt"), "utf8")).toBe("owned fixture");
+    } finally {
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await janitor.exited;
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+  test("the lifetime pipe carries no commands or payload and unexpected bytes fail closed", async () => {
+    const root = ownedFixture(process.pid);
+    const janitor = startJanitor(root, process.pid, true);
+    try {
+      janitor.stdin.write("unexpected");
+      janitor.stdin.end();
+      expect(await boundedExit(janitor)).toBe(2);
+      expect(existsSync(root)).toBe(true);
+    } finally {
+      if (janitor.exitCode === null) janitor.kill("SIGKILL");
+      await janitor.exited;
+      removeTreeWithRetry(root);
+    }
+  }, 10_000);
+});
+
+
+describe("proxy environment fixture boundaries", () => {
+  const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+
+  test("a test environment excludes inherited proxy settings without mutating its caller", () => {
+    const source = { ...Object.fromEntries(proxyKeys.map(key => [key, "fixture-value"])), PATH: process.env.PATH, FIXTURE_KEEP: "keep" };
+    const isolated = createIsolatedTestEnvironment(source);
+    try {
+      for (const key of proxyKeys) {
+        expect(isolated.env[key]).toBeUndefined();
+        expect(source[key as keyof typeof source]).toBe("fixture-value");
+      }
+      expect(isolated.env.PATH).toBe(source.PATH);
+      expect(isolated.env.FIXTURE_KEEP).toBe("keep");
+    } finally { isolated.cleanup(); }
+  });
+
+  test("the real per-file preload clears proxy residue before a reused Bun worker starts its next fixture", async () => {
+    const root = mkdtempSync(join(tmpdir(), "opencodex-proxy-boundary-"));
+    const config = join(root, "bunfig.toml");
+    writeFileSync(config, `[test]\npreload = [${JSON.stringify(repoPath("tests", "preload.ts"))}]\n`);
+    for (let i = 0; i < 8; i++) {
+      const source = i % 2 === 0
+        ? `const keys=${JSON.stringify(proxyKeys)}; test("fixture explicitly configures its own proxy",async()=>{const old=Object.fromEntries(keys.map(k=>[k,process.env[k]]));try{for(const key of keys)process.env[key]=key.toLowerCase()==='no_proxy'?'fixture.invalid':'http://proxy.example:8080';await Bun.sleep(30);expect(process.env.HTTP_PROXY).toBe('http://proxy.example:8080');}finally{for(const key of keys){if(old[key]===undefined)delete process.env[key];else process.env[key]=old[key];}}});`
+        : `const keys=${JSON.stringify(proxyKeys)}; test("next file gets no stale proxy",()=>{for(const key of keys)expect(process.env[key]).toBeUndefined();console.log('FIXTURE_PROXY_BOUNDARY_OK');});`;
+      writeFileSync(join(root, `${i.toString().padStart(2, "0")}-proxy.test.ts`), `import {test,expect} from "bun:test";\n${source}\n`);
+    }
+    try {
+      const runId = process.env[TEST_RUN_ID_ENV]!;
+      const result = await runTestLane(
+        { label: "proxy boundary fixture", args: ["--isolate", "--parallel=4", "--config", config, root], timeoutMs: INTERNAL_DEADLINE_MS },
+        runId, resolveInheritedTestRunLock({ wrappedRunId: runId, env: process.env }), true,
+        { stdout: () => {}, stderr: () => {} },
+      );
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.output).toMatch(/8 pass/);
+      expect(result.output).toMatch(/0 fail/);
+      expect(result.output.match(/FIXTURE_PROXY_BOUNDARY_OK/g)).toHaveLength(4);
+    } finally { removeTreeWithRetry(root); }
+  }, SPAWN_BUDGET_MS);
 });

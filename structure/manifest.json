@@ -157,6 +157,7 @@
       "scope": "Request-copy and stream-buffer byte accounting shared by parsing, SSE rewriting, the adapters, and the translator budget.",
       "documents": [
         "src/adapters/",
+        "src/chat/",
         "src/lib/",
         "src/server/"
       ]
@@ -198,7 +199,16 @@
       ]
     },
     {
-      "path": "transports/responses-spend.md",
+        "path": "transports/policy-fallback.md",
+        "tier": 3,
+        "title": "Policy Candidate Fallback",
+        "scope": "Original policy authorization, concrete candidate retries and physical destination deduplication.",
+        "documents": [
+          "src/server/"
+        ]
+      },
+      {
+        "path": "transports/responses-spend.md",
       "tier": 3,
       "title": "Responses Spend Reservations",
       "scope": "Credential-hop and durable spend reservations, and what a spent budget tells the client.",
@@ -234,7 +244,7 @@
       "path": "data-planes/images.md",
       "tier": 3,
       "title": "Images Data Plane",
-      "scope": "Standalone image generation and edit relay.",
+      "scope": "Standalone image generation/edit relay and local hosted Responses image display.",
       "documents": [
         "src/server/"
       ]
@@ -267,6 +277,13 @@
       ]
     },
     {
+      "path": "providers/anthropic-account-thresholds.md",
+      "tier": 4,
+      "title": "Anthropic Account Thresholds",
+      "scope": "Account-owned usage thresholds, inheritance, routing boundaries and durable policy changes.",
+      "documents": ["src/oauth/"]
+    },
+    {
       "path": "providers-and-adapters.md",
       "tier": 4,
       "title": "Providers And Adapters",
@@ -281,6 +298,27 @@
         "src/server/",
         "src/types/",
         "src/web-search/"
+      ]
+    },
+    {
+      "path": "providers/jev-decision.md",
+      "tier": 4,
+      "title": "JEV Decision Routing",
+      "scope": "JEV Combo decision methods (TypeSafe, self-hosted System One rows, opencodex models), the decision request path, dashboard surfaces, and the content-free statistics projection.",
+      "documents": [
+        "src/combos/",
+        "src/server/",
+        "src/usage/"
+      ]
+    },
+    {
+      "path": "providers/anthropic-account-pool.md",
+      "tier": 4,
+      "title": "Anthropic Account Pool",
+      "scope": "Anthropic OAuth account pause, model routes, and quota labels.",
+      "documents": [
+        "src/oauth/",
+        "src/providers/"
       ]
     },
     {
@@ -346,6 +384,7 @@
       "scope": "Cross-vendor Chat Completions behavior: reasoning, tool results, structured output, parallel tools.",
       "documents": [
         "src/adapters/",
+        "src/chat/",
         "src/responses/"
       ]
     },
@@ -376,6 +415,17 @@
       "documents": [
         "src/lab/",
         "src/server/index.ts"
+      ]
+    },
+    {
+      "path": "cli-management.md",
+      "tier": 5,
+      "title": "CLI management and discovery",
+      "scope": "Terminal help and capability metadata, management-client output and the generated operating reference.",
+      "documents": [
+        "src/cli/",
+        "scripts/generate-ocx-skill-surface.ts",
+        "skills/ocx/"
       ]
     },
     {
@@ -414,9 +464,21 @@
       "title": "Client Integrations",
       "scope": "Third-party client config ownership, snapshots, refresh, disable, and restore.",
       "documents": [
+        "src/cli/",
         "src/clients/",
         "src/integrations/",
         "src/lib/"
+      ]
+    },
+    {
+      "path": "clients/chatgpt-desktop.md",
+      "tier": 5,
+      "title": "ChatGPT Desktop",
+      "scope": "Experimental macOS app-server stdout shim, opt-in launch, restore and failure boundaries.",
+      "documents": [
+        "src/chatgpt/",
+        "src/cli/",
+        "src/codex/"
       ]
     },
     {
@@ -447,10 +509,20 @@
       "title": "Background Service And Sidecars",
       "scope": "Service install/repair, platform launchers, tray, and sidecar processes.",
       "documents": [
+        "src/lib/",
         "src/server/",
         "src/service-manager-probe.ts",
         "src/sidecar/",
         "src/update/"
+      ]
+    },
+    {
+      "path": "ops/plugins.md",
+      "tier": 6,
+      "title": "Local Plugins",
+      "scope": "Plugin loading from OPENCODEX_HOME/plugins and the upstream rewrite slot plugins attach to.",
+      "documents": [
+        "src/plugins/"
       ]
     },
     {

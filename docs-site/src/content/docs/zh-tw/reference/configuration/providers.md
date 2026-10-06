@@ -60,7 +60,7 @@ ocx models provider openrouter on
 | --- | --- | --- |
 | `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`ollama-native`、`azure-openai`（或別名 `azure`）之一。 |
 | `baseUrl` | `string` | 上游 API base URL。多數內建固定端點忽略不符；碰撞安全的金鑰預設保留較舊的同名自訂目的地。 |
-| `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | 選用的用戶端出站請求啟動節流，與上游用量、計費及限流指標彼此獨立。供應商限制適用於所有模型，`models` 依上游模型精確 ID 比對且只能增加延遲。排隊等待不計入回應標頭逾時。涵蓋 HTTP、Responses WebSocket 及明確的適配器 `fetchResponse`/`runTurn` 呼叫。 |
+| `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, maxConcurrentRequests?, models? }` | 選用的用戶端出站請求啟動節流，與上游用量、計費及限流指標彼此獨立。`maxConcurrentRequests` 是限制進行中請求數的正整數，供應商或模型規則都可單獨設定此項。供應商限制適用於所有模型，`models` 依上游模型精確 ID 比對，並可增加延遲或收緊並發限制。排隊等待不計入回應標頭逾時。涵蓋 HTTP 及明確的適配器 `fetchResponse`/`runTurn` 呼叫。設定並行上限時，標準 Responses WebSocket 請求改用 HTTP/SSE，以便在回應本文完成、出錯或取消時釋放並行名額。 對包含 Cursor 的 `runTurn` 適配器，並行上限計算進行中的回合數，而非實體傳送數：同一回合內的 RunSSE 與 BidiAppend 可重疊，其他回合仍須等待。後續傳送仍遵守啟動間隔。 |
 | `responsesPath?` | `string` | Key-auth `openai-responses` 請求的相對資源路徑。必須以 `/` 開頭且不含 scheme、query 或 fragment。 |
 | `chatCompletionsPath?` | `string` | `openai-chat` 請求的相對資源路徑，為 `responsesPath` 的對應項，適用相同的路徑規則。當同一上游以不同前綴提供 Chat Completions 與 Responses 時需要此設定：按模型的 wire override 只更換適配器而不改動 `baseUrl`，否則已啟用的 Chat 請求會送往 Responses base。隨附範例為 Z.AI。 |
 | `upstreamWebsocket?` | `boolean` | 為 `openai-responses` 請求選用上游 Responses WebSocket 傳輸（預設 `false`）。僅對第一方 `https://api.openai.com/v1` 上游生效；自訂供應商端點一律使用有界 HTTP/SSE，因為 Bun 無法在配置完整訊息之前對傳入 WebSocket 訊息套用大小限制。對於規範 ChatGPT `openai` 供應商，省略此欄位會在符合條件的回合使用上游 WebSocket，`false` 會以 HTTP/SSE 傳送串流回合，`true` 會被拒絕；設為 `false` 時，原生回合中操控與注入無法使用。此欄位獨立於用戶端 `websockets` 設定，且不會變更端點或認證資料。一般 HTTP 仍使用 SSE；非 Responses 路徑與 `openai-chat` 請求仍使用 HTTP。 |
@@ -107,7 +107,7 @@ ocx models provider openrouter on
 | `parallelToolCalls?` | `boolean` | 切換平行工具呼叫。OpenAI Chat 預設開啟；非 chat adapter 僅在明確 `true` 時廣告。 |
 | `responsesItemIdRepair?` | `{ message?: string[]; reasoning?: string[]; repairMissingTerminalIds?: boolean }` | 預設停用的下游 SSE 修復，用於精確佔位 id 與缺失的終端 id。Function-call id 永不被重寫。 |
 | `transientRetryOn5xx?` | `{ enabled?: boolean; attempts?: number }` | 僅限使用金鑰認證的 `openai-chat` 與 `openai-responses` 供應商。`authMode: "forward"` 的供應商（ChatGPT 帳號池）從不讀取此選項，維持預設重試次數。選擇性重試串流開始前的暫時性上游狀態（500、502、503、504、520、521、522）：未設定時停用；只要有此物件即啟用，除非 `enabled: false`。涵蓋初始 `Responses` 請求、終止防護續接、原生 `/v1/chat/completions`，以及 429／帳號復原的重新擷取。`attempts` 是單一請求允許傳送至上游的總次數，包含第一次（1..10，預設 3）；這是與連線重設復原共用的單一請求範圍預算，因此 `3` 表示最多只有三個實際請求會送達供應商。等待採固定 400 毫秒、上限 5 秒的指數退避，並遵循 `Retry-After`。此機制獨立於處理速率限制的 `retryOn429`；串流中的失敗絕不重播。 |
-| `retryOnReset?` | `{ enabled?: boolean; replacements?: number }` | 僅限原生 `openai-responses` 供應商，包含 `authMode: "forward"`。可選擇性地替換一次在呼叫端尚未觀察到任何內容時就失敗的傳送：未設定時停用；只要有此物件即啟用，除非 `enabled: false`。涵蓋兩個不確定階段——回應標頭抵達前連線中斷，以及標頭之後 SSE 內文只載有控制事件時中斷。canonical ChatGPT upstream WebSocket 在 create 訊框送出之後、任何 Responses 事件抵達之前關閉或出錯時，也以相同方式處理，其替換傳送改走 HTTP。只有自我完備的請求才會被替換：`store: false`、完整的 `input`、沒有 `previous_response_id`／`conversation`／`stream_id`，且僅使用由用戶端執行的工具。`replacements` 是單一邏輯請求在所有環節與所有組合子請求中可進行的替換傳送次數（1..2，預設 1）；它既不是各環節的重試次數，也不是傳送預算，因此替換傳送仍必須落在該環節既有的傳送額度之內。已經產生輸出或工具呼叫的請求，無論此值為何都不會被替換。若上游已經開始第一次推論，被替換的推論仍可能計費，因此此選項預設停用。 |
+| `retryOnReset?` | `{ enabled?: boolean; replacements?: number }` | 適用於原生 `openai-responses` 供應商（包含 `authMode: "forward"`），以及收到上游回應標頭之前的通用 Responses 轉換傳送路徑。可選擇性地替換一次在呼叫端尚未觀察到任何內容時就失敗的傳送：未設定時停用；只要有此物件即啟用，除非 `enabled: false`。涵蓋兩個不確定階段——回應標頭抵達前連線中斷，以及標頭之後 SSE 內文只載有控制事件時中斷。canonical ChatGPT upstream WebSocket 在 create 訊框送出之後、任何 Responses 事件抵達之前關閉或出錯時，也以相同方式處理，其替換傳送改走 HTTP。只有自我完備的請求才會被替換：`store: false`、完整的 `input`、沒有 `previous_response_id`／`conversation`／`stream_id`，且僅使用由用戶端執行的工具。`replacements` 是單一邏輯請求在所有環節與所有組合子請求中可進行的替換傳送次數（1..2，預設 1）；它既不是各環節的重試次數，也不是傳送預算，因此替換傳送仍必須落在該環節既有的傳送額度之內。已經產生輸出或工具呼叫的請求，無論此值為何都不會被替換。若上游已經開始第一次推論，被替換的推論仍可能計費，因此此選項預設停用。 通用轉換傳送路徑的首次傳送和重建後的傳送都支援標頭之前連線重設後的替換，使用同一授權和傳送預算。配接器自行管理的傳輸，以及收到上游回應標頭之後的轉換串流故障，均不在此選項範圍內。 |
 | `autoToolChoiceOnlyModels?` | `string[]` | 其 `tool_choice` 僅接受 `auto` 或 `none` 的模型；強制選擇被降級。 |
 | `preserveReasoningContentModels?` | `string[]` | 需要在 chat 歷史中保留先前 assistant `reasoning_content` 的模型。從儀表板儲存時會保留已儲存的清單（包括 `[]`）。`PATCH /api/providers?name=<provider>` 接受陣列，或傳入 `null` 清除該欄位。將供應商改到其他轉接器、base URL 或驗證模式的儲存不會保留該清單（見下文）。 |
 | `reasoningDetailsModels?` | `string[]` | 以結構化 `reasoning_details` 陣列回傳思考內容的模型（啟用 `reasoning_split` 的 MiniMax M 系列）；串流增量為累積快照，以前綴差分處理，保留的推理以 `reasoning_details` 陣列而非 `reasoning_content` 字串重播。 |
@@ -131,17 +131,17 @@ API-key 供應商可持有字面值金鑰或環境參考。OAuth 供應商使用
 
 ### 儲存供應商時會保留什麼
 
-以既有供應商的名稱呼叫 `POST /api/providers`，會以根據請求建立的列取代已儲存的列。儀表板的新增/編輯表單無法傳送所有欄位，因此儲存時會保留請求省略的部分已儲存欄位。其中五個記錄的是某個上游的行為：`preserveReasoningContentModels`, `requiresReasoningPlaceholderModels`, `foldDeveloperRoleToSystem`, `reasoningWireFormat`, `omitReasoningEffortWithToolsModels`。
+以既有供應商的名稱呼叫 `POST /api/providers`，會以根據請求建立的列取代已儲存的列。儀表板的新增/編輯表單無法傳送所有欄位，因此儲存時會保留請求省略的部分已儲存欄位。其中八個記錄的是某個上游的行為：`preserveReasoningContentModels`, `requiresReasoningPlaceholderModels`, `foldDeveloperRoleToSystem`, `reasoningWireFormat`, `omitReasoningEffortWithToolsModels`, `retryOn429`, `transientRetryOn5xx`, `retryOnReset`。
 
-| 儲存 | 五項設定 | 已儲存的 `apiKeyPool` |
+| 儲存 | 八項設定 | 已儲存的 `apiKeyPool` |
 | --- | --- | --- |
 | 目的地相同，欄位省略 | 保留已儲存的值，包括明確的 `[]` 或 `false` | 保留 |
 | 新目的地，欄位省略 | 不保留；可能套用新目的地的登錄檔預設值 | 不保留 |
 | 請求中傳送了該欄位 | 請求中的值 | 請求中的值 |
 
-目的地指轉接器、base URL（比較協定與主機時不分大小寫，忽略結尾斜線），以及請求有指定時的驗證模式。把供應商移到其他目的地時，描述舊上游的五項設定和為舊上游核發的金鑰池都不會帶過去。儲存絕不會把舊列的其餘部分合併進新列。
+目的地指轉接器、base URL（比較協定與主機時不分大小寫，忽略結尾斜線），以及請求有指定時的驗證模式。把供應商移到其他目的地時，描述舊上游的八項設定和為舊上游核發的金鑰池都不會帶過去。儲存絕不會把舊列的其餘部分合併進新列。
 
-`PATCH /api/providers?name=<provider>` 只修改它指定的欄位，無論目的地為何都保留其他所有已儲存欄位。它接受全部五項設定，`null` 表示清除。對於兩個推理清單，空陣列會作為明確的退出選項儲存，而不會被刪除。
+`PATCH /api/providers?name=<provider>` 只修改它指定的欄位，無論目的地為何都保留其他所有已儲存欄位。它接受全部八項設定，`null` 表示清除。對於兩個推理清單，空陣列會作為明確的退出選項儲存，而不會被刪除。
 
 ## 供應商診斷對外安全
 
@@ -182,7 +182,7 @@ API-key 供應商可持有字面值金鑰或環境參考。OAuth 供應商使用
 | `anthropicAccountPool.quotaWindow?` | `"five-hour" \| "weekly" \| "max-utilization"` | `"five-hour"` | 使用量型帳號選擇所採用、由供應商回報並快取的用量列。`five-hour` 保留原有行為。`weekly` 使用每週用量列，並在仍有其他可用帳號時略過 5 小時用量已用盡的帳號；若沒有其他帳號，則退回使用這些帳號。`max-utilization` 使用已知值中的最高值，因此每週用量尚未取得時仍可使用 5 小時用量；兩者都未知時，帳號遵循 unknown 用量排序。已知用量排在 unknown 之前，但若所有可用帳號都是 unknown，仍會依可用順序選出一個。完成前述較低 5 小時用量的同分判定後，完全相同時也保留可用順序。不會主動重新平衡健康且已有 affinity 的 session。在分配新 session 與符合條件的 429 替代後進行路由復原時，`quota` 直接依此視窗排序可用候選帳號；`fill-first` 依此視窗的門檻與用盡規則按穩定順序前進；`round-robin` 忽略此設定。冷卻狀態、容錯移轉上限與重新驗證資格仍是獨立的本機狀態。每個帳號的每週用量只有在 dashboard 的供應商頁面完成查詢後才可得知。 |
 | `anthropicAccountPool.stickyLimit?` | `number` | `1` | 在一次 round-robin 選擇上保留的成功新 session 綁定。範圍 1–100。 |
 
-啟用時，429 記錄來自 `Retry-After` 或預設 backoff 的有界冷卻，並可能在請求內輪換。親和性為行程本地且有界。憑證 401/403 將帳號標記為需要重新認證。若所有合格帳號都在冷卻，客戶端收到附帶已知 `Retry-After` 的 429，而非認證錯誤。
+只有共用5小時或每週額度明確拒絕的429才會冷卻帳號並切換。暫時速率限制保留親和性，只暫停該帳號的請求准入；每個請求最多一次短暫的同帳號重試及一次合格兄弟帳號切換。沒有依據回應標頭的429只允許一次同帳號短暫重試，不冷卻帳號，也不產生Retry-After。預設單帳號行為不變。Fable專屬拒絕不限制Sonnet；手動選擇和親和性均檢查請求模型的共用與家族額度。被動家族資訊在30分鐘或已知重設時到期，由一個服務請求依序重新驗證。用量門檻仍是軟偏好，全部候選耗盡時保留原有退回機制，不是用量或帳單硬上限。親和性為行程本地且有界。Token 更新失敗保留原有重新認證規則。已分類的訂閱或帳號計費 403 可在輸出前切換帳號，並按 `Retry-After` 或預設十分鐘冷卻；一般權限拒絕不切換。若所有合格帳號都在冷卻，客戶端收到附帶已知 `Retry-After` 的 429，而非認證錯誤。
 
 :::caution[實驗性]
 除非你了解 Anthropic 帳號政策風險，否則保持停用。不確定時偏好手動 `ocx account use anthropic <id>` 切換。
@@ -292,6 +292,8 @@ Cursor 伺服器驅動的本機工具預設停用。Codex 繼續使用其自身�
 ## xAI Grok 4.7
 
 Grok 4.7 在 OAuth 上支援 Fast，提供 `low` / `medium` / `high` / `xhigh`，context window 為 500,000。依 [xAI 標準價格](https://docs.x.ai/developers/models/grok-4.7)，每百萬 token 的輸入、快取輸入及輸出費用分別為 $2.00、$0.50 及 $6.00；context 達 200,000 token 時分別為 $4.00 / $1.00 / $12.00。
+
+未明確設定供應商的 `fastWire` 時，透過 `allowedModels` 限制的 opencodex API 金鑰必須允許 `xai/grok-4.7-build-fast`（或不含供應商前綴的模型 ID），才能傳送 OAuth Fast 請求。僅允許 `xai/grok-4.7` 不會授予此 Fast 模型的權限。僅允許 Fast 模型的金鑰可以使用該模型；一般請求或關閉 Fast 時仍需允許 `xai/grok-4.7`。明確設定 `fastWire` 時，應允許實際傳送的模型。例如，`service-tier` 方式保留 `xai/grok-4.7`，因此需要該模型的權限。供應商限制仍然有效。
 
 ## OpenRouter 供應商路由
 
@@ -431,3 +433,7 @@ Vercel AI Gateway 可在多個底層推論供應商之間路由一個模型。`v
   "visionSidecar": { "enabled": true }
 }
 ```
+
+### `anthropicAccountPool.routes`
+
+`anthropicAccountPool.routes` 將模型綁定至已儲存的 Anthropic OAuth 帳戶 ID。啟用帳戶池後，區分大小寫的 `match` 萬用模式依順序採用第一個符合的規則，限制首次選擇與 429 重試。僅當該規則沒有可用帳戶時，`fallback: true` 才會回退到一般帳戶池。

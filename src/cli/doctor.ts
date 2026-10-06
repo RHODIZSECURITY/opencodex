@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics } from "../config";
 import { readPid } from "../config/process-state";
-import { probeUncleanExitState } from "./status";
+import { fetchLiveStartupHealth, probeUncleanExitState, selectStatusStartupHealth } from "./status";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import { directLocalHttpFetch } from "../server/direct-local-http";
 import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
@@ -33,6 +33,7 @@ import {
 } from "../codex/subagent-model-fallback";
 import { readCatalog, readCodexCatalogPath, readConfiguredDefaultModel } from "../codex/catalog/parsing";
 import { diagnoseCodexShim, findCodexOnPath, isWindowsInteropDir, type CodexShimDiagnostic } from "../codex/shim";
+import { overlayActivationHint } from "../codex/shim-overlay";
 import { providerTableString, rootTomlString } from "../codex/injected-marker";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import {
@@ -61,6 +62,7 @@ import {
   formatLegacyCodexConfigKeyDiagnosticsForDoctor,
 } from "../codex/legacy-config-keys";
 import { collectStartupHealth, formatStartupRoutingDetail, startupHealthSummary } from "../codex/autostart-health";
+import { collectDesktopSystemProxy, formatDesktopSystemProxyLines } from "../claude/desktop-system-proxy";
 import {
   displayCodexRuntimePath,
   effortClampAppliesToRuntime,
@@ -480,10 +482,18 @@ export function collectProviderApiKeyDiagnostics(
 
 export type CodexEnvKeyReadinessDiagnostic = {
   envName: string;
-  shimState: "missing" | "unhealthy";
+  shimState: "missing" | "unhealthy" | "inactive";
   detail: string;
   action: string;
 };
+
+/** Shell activation and legacy migration are independent of admission-token readiness. */
+export function formatCodexShimDoctorLines(shim: CodexShimDiagnostic, platform = process.platform): string[] {
+  if (platform === "win32" || !shim.installed) return [];
+  const inactiveOverlay = shim.runnable === true && shim.active === false;
+  const healthyLegacy = shim.healthy && shim.runnable === undefined;
+  return inactiveOverlay || healthyLegacy ? shim.summary.split("\n").map(line => `       ${line}`) : [];
+}
 
 /** Warn when routed Codex cannot obtain its configured admission token at launch. */
 export function collectCodexEnvKeyReadiness(
@@ -491,17 +501,22 @@ export function collectCodexEnvKeyReadiness(
   env: EnvMap,
   shim: CodexShimDiagnostic,
   serviceTokenPresent: boolean,
+  shimActivationShown = false,
 ): CodexEnvKeyReadinessDiagnostic | null {
   if (!configText || rootTomlString(configText, "model_provider") !== "opencodex") return null;
   const envName = providerTableString(configText, "opencodex", "env_key")?.trim();
   const envValue = envName ? ownEnvValue(env, envName) : undefined;
   if (!envName || envValue?.trim() || shim.healthy || !serviceTokenPresent) return null;
-  const shimState = shim.installed ? "unhealthy" : "missing";
+  const shimState = shim.runnable && shim.active === false ? "inactive" : shim.installed ? "unhealthy" : "missing";
   return {
     envName,
     shimState,
     detail: `Codex uses env_key ${envName}, but that variable is unset and the OpenCodex shim is ${shimState}; the service token file exists but plain Codex does not load it`,
-    action: `Run 'ocx codex-shim install' to repair launch-time token injection, or export ${envName} in the process that starts Codex`,
+    action: shimState === "inactive"
+      ? shimActivationShown
+        ? `Activate the PATH shim as shown under Codex restart safety, or export ${envName} in the process that starts Codex`
+        : `${overlayActivationHint()} Or export ${envName} in the process that starts Codex`
+      : `Run 'ocx codex-shim install' to repair launch-time token injection, or export ${envName} in the process that starts Codex`,
   };
 }
 
@@ -1348,16 +1363,27 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     try { return readFileSync(codexConfigPath, "utf8"); } catch { return null; }
   })();
   const serviceTokenPresent = Boolean(readInstalledServiceToken()?.trim());
+  const codexShim = diagnoseCodexShim();
+  const codexShimLines = formatCodexShimDoctorLines(codexShim);
   const codexEnvKeyReadiness = collectCodexEnvKeyReadiness(
     codexConfigText,
     process.env,
-    diagnoseCodexShim(),
+    codexShim,
     serviceTokenPresent,
+    codexShimLines.length > 0,
   );
-  const startup = collectStartupHealth(doctorConfig);
+  // Use the same attested live startup verdict as `ocx status` when the proxy is already
+  // identity-verified. A shell-local systemd probe can be a false negative for a system-wide
+  // service because the shell does not inherit the manager-owned environment.
+  const live = await findLiveProxy({
+    configFn: () => ({ port: doctorConfig.port, hostname: doctorConfig.hostname }),
+  });
+  const liveStartup = live ? await fetchLiveStartupHealth(live) : null;
+  const startup = selectStatusStartupHealth(liveStartup, () => collectStartupHealth(doctorConfig));
   console.log("\nCodex restart safety");
   console.log(`  ${startup.rebootSafe ? "ok " : "!! "} ${startupHealthSummary(startup)}`);
   console.log(`       ${formatStartupRoutingDetail(startup)}`);
+  for (const line of codexShimLines) console.log(line);
 
   console.log("\nCodex runtime selection");
   {
@@ -1393,12 +1419,6 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     }
   }
 
-  // #618: identity-verified liveness first so pid-file absence does not hide a live service.
-  // Reuse the diagnostics config already loaded above so doctor stays read-only on malformed JSON.
-  const live = await findLiveProxy({
-    configFn: () => ({ port: doctorConfig.port, hostname: doctorConfig.hostname }),
-  });
-
   // Mirrors `ocx status` through the same comparison rather than a second implementation:
   // two diagnostics disagreeing about whether an install is stale is worse than one (#2701).
   // No extra probe -- findLiveProxy already carried the version back.
@@ -1426,6 +1446,14 @@ export async function runDoctor(args: string[] = []): Promise<void> {
 
   console.log("\nConfigured proxy (value hidden)");
   console.log(`  ${configuredProxy.present ? "set    " : "unset  "} ${configuredProxy.key} (${configuredProxy.source}; ${configuredProxy.detail})`);
+
+  // Observe-only and warning-level: a bypassed Desktop first-party install still serves the
+  // CLI and every non-Desktop client, so this never records a doctor failure.
+  const desktopSystemProxyLines = formatDesktopSystemProxyLines(collectDesktopSystemProxy(doctorConfig));
+  if (desktopSystemProxyLines.length > 0) {
+    console.log("\nClaude Desktop first-party vs Windows system proxy");
+    for (const line of desktopSystemProxyLines) console.log(line);
+  }
 
   const providerApiKeys = collectProviderApiKeyDiagnostics(doctorConfig.providers);
   console.log("\nProvider API keys (value hidden)");

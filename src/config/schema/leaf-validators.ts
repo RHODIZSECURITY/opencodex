@@ -10,6 +10,7 @@ import {
   normalizeNonBlankStringArray,
   normalizeAutoReviewModelOverrides,
   modelCapabilitiesConfigError,
+  contextTierRecordConfigError,
   mergeModelCapabilities,
 } from "../provider-validation";
 import { isValidCodexAccountNamespaceTarget } from "../../codex/account-namespace-match";
@@ -40,7 +41,11 @@ import {
   isHostedToolUnsupportedForModel,
 } from "../../responses/hosted-tool-policy";
 import { getConfigDir } from "../paths";
-import { COMPACTION_TRIGGERS } from "./compaction-triggers";
+import { COMPACTION_TRIGGERS, validCompactionSourceModels } from "./compaction-triggers";
+
+// The chatgptDesktop leaf lives in its own zod-only module so the `ocx chatgpt` command can explain
+// a dropped block without loading this file's provider and account validators.
+export { chatgptDesktopConfigIssue, chatgptDesktopSchema } from "./chatgpt-desktop";
 
 /** One definition of "usable secret", shared by the schema and the warnings. */
 export function isUsableApiKeySecret(value: unknown): value is string {
@@ -49,10 +54,27 @@ export function isUsableApiKeySecret(value: unknown): value is string {
 
 export const compactionRoutingSchema = z.object({
   model: z.string().trim().min(1),
+  sourceModels: z.array(z.string()).refine(validCompactionSourceModels,
+    "sourceModels requires unique exact selectors or provider/* patterns").optional(),
   reasoningEffort: z.string().refine(value => pinnedReasoningEffortConfigError(value) === null).optional(),
   triggers: z.array(z.enum(COMPACTION_TRIGGERS)).nonempty()
     .refine(values => new Set(values).size === values.length, "triggers must not repeat a value")
     .optional(),
+}).strict();
+
+/**
+ * One phase of Codex's memory pipeline. A present phase must name a model: the GUI's "Off"
+ * removes the phase instead of blanking it, so an empty entry would only ever come from a
+ * hand-edited file, where failing the write is the honest answer.
+ */
+export const memoryModelSettingSchema = z.object({
+  model: z.string().trim().min(1),
+  reasoningEffort: z.string().refine(value => pinnedReasoningEffortConfigError(value) === null).optional(),
+}).strict();
+
+export const memoryModelsSchema = z.object({
+  extract: memoryModelSettingSchema.optional(),
+  consolidation: memoryModelSettingSchema.optional(),
 }).strict();
 
 /**
@@ -77,7 +99,7 @@ export const retryOn429PolicySchema = z.object({
  * both retry layers, so the ceiling is deliberately lower than `retryOn429`'s: 10 total sends
  * against an already-failing provider is already generous.
  */
-const transientRetryOn5xxPolicySchema = z.object({
+export const transientRetryOn5xxPolicySchema = z.object({
   enabled: z.boolean().optional(),
   attempts: z.number().int().min(1).max(10).optional(),
 }).strict();
@@ -97,18 +119,23 @@ const requestPacingRuleSchema = z.object({
   // Keep the RPM-derived timer within the same one-hour bound as minIntervalMs.
   requestsPerMinute: z.number().min(1 / 60).max(60_000).optional(),
   minIntervalMs: z.number().int().min(1).max(3_600_000).optional(),
-}).strict().refine(value => value.requestsPerMinute !== undefined || value.minIntervalMs !== undefined, {
-  message: "request pacing rules need requestsPerMinute or minIntervalMs",
+  maxConcurrentRequests: z.number().int().min(1).optional(),
+}).strict().refine(value => value.requestsPerMinute !== undefined
+  || value.minIntervalMs !== undefined
+  || value.maxConcurrentRequests !== undefined, {
+  message: "request pacing rules need requestsPerMinute, minIntervalMs, or maxConcurrentRequests",
 });
 
 const requestPacingSchema = z.object({
   enabled: z.boolean(),
   requestsPerMinute: z.number().min(1 / 60).max(60_000).optional(),
   minIntervalMs: z.number().int().min(1).max(3_600_000).optional(),
+  maxConcurrentRequests: z.number().int().min(1).optional(),
   models: z.record(z.string().trim().min(1), requestPacingRuleSchema).optional(),
 }).strict().refine(value => value.enabled === false
   || value.requestsPerMinute !== undefined
   || value.minIntervalMs !== undefined
+  || value.maxConcurrentRequests !== undefined
   || (value.models !== undefined && Object.keys(value.models).length > 0), {
   message: "enabled request pacing needs a provider rule or model override",
 });
@@ -117,7 +144,7 @@ export function requestPacingConfigError(value: unknown): string | null {
   if (value === undefined) return null;
   const parsed = requestPacingSchema.safeParse(value);
   if (parsed.success) return null;
-  return "requestPacing must contain enabled and a valid requestsPerMinute/minIntervalMs provider rule or model overrides";
+  return "requestPacing must contain enabled and a valid requestsPerMinute/minIntervalMs/maxConcurrentRequests provider rule or model overrides";
 }
 
 /**
@@ -259,6 +286,10 @@ const providerNoProxySchema = z.unknown().superRefine((value, ctx) => {
  */
 export const providerConfigSchema = z.object({
   modelCapabilities: modelCapabilitiesSchema.optional(),
+  modelContextTiers: z.unknown().superRefine((value, ctx) => {
+    const error = contextTierRecordConfigError(value);
+    if (error) ctx.addIssue({ code: "custom", message: error });
+  }).optional().transform(value => value as OcxProviderConfig["modelContextTiers"]),
   pinnedReasoningEffort: pinnedReasoningEffortSchema.optional(),
   modelPinnedReasoningEfforts: modelPinnedEffortsSchema.optional(),
   // Validated rather than left to passthrough: an unrecognized strategy would otherwise
@@ -269,6 +300,7 @@ export const providerConfigSchema = z.object({
   autoReviewModelOverrides: autoReviewModelOverridesSchema.optional(),
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  tlsProfile: z.literal("antigravity-browser").optional(),
   alias: z.string().optional(),
   modelAliases: z.record(z.string(), z.string()).optional(),
   modelDisplayNames: modelDisplayNamesSchema.optional(),
@@ -292,11 +324,14 @@ export const providerConfigSchema = z.object({
   annotateEmptyToolOutputs: z.boolean().optional(),
   foldDeveloperRoleToSystem: z.boolean().optional(),
   fastWire: fastWireSchema.nullable().optional(),
+  responseTierAuthoritative: z.boolean().optional(),
   fastEnabled: z.boolean().optional(),
   supportsServiceTier: z.boolean().optional(),
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   modelSuppressSyntheticMax: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
+  preserveResponsesInputItemIds: z.boolean().optional(),
+  preserveResponsesMessageMetadata: z.boolean().optional(),
   dropResponsesReasoningItems: z.boolean().optional(),
   modelReasoningEffortsAuthoritative: z.boolean().optional(),
   decodesNativeCompactionBlobs: z.boolean().optional(),
@@ -356,6 +391,7 @@ export const providerConfigSchema = z.object({
   // accepted, persisted, and then silently resolved to the `code_mode_only` default — the
   // operator asked for shell mode, got code mode, and was told nothing (#2106).
   codexToolMode: z.enum(["code_mode_only", "shell"]).optional(),
+  projectContext: z.enum(["off", "on"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),
     reasoning: z.array(z.string().min(1)).optional(),
@@ -363,6 +399,7 @@ export const providerConfigSchema = z.object({
     repairInvalidIds: z.boolean().optional(),
   }).strict().optional(),
   responsesSnapshotRepair: z.boolean().optional(),
+  hideRawReasoning: z.boolean().optional(),
   // Invalid blocks degrade to "absent" rather than failing the whole config load: an unusable
   // bridge block must never send an operator through invalid-config recovery for an opt-in
   // feature that is off by default. The management write boundary still rejects it loudly.
@@ -370,7 +407,11 @@ export const providerConfigSchema = z.object({
   xaiResponsesXSearch: z.boolean().optional(),
   xaiResponsesDefaultVersion: z.number().int().positive().optional().catch(undefined),
   zaiResponsesDefaultVersion: z.number().int().positive().optional().catch(undefined),
-}).passthrough();
+}).passthrough().superRefine((provider, ctx) => {
+  if (provider.projectContext !== undefined && provider.adapter !== "command-code") {
+    ctx.addIssue({ code: "custom", path: ["projectContext"], message: "projectContext is supported only by the command-code adapter" });
+  }
+});
 
 
 export { providerRelativeSendPathConfigError } from "../provider-relative-send-path";
@@ -938,6 +979,27 @@ export const clientConnectionSchema = z.object({
  */
 export const codexPoolSchema = z.object({
   excludedPlans: z.array(z.string().trim().min(1)).optional(),
+  startIdleWindows: z.boolean().optional(),
+  lowQuotaProtection: z.object({
+    enabled: z.boolean(),
+    threshold: z.number().finite().min(1).max(100),
+    actions: z.object({
+      pause: z.boolean(),
+      notify: z.boolean(),
+    }).strict(),
+    windows: z.object({
+      short: z.boolean(),
+      weekly: z.boolean(),
+    }).strict(),
+  }).strict().superRefine((policy, ctx) => {
+    if (!policy.enabled) return;
+    if (!policy.actions.pause && !policy.actions.notify) {
+      ctx.addIssue({ code: "custom", path: ["actions"], message: "enabled low-quota protection needs an action" });
+    }
+    if (!policy.windows.short && !policy.windows.weekly) {
+      ctx.addIssue({ code: "custom", path: ["windows"], message: "enabled low-quota protection needs a window" });
+    }
+  }).optional(),
 }).strict();
 
 /**
@@ -1005,6 +1067,7 @@ export const quotaResetNotifySchema = z.object({
 
 /**
  * Catalog auto-refresh section (issue #3630).
+ * Missing section or enabled flag uses the hourly default-on scheduler.
  *
  * `.strict()` like its neighbour: a typo in an optional feature section should surface as a
  * rejected write rather than a silently ignored key that leaves the operator believing they
@@ -1048,4 +1111,11 @@ export const spendSchema = z.object({
   identity: spendScopeSchema.optional(),
   pool: spendScopeSchema.optional(),
   retentionDays: z.number().int().min(1).max(365).optional(),
+}).strict();
+
+/**
+ * Runtime skills catalog configuration (#5569).
+ */
+export const skillsConfigSchema = z.object({
+  catalog_refresh: z.enum(["per_session", "per_turn"]).optional(),
 }).strict();

@@ -1336,6 +1336,10 @@ describe("Windows service task", () => {
 });
 
 describe("launchd service plist", () => {
+  test("restarts after unsuccessful exits and stays down after a deliberate stand-down", () => {
+    expect(buildPlist()).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
+  });
+
   test("every durable launcher stamps the Bun provenance paired with the binary it baked (#848)", () => {
     const inheritedOverride = process.env.OPENCODEX_BUN_PATH;
     const inheritedSource = process.env.OCX_BUN_RUNTIME_SOURCE;
@@ -4027,6 +4031,9 @@ describe("service definitions are not world-readable", () => {
     try {
       const path = join(dir, "plist");
       writeFileSync(path, "stale", { encoding: "utf8", mode: 0o644 });
+      // The process umask may be stricter than 022 (for example 077 in hardened
+      // worker sessions), so model the legacy loose file explicitly.
+      chmodSync(path, 0o644);
       expect(modeOf(path)).toBe("644");
 
       writeServiceDefinitionFile(path, buildPlist(resolvedProxyEnv({})), "utf8");

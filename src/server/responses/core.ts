@@ -10,7 +10,7 @@ import { createTranslatorBudget } from "../../lib/translator-budget";
 import { captureExplicitOpenAiCallerAuth } from "../../providers/openai-sidecar";
 import { captureCallerDirectAuth } from "../../providers/caller-authorization";
 import { createInferenceSendBudget } from "../inference/context";
-import { finalizeOwnedTranslatorBudget } from "./core-lifetime";
+import { finalizeOwnedTranslatorBudget, finalizeAccountLease } from "./core-lifetime";
 import type { TranslatorBudget } from "../../lib/translator-budget";
 import { executeComboResponses } from "./core-combo";
 import { prepareResponsesRequest } from "./request-prepare";
@@ -27,7 +27,7 @@ import { createAdapterContinuations } from "./adapter-continuation";
 import { deliverAdapterResponse } from "./adapter-delivery";
 import { releaseUpstreamHostAdmission } from "../../codex/upstream-host-health";
 import { releaseCodexAuthContextProbeLease } from "../../codex/auth-context";
-import { genericOAuthFailoverBudgetExtension } from "../../oauth/generic-account-failover";
+import { runWithCompactionRecovery } from "./compaction-recovery";
 
 /** Public Responses entry and compatibility exports. Implementations live with their owners. */
 
@@ -43,11 +43,15 @@ export async function handleResponses(
 ): Promise<Response> {
   const ownsBudget = options.translatorBudget === undefined;
   const translatorBudget = options.translatorBudget ?? createTranslatorBudget();
+  const abortSignal = options.abortSignal ?? req.signal;
+  const accountLoad = { lease: null as import("../../oauth/kiro-account-load").AccountLease | null,
+    cancelled: abortSignal.aborted };
+  function release() { accountLoad.lease?.release(); accountLoad.lease = null; abortSignal.removeEventListener("abort", cancel); }
+  function cancel() { accountLoad.cancelled = true; release(); }
+  abortSignal.addEventListener("abort", cancel, { once: true });
   try {
-    const ownsSendBudget = options.sendBudget === undefined;
-    const response = await handleResponsesInner(req, config, logCtx, {
+    const response = await runWithCompactionRecovery(req, config, logCtx, {
       ...options,
-      credentialRosterExpansion: options.credentialRosterExpansion ?? ownsSendBudget,
       openAiSidecarAuth: options.openAiSidecarAuth === undefined
         ? captureExplicitOpenAiCallerAuth(req.headers, config) : options.openAiSidecarAuth,
       nativeCallerAuth: options.nativeCallerAuth === undefined
@@ -58,11 +62,15 @@ export async function handleResponses(
       visionDescribeTerminal: options.visionDescribeTerminal === true
         || req.headers.get("x-opencodex-vision-describe") === "1",
       translatorBudget,
+      accountLoad,
       // Once at ingress, spend observer included: a combo child inherits the parent's holder.
       sendBudget: options.sendBudget ?? createInferenceSendBudget(req, logCtx),
-    });
-    return ownsBudget ? finalizeOwnedTranslatorBudget(response, translatorBudget) : response;
+    }, handleResponsesInner);
+    const finalResponse = ownsBudget ? finalizeOwnedTranslatorBudget(response, translatorBudget) : response;
+    if (!accountLoad.lease) { release(); return finalResponse; }
+    return finalizeAccountLease(finalResponse, release);
   } catch (error) {
+    release();
     if (ownsBudget) translatorBudget.dispose();
     throw error;
   }
@@ -104,6 +112,7 @@ async function handleResponsesInner(
     if (requestState instanceof Response) return requestState;
     const transportState = await prepareResponsesTransport(requestContext, admissionState, requestState);
     if (transportState instanceof Response) return transportState;
+    options.onCompactionRecoveryRoute?.(requestState.route);
     const sidecarState = await prepareResponsesSidecarAuth(requestContext, requestState, transportState);
     if (sidecarState instanceof Response) return sidecarState;
     const responseEffects = createResponsesEffects(
@@ -112,12 +121,7 @@ async function handleResponsesInner(
       requestState,
       sidecarState,
     );
-    const sendBudgetState = createResponsesSendBudget(
-      requestContext,
-      options.credentialRosterExpansion === true
-        ? genericOAuthFailoverBudgetExtension(config, requestState.route.providerName)
-        : 0,
-    );
+    const sendBudgetState = createResponsesSendBudget(requestContext);
     if (sendBudgetState instanceof Response) return sendBudgetState;
     if ("passthrough" in transportState.adapter && transportState.adapter.passthrough && !sidecarState.routedCompaction) {
       return await executePassthroughResponse(

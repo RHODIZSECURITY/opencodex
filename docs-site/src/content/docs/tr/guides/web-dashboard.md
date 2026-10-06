@@ -51,8 +51,11 @@ zaman yukarı akışta yenilemeye zorlamaz.
   aylık, sonra 5 saatlik, sonra sağlayıcı adlı bir pencere veya ön ödemeli krediler.
 - Etiket %70 kullanımda amber rengine, %90 kullanımda kırmızıya döner.
 - Bildirilen tüm pencereleri sıfırlama saati ve okuma zamanıyla görmek için etiketin
-  üzerine gelin veya tıklayın. Sabitlenmiş bir etiketi kapatmak için Escape'e basın veya
-  başka bir yere tıklayın.
+  üzerine gelin veya klavyeyle odaklayın. Dokunmatik ekranda ilk dokunuş bu ayrıntıları gösterir.
+- Etikete tıklamak (dokunmatik ekranda ikinci dokunuş) Sağlayıcılar'da o sağlayıcının Hesaplar
+  sekmesini açar; hesaplar veya API anahtarları orada yönetilir.
+- Çubuk her zaman tek satırdır. Etiketler sığmadığında yatay kaydırın veya iki uçtaki « ve »
+  düğmelerini kullanın.
 - Kota penceresi bildirmeyen sağlayıcılar gösterilmez. Hiçbir sağlayıcı bildirmiyorsa
   çubuk gizlenir.
 - Sağ kenar, kontrol panelinin raporları en son ne zaman okuduğunu gösterir. Son okuma
@@ -159,7 +162,7 @@ için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
 
 ## Remote Hub oturumları, anahtarları ve kullanımı
 
-Pano yönetim düzlemi doğrudan client→hub model trafiğinden ayrıdır. **Integrations → API Keys** bekleyen döndürmeyi gösterir, yeni sırrı bir kez görüntüler ve açık onay veya iptal ister. Tarayıcı logout yalnızca mevcut oturumu geçersiz kılar. Bağlı kullanım hub üzerinde `apiKeyId` ile filtrelenir; bağlantı kesilince yerel kayıt kullanılır ve yansıtma yapılmaz.
+Pano yönetim düzlemi doğrudan client→hub model trafiğinden ayrıdır. **Bağlantı → API Anahtarları** bekleyen döndürmeyi gösterir, yeni sırrı bir kez görüntüler ve açık onay veya iptal ister. Tarayıcı logout yalnızca mevcut oturumu geçersiz kılar. Bağlı kullanım hub üzerinde `apiKeyId` ile filtrelenir; bağlantı kesilince yerel kayıt kullanılır ve yansıtma yapılmaz.
 
 Spawn geçersiz kılma garantisi **yerleşik** v2 rehberlik metni için geçerlidir.
 Özel bir `injectionPrompt` bu metnin yerini tamamen alır ve `{{model}}` ve

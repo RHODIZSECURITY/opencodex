@@ -189,8 +189,12 @@ function createOwnedStage(scopeDir, pkgName, deps = {}) {
       pid: process.pid,
       createdAt: (deps.now ?? Date.now)(),
     }), { flag: "wx" });
+    // npm's strict script policy plans the global tree before it creates the prefix layout, so
+    // `-g --prefix` into a bare stage fails with ENOENT on <stage>/lib (#5760). POSIX global
+    // prefixes keep packages under lib/; Windows installs into the prefix itself.
+    if (process.platform !== "win32") mkdir(join(stageRoot, "lib"));
   } catch (error) {
-    // Still empty and created by this call: remove it rather than leave an unmarked stage.
+    // Created by this call and not yet handed to npm: remove it rather than leave a partial stage.
     try { rmSync(stageRoot, { recursive: true, force: true }); } catch { /* reported by the caller */ }
     throw error;
   }
@@ -386,6 +390,7 @@ export function transactionalNpmUpdate({
   targetVersion,
   tag,
   runNpm,
+  cachePath,
   log = () => {},
   deps = {},
 }) {
@@ -428,8 +433,12 @@ export function transactionalNpmUpdate({
   // @oven/bun-* executable into bun/bin, so a successful npm exit without this narrow
   // approval leaves the staged tree intentionally incomplete. Allow only the package
   // whose executable the manifest verifies below; never broaden this to all scripts.
+  // --prefix <stage> also moves npm's globalconfig to <stage>/etc/npmrc, so a `cache=` from the
+  // operator's global npmrc would be dropped and npm would fall back to its default root. Pin
+  // the cache the pre-flight resolved and checked, so staging uses that exact root (#6288).
+  const cacheArgs = typeof cachePath === "string" && cachePath.length > 0 ? ["--cache", cachePath] : [];
   const install = runNpm([
-    "install", "-g", "--prefix", stageRoot,
+    "install", "-g", "--prefix", stageRoot, ...cacheArgs,
     "--allow-scripts=bun", "--no-audit", "--no-fund", spec,
   ]);
   if (install.status !== 0) {

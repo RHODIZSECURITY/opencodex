@@ -1,3 +1,4 @@
+import { ensureManagementClaudeIntercept, interceptStartRefusal } from "./claude-intercept-routes";
 import { persistCommittedDesktopGateway } from "../../claude/desktop-gateway-state";
 import { commitClaudeCodeBlock } from "../../claude/claude-code-block";
 /**
@@ -21,7 +22,7 @@ import { commitClaudeCodeBlock } from "../../claude/claude-code-block";
  */
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { getConfigPath, loadConfig, mutatePersistedConfig, saveConfigPreservingClaudeCode } from "../../config";
+import { adoptPersistedClaudeCode, getConfigPath, loadConfig, mutatePersistedConfig, saveConfigPreservingClaudeCode } from "../../config";
 import { readRuntimePort } from "../../config/process-state";
 import { desktopVisibleNativeSlugs, filterCatalogVisibleModels, nativeContextLimits } from "../../codex/catalog";
 import { getCodexHome } from "../../codex/paths";
@@ -50,7 +51,7 @@ import type { CodexNativeRestoreResult } from "../../codex/inject";
 import type { OcxConfig } from "../../types";
 import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
-import type { ManagementContext } from "./context";
+import { managementInferencePort, type ManagementContext } from "./context";
 
 export type NativeIntegrationClientId = "claude" | "grok" | "codex" | "claude-desktop";
 
@@ -94,6 +95,7 @@ export interface NativeToggleEnvelope {
   desiredEnabled: boolean;
   /** Present when the outcome needs more than success/failure to be honest. */
   reason?: string;
+  interceptReason?: string | null;
   artifacts?: CodexNativeRestoreResult["artifacts"];
 }
 
@@ -538,7 +540,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
      * a stale config.hostname picks the wrong loopback policy branch entirely.
      */
     const runtime = (deps.readRuntimePort ?? readRuntimePort)(process.pid);
-    const port = runtime?.port ?? (Number(ctx.url.port) || config.port);
+    const port = deps.liveListenPort?.() ?? runtime?.port ?? managementInferencePort(ctx);
     const hostname = runtime?.hostname ?? config.hostname;
 
     /*
@@ -676,9 +678,16 @@ function pickerCleanupNote(picker: DesktopPickerStatus): string {
 }
 
 /** Record which Desktop mode is applied; `false` when the config file could not be updated. */
-function persistDesktopModeMarker(desktopMode: ClaudeDesktopMode): boolean {
-  const outcome = mutatePersistedConfig(persisted => recordClaudeDesktopMode(persisted, desktopMode));
-  return outcome.status !== "unavailable";
+function persistDesktopModeMarker(config: ManagementContext["config"], desktopMode: ClaudeDesktopMode): boolean {
+  const outcome = mutatePersistedConfig(persisted => {
+    const result = recordClaudeDesktopMode(persisted, desktopMode);
+    return { changed: result.changed, value: structuredClone(persisted.claudeCode) };
+  });
+  if (outcome.status === "unavailable") return false;
+  adoptPersistedClaudeCode(config, outcome.value);
+  // Pin the committed leaf: an unarmed baseline can otherwise retain a stale live mode.
+  recordClaudeDesktopMode(config, desktopMode);
+  return true;
 }
 
 let claudeDesktopToggleFlight: Promise<Response> | null = null;
@@ -705,13 +714,15 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
     }
     const desiredEnabled = loadConfig().clientIntegrations?.["claude-desktop"] !== false;
     const current = loadConfig();
+    // Publish committed Desktop intent to the live config used by intercept routing.
+    ctx.config.clientIntegrations = structuredClone(current.clientIntegrations);
     const fingerprint = current.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
 
     if (!body.enabled) {
       // Picker mode goes first: stop terminating claude.ai, drop its profile and trust.
       return await runPickerTransition(current, async ops => {
         const pickerOff = await ops.disableLocked({ persist: false });
-        const firstPartyRemoved = removeDesktopFirstParty();
+        const firstPartyRemoved = removeDesktopFirstParty(loadConfig());
         if (!firstPartyRemoved.ok) {
           return postCommitRefusal(409, "claude-desktop", "write_failed",
             `Claude Code settings could not be read (${firstPartyRemoved.path}); the first-party proxy env was left in place.`, { desiredEnabled });
@@ -731,6 +742,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
           ok: true, clientId: "claude-desktop", changed, state: "absent", desiredEnabled,
           message: [
             changed ? "Claude Desktop integration disabled." : "Claude Desktop integration is already off.",
+            firstPartyRemoved.retainedFor === "cli" ? "Shared first-party settings remain for Claude Code CLI." : "",
             pickerCleanupNote(pickerOff),
           ].filter(Boolean).join(" "),
         } satisfies NativeToggleEnvelope);
@@ -738,6 +750,13 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
     }
 
     if (resolveClaudeDesktopApplyMode(current, observeClaudeDesktopMode(current)) === "first-party") {
+      const startRefusal = interceptStartRefusal(ctx);
+      if (startRefusal) return startRefusal;
+      const started = await ensureManagementClaudeIntercept(ctx);
+      if (!started.ok) return jsonResponse({ ...started, code: started.reason }, 409);
+      const { claudeInterceptProxyPort } = await import("../../claude/intercept/runtime");
+      const configured = claudeInterceptProxyPort(current, current.port ?? 10100);
+      if (started.state.proxyPort !== configured) return jsonResponse({ ok: false, code: "port_mismatch", bound: started.state.proxyPort, configured }, 409);
       // The whole switch runs under the picker lock, in today's order: env first, then gateway cleanup.
       return await runPickerTransition(current, async ops => {
         const rollback = captureDesktopFirstPartyRollback(current);
@@ -755,7 +774,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
             return postCommitRefusal(500, "claude-desktop", "write_failed",
               "Gateway cleanup and first-party settings rollback did not complete.", { desiredEnabled });
           }
-          const partialModeWarning = !removed.ok && removed.changed && !persistDesktopModeMarker("first-party")
+          const partialModeWarning = !removed.ok && removed.changed && !persistDesktopModeMarker(ctx.config, "first-party")
             ? " First-party is active but its mode marker was not saved." : "";
           if (removed.kind === "cleanup_incomplete") {
             return postCommitRefusal(500, "claude-desktop", "cleanup_incomplete",
@@ -768,7 +787,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
           }
           gatewayRemoved = removed.changed;
         }
-        const modeSaved = persistDesktopModeMarker("first-party");
+        const modeSaved = persistDesktopModeMarker(ctx.config, "first-party");
         const changed = applied.changed || gatewayRemoved;
         // Picker mode is on by default in first-party; only a committed mode turns it on.
         const picker = modeSaved && pickerPreferenceOn(loadConfig())
@@ -816,13 +835,14 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
         if (!result.written) return postCommitRefusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled: latestDesiredEnabled });
         const committed = persistCommittedDesktopGateway(ctx.config, latest.claudeCode?.desktopProfile, result.fingerprint);
         const stateWarning = committed.ok ? "" : " The committed gateway mode/profile state was not saved.";
-        const removed = removeDesktopFirstParty();
+        const removed = removeDesktopFirstParty(loadConfig());
         if (!removed.ok) return postCommitRefusal(500, "claude-desktop", "write_failed", "Gateway applied, but first-party settings cleanup did not complete." + stateWarning, { desiredEnabled: latestDesiredEnabled });
         return jsonResponse({
           ok: true, clientId: "claude-desktop", changed: true, state: "current", desiredEnabled: latestDesiredEnabled,
           message: [
             "Claude Desktop integration enabled.",
             stateWarning,
+            removed.retainedFor === "cli" ? "Shared first-party settings remain for Claude Code CLI." : "",
             pickerCleanupNote(pickerOff),
           ].filter(Boolean).join(" "),
         } satisfies NativeToggleEnvelope);
@@ -913,11 +933,18 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
       throw error;
     }
 
+    let interceptReason = enabled && interceptStartRefusal(ctx) ? "intercept_start_forbidden" : null;
+    if (enabled && !interceptReason) {
+      const outcome = await ensureManagementClaudeIntercept(ctx);
+      if (!outcome.ok) interceptReason = outcome.reason;
+    }
+
     return jsonResponse({
       ok: true, clientId: "claude", changed: true,
       state: enabled ? "current" : "absent",
       desiredEnabled: enabled,
       message: enabled ? "Claude inbound enabled" : "Claude inbound disabled",
+      interceptReason,
     } satisfies NativeToggleEnvelope);
   }
 

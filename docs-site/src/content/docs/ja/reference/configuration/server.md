@@ -14,7 +14,7 @@ description: リスナー、リモート アクセス、アドミッション �
 | `proxy?` | `string` | — |送信 HTTP(S) または SOCKS5 プロキシ URL（`socks5://host:port`）または `${ENV_VAR}`。HTTP URL は未設定時のみ `HTTP_PROXY` / `HTTPS_PROXY` に適用されます。SOCKS5 URL は組み込みの SOCKS5 トンネルを使用し、`ALL_PROXY` にも適用されます（`ocx start --socks5`）。このプロセスで継承した `HTTP(S)_PROXY` はクリアされます。ループバックは `NO_PROXY` に残ります。 |
 | `emptyCompletionRetry?` | `boolean` | `false` | テキストもツール呼び出しもない Responses ターンを、ターミナルイベント前にストリームが終了した場合も含め、同一リクエストで 1 回再試行するよう明示的に有効化します。再試行は課金対象になる場合があります。`OCX_EMPTY_COMPLETION_RETRY=0` で設定を変更せず無効化できます。combo と routed-compaction turn は対象外です。 |
 | `dropCodexSafetyBuffering?` | `boolean` | `false` | Codex Responses パススルーから Codex の safety-buffering ヒントを除去します。対象は `x-codex-safety-buffering-enabled` / `x-codex-safety-buffering-faster-model` 応答ヘッダー、`safety_buffering` 型の `response.metadata` SSE イベント、およびその他の SSE イベントにある `safety_buffering` フィールドです。Codex TUI はこれらを、既定の操作でセッションをより弱いモデルに切り替える「より高速なモデルで再試行」プロンプトとして表示します。その他の `x-codex-*` ヘッダーと SSE イベントの内容は、そのフィールドの除去を除いて変更せずに転送されます。既定ではオフです。 |
-| `stallTimeoutSec?` | `number` | `300` | Responses とネイティブ Chat の有効な上流進捗がない秒数。最小 1 秒。 |
+| `stallTimeoutSec?` | `number` | `300`（public）/ 無効（local） | ストリームが遮断されるまでの、有効な上流進捗がない秒数（Responses とネイティブ Chat）。未設定では**ローカル**上流（loopback・プライベート・`.local`/`.lan` 名）は無効が既定、public 上流は 300 秒。正の値は両方に適用（最小 1 秒）、`0` で無通信 watchdog を全面無効化。canonical ChatGPT SSE を非ストリーミング JSON にまとめる Responses リクエストには、watchdog が無効でも独立した 15 分の全体上限が残る。`/v1/responses/compact` の保留ボディ読み取りもこの予算を共有するが、ローカル上流でも既定は 300 秒。明示値（`0` を含む）が優先される。 |
 | `connectTimeoutMs?` | `number` | `200000` |試行ごとの DNS/TCP/TLS/最終ヘッダーの期限。本体が生成される前に終了します。 |
 | `shutdownTimeoutMs?` | `number` | `5000` |アクティブなターンが中止される前の正常な排出期限。 |
 | `websockets?` | `boolean` | `false` | クライアント向け Responses WebSocket パスを広告して許可します。false の場合クライアントは HTTP/SSE を使いますが、対象となる canonical ChatGPT upstream WS 最適化は無効にしません。 |
@@ -26,7 +26,7 @@ description: リスナー、リモート アクセス、アドミッション �
 | `codexAutoStart?` | `boolean` | `true` | Codex を起動する前に、Codex シムで `ocx ensure` を実行させます。 False を指定すると、操作が行われないことが保証されます。 |
 | `codexShimAutoRestore?` | `boolean` | `true` |完了した外部 Codex アップデートによってインストールされたシムが置き換えられた後、インストールされているシムを復元します。環境オプトアウト: `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。 |
 | `syncResumeHistory?` | `boolean` | `true` | Codex App 履歴の互換性を元に戻すことができます。元のメタデータは `ocx stop` / `ocx restore` によってバックアップおよび復元されます。 |
-| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、リクエストに設定された推論エフォートを維持したまま選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-5.6-luna` です。0.144.x 以前のクライアントでは `gpt-5.4-mini` が使われており、`sourceModels` で復元できます。 |
+| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、リクエストに設定された推論エフォートを維持したまま選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-6-luna`, `gpt-5.6-luna` です。0.144.x 以前のクライアントでは `gpt-5.4-mini` が使われており、`sourceModels` で復元できます。 |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` |使用可能な場合はオン | Web 検索サイドカー オプション。 |
 | `visionSidecar?` | `OcxVisionSidecarConfig` |使用可能な場合はオン |画像説明サイドカー オプション。 |
 | `images?` | `OcxImagesConfig` | OpenAI の自動選択 | Codex `image_gen` のスタンドアロン イメージ リレー オプション。 |
@@ -114,12 +114,14 @@ ssh -L 20100:localhost:10100 -L 1455:localhost:1455 you@remote
 
 Codex は、タイトルやコミット メッセージなどのタスクに小さなヘルパー モデルを使用します。 `shadowCallIntercept` を有効にして、認識されたソース モデル プレフィックスを別の構成済みモデルにリダイレクトします。置換後も、リクエストに設定された推論エフォートは維持されます。クライアントが異なるヘルパー ID を使用する場合にのみ、`sourceModels` を設定します。
 
+モデルによるインターセプトです。裸のモデル ID が `sourceModels` に一致するリクエストは、通常の `request_kind: "turn"` も含めてリダイレクトできます。`x-openai-subagent: collab_spawn` または `x-codex-turn-metadata` の JSON ヘッダー内の `subagent_kind: "thread_spawn"` で生成された子としてマークされたリクエストは対象外となり、明示的に生成されたサブエージェントはモデルを維持します。
+
 ```json
 {
   "shadowCallIntercept": {
     "enabled": true,
     "model": "gpt-5.5",
-    "sourceModels": ["gpt-5.6-luna"]
+    "sourceModels": ["gpt-6-luna", "gpt-5.6-luna"]
   }
 }
 ```
@@ -182,6 +184,22 @@ Anthropic OAuth サイドカーは、opencodex の既存のクロード コー�
 
 ## Codex クォータのネットワーク診断
 
-メイン Codex アカウント行の `quotaRefresh` はクォータ取得の診断情報であり、残量やモデルへのアクセス権を示すものではありません。キャッシュ利用時や取得を行わない場合は省略されることがあります。取得には操作中のシェルではなく、実行中のプロキシサービスの環境が使われます。`proxy` 未設定では既存の環境を維持し、`"auto"` は起動時に Windows の静的プロキシ設定だけを読みます。PAC/WPAD、SOCKS のみの設定、実行中の変更は自動反映されません。TUN での成功だけでは HTTP プロキシ経路の正常性は確認できません。[コマンドと状態の説明（英語）](/reference/configuration/server/#codex-quota-network-diagnostics)を参照してください。
+メイン Codex アカウント行の `quotaRefresh` はクォータ取得の診断情報であり、残量やモデルへのアクセス権を示すものではありません。キャッシュ利用時や取得を行わない場合は省略されることがあります。取得には操作中のシェルではなく、実行中のプロキシサービスの環境が使われます。`proxy` 未設定では既存の環境を維持し、`"auto"` は起動時の Windows または macOS の静的 HTTP/HTTPS 設定を読みます。macOS では継承したプロキシがある場合、読み取りを行いません。macOS では有効な `*.<domain>` を `.<domain>` に変換します。`*.local` は `foo.local` と基底名 `local` を直接接続にしますが、`xlocal` は対象外です。`169.254/16`、`169.254.0.0/16`、`fe80::/10` は診断を出して省略し、リンクローカル IP アドレスはプロキシを使います。IP アドレスと `*` は受け入れますが、その他の CIDR、glob、単純ホスト名の例外では環境を変更せず検出を中止します。PAC/WPAD、SOCKS のみの設定、実行中の変更は自動反映されません。TUN での成功だけでは HTTP プロキシ経路の正常性は確認できません。[コマンドと状態の説明（英語）](/reference/configuration/server/#codex-quota-network-diagnostics)を参照してください。
 
 `dropCodexSafetyBuffering`: プロバイダーの安全性の適用と拒否応答は変更しません。native `codex.response.metadata.headers` WebSocket メタデータと `/responses/compact` は対象外です。
+
+### Forced Claude Code subagent model
+
+The Subagents page offers **Force all subagents onto one model**, off by default. Select an exposed roster-style id, such as `combo/tev-auto`, then enable the switch. The roster is offered first; unavailable saved roster entries cannot be force targets.
+
+`ocx agent subagents force combo/tev-auto` sets `claudeCode.subagentModelForce`; `ocx agent subagents force -` clears it. `ocx agent status` reports the setting. `GET /api/subagent-models` returns `force`, `forceAvailable`, and `forceStatus`; `PUT` accepts `{ "force": "combo/tev-auto" }` or `{ "force": null }` without changing the roster. Omitting `force` leaves it unchanged. Invalid or unexposed targets are rejected on write; stale targets are reported and skipped at launch.
+
+This takes effect on the **next routed `ocx claude` launch**, injecting `CLAUDE_CODE_SUBAGENT_MODEL` as an explicit proxy alias (with `[1m]` only for an authoritative million-token window; native Claude targets use a reversible native alias) and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`. Each nonempty shell-exported variable independently wins. Native launches inject neither variable; plain `claude` is not affected. No plugin files or `settings.json` are modified by this setting.
+
+Claude Code **2.1.257 or newer** is required for FORCE. Plugin and built-in agents (including Explore/Plan) and per-call model arguments are overridden. Forks and subagent skills with `model: inherit` keep the main conversation model. The main loop and Haiku/small-fast sidecars are unaffected. Existing roster files remain available.
+
+The dashboard warns about old or unknown CLI versions, unavailable targets, and either variable already present in `settings.json` → `env` (which overrides launch env). Detection is read-only and server-local: it cannot inspect another launch shell, another machine, or project-local settings. An unknown result is not proof of force support.
+
+## トークン予約と上限
+
+`spend.root.maxTokens`、`spend.identity.maxTokens`、`spend.pool.maxTokens` のいずれかがリクエストに適用される場合、追跡容量の不足などでトークン予約を記録できなければ送信を拒否します。適用される上限がないリクエストは観測のみを続けます。

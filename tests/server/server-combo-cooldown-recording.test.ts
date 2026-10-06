@@ -95,31 +95,6 @@ afterEach(async () => {
     removeTreeWithRetry(home);
   }
 });
-test("persistent provider failures keep a 60s floor even when the combo asks for 5s", () => {
-  const now = 1_000_000;
-  expect(coolComboTarget("free", target, { now, cooldownMs: 5_000, status: 401, message: "unauthorized" })).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 59_999)).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 60_001)).toBe(false);
-});
-
-test("a slow 5xx keeps a 60s floor so the combo does not immediately repay the stall", () => {
-  const now = 2_000_000;
-  expect(coolComboTarget("free", target, {
-    now, cooldownMs: 5_000, status: 503, message: "upstream busy", attemptDurationMs: 15_000,
-  })).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 59_999)).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 60_001)).toBe(false);
-});
-
-test("a fast ordinary 5xx still respects the configured short combo cooldown", () => {
-  const now = 3_000_000;
-  expect(coolComboTarget("free", target, {
-    now, cooldownMs: 5_000, status: 503, message: "upstream busy", attemptDurationMs: 1_000,
-  })).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 4_999)).toBe(true);
-  expect(isComboTargetInCooldown("free", target, now + 5_001)).toBe(false);
-});
-
 test("cooldown recording distinguishes a successful write from a stale removed writer", () => {
   expect(coolComboTarget("free", target, { cooldownMs: 1000 })).toBe(true);
   reconcileComboTargetCooldowns(removalContext());
@@ -138,6 +113,24 @@ test("advance reports only the current failure's committed cooldown", () => {
   advanceComboAfterFailure(cfg, pick, { cooldownScope: "target", onCooldownRecorded: t => recorded.push(t.model) });
   expect(recorded).toEqual([]);
   expect(isComboTargetInCooldown("free", target)).toBe(true);
+});
+test("a pool account's 429 cools nothing at the combo layer, other failures still cool the target", () => {
+  const cfg = config();
+  const account = { failedAccount: "anthropic-p2e22d0" };
+  const cool = (options: Parameters<typeof advanceComboAfterFailure>[2]): boolean => {
+    clearComboTargetCooldowns();
+    advanceComboAfterFailure(cfg, pickComboTarget(cfg, "free")!, { cooldownScope: "target", ...options });
+    return isComboTargetInCooldown("free", target);
+  };
+  // The outage's own header, attributed to one account of a pool.
+  expect(cool({ status: 429, retryAfter: "318747", ...account })).toBe(false);
+  // Unknown account: nothing else holds the target back, so the target cooldown still must.
+  expect(cool({ status: 429, retryAfter: "318747" })).toBe(true);
+  // A genuine target-level failure is not the account's fault and cools as it always did.
+  expect(cool({ status: 503, ...account })).toBe(true);
+  expect(cool({ status: 410, code: "model_not_found", ...account })).toBe(true);
+  // Provider-scoped evidence (a rejected credential) outranks the account attribution.
+  expect(cool({ status: 429, cooldownScope: "provider", ...account })).toBe(true);
 });
 test("a stale in-flight single-target request does not replay a reconciled-away target", async () => {
   let hits = 0;

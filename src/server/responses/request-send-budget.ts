@@ -1,9 +1,5 @@
 import type { ResponsesRequestContext } from "./core-options";
-import {
-  createRequestExecutionBudget,
-  deriveRequestExecutionBudget,
-  isRequestExecutionBudget,
-} from "../../lib/request-execution-budget";
+import { createRequestExecutionBudget, isRequestExecutionBudget } from "../../lib/request-execution-budget";
 import {
   chargeWorkflowSends,
   workflowSendCeilingReached,
@@ -46,7 +42,6 @@ export function transientSendCapFor(
 /** Owns the shared request send counter and recovery permits. */
 export function createResponsesSendBudget(
   requestContext: Pick<ResponsesRequestContext, "options" | "req" | "logCtx">,
-  genericOAuthFailoverBudgetExtension = 0,
 ) {
   const { options, req, logCtx } = requestContext;
 
@@ -58,21 +53,6 @@ export function createResponsesSendBudget(
   // parent's spend instead of starting over per target -- both halves of the measured
   // amplification in #4546.
   const sendBudget = options.sendBudget ?? createRequestExecutionBudget();
-  const credentialRotationBudget = isRequestExecutionBudget(sendBudget) && genericOAuthFailoverBudgetExtension > 0
-    ? deriveRequestExecutionBudget(sendBudget, options.comboAttempt === true
-      ? {
-          ...sendBudget.policy,
-          baseSendAllowance: Math.min(
-            sendBudget.policy.maxTotalModelSends,
-            sendBudget.policy.baseSendAllowance + genericOAuthFailoverBudgetExtension,
-          ),
-        }
-      : {
-          ...sendBudget.policy,
-          maxTotalModelSends: sendBudget.policy.maxTotalModelSends + genericOAuthFailoverBudgetExtension,
-          baseSendAllowance: sendBudget.policy.baseSendAllowance + genericOAuthFailoverBudgetExtension,
-        })
-    : sendBudget;
   // The root workflow is the user-visible task. A per-request cap cannot bound a fan-out that
   // sends once per child seven hundred times, so every send charged to the request is charged
   // to the root as well (#4546).
@@ -80,6 +60,7 @@ export function createResponsesSendBudget(
   const noteTransientSends = (used: number): void => {
     const charged = Math.max(0, used);
     sendBudget.used += charged;
+    options.onCompactionRecoverySendsReported?.(charged);
     chargeWorkflowSends(workflowRootId, charged);
   };
   // Refused before any dispatch, and deliberately not by evicting the root's ledger entry:
@@ -110,16 +91,13 @@ export function createResponsesSendBudget(
   // No floor. Math.max(1, ...) meant an exhausted request still funded one send on every
   // recovery leg, so a bounded per-leg allowance never became a bounded per-request one.
   const remainingTransientSendBudget = (budget: number): number =>
-    isRequestExecutionBudget(credentialRotationBudget)
-      ? credentialRotationBudget.remainingBaseSends(budget)
+    isRequestExecutionBudget(sendBudget)
+      ? sendBudget.remainingBaseSends(budget)
       : Math.max(0, budget - sendBudget.used);
-  // The adapter contract needs the SAME expanded policy credential rotation uses. Otherwise the
-  // first account can spend the original three-send base and every rotated account receives only
-  // its prepaid hop, so the pool nominally rotates while silently losing the platform retry
-  // ladder on every account after the first.
-  const adapterSendBudget = isRequestExecutionBudget(credentialRotationBudget)
-    ? credentialRotationBudget
-    : undefined;
+  // The adapter contract needs the full budget, not just the counter. options.sendBudget is
+  // typed as the narrow holder so a caller that predates this can still pass one, so narrow it
+  // once here rather than asserting at each adapter call site.
+  const adapterSendBudget = isRequestExecutionBudget(sendBudget) ? sendBudget : undefined;
   /**
    * Records an adapter's OWN inner retries against this attempt.
    *
@@ -179,7 +157,7 @@ export function createResponsesSendBudget(
    * refused and the request would answer with a synthetic 502 in place of the real 429 the hop
    * was recovering from.
    */
-  let pendingHopPermit: SingleUseDispatchPermit | undefined;
+  let pendingHopPermit: SingleUseDispatchPermit | undefined = options.compactionRecoveryPermit;
   /**
    * The budget an adapter's OWN dispatch ladder reserves against.
    *
@@ -223,7 +201,9 @@ export function createResponsesSendBudget(
     options: { allowFinalRecoveryReserve?: boolean } = {},
   ): { attempts: number; permit?: SingleUseDispatchPermit } => {
     const base = remainingTransientSendBudget(cap);
-    if (base > 0) return { attempts: base };
+    // The hop already paid for this leg's first send. Include it in the helper's total
+    // attempts without charging it again, or the final account loses one transient attempt.
+    if (base > 0) return { attempts: Math.min(cap, base + (pendingHopPermit ? 1 : 0)) };
     // A provider-configured transient total is an exact physical-send ceiling. Once it is
     // exhausted, the request-wide recovery reserve must not silently widen it. The default stays
     // permissive so unconfigured providers retain the guarded profile's fourth recovery send.
@@ -233,14 +213,14 @@ export function createResponsesSendBudget(
       pendingHopPermit = undefined;
       return { attempts: 1, permit: hopPermit };
     }
-    if (!isRequestExecutionBudget(credentialRotationBudget)) return { attempts: 0 };
-    const decision = credentialRotationBudget.reserveDispatch({ sendClass, targetKey, countedExternally: true });
+    if (!isRequestExecutionBudget(sendBudget)) return { attempts: 0 };
+    const decision = sendBudget.reserveDispatch({ sendClass, targetKey, countedExternally: true });
     return decision.allowed ? { attempts: 1, permit: decision.permit } : { attempts: 0 };
   };
   /**
    * One credential hop of this logical request, admitted by the INTERSECTION of two bounds.
    *
-   * The generic OAuth roster-sized limit and `ANTHROPIC_POOL_MAX_FAILOVERS_PER_REQUEST`
+   * The snapshotted generic OAuth roster cap and `ANTHROPIC_POOL_MAX_FAILOVERS_PER_REQUEST`
    * bound rotation within one credential roster. What neither
    * can see is everything else this request already sent, so three hops layered on a spent
    * budget still reached upstream three more times. A hop now happens only when its own layer
@@ -267,18 +247,12 @@ export function createResponsesSendBudget(
     targetKey: string,
     countedExternally = false,
   ): { allowed: boolean; permit?: SingleUseDispatchPermit } => {
-    if (!isRequestExecutionBudget(credentialRotationBudget)) return { allowed: true };
-    // A same-provider credential rotation is not a target/model transition. Recovery call sites
-    // pass diagnostic keys such as provider|model|oauth-429, while the adapter itself reserves
-    // physical sends against the request URL. Feeding that diagnostic key into the budget changes
-    // lastTargetKey, so the rotated account's next same-target retry looks like a second target
-    // transition and is refused. Keep the physical target identity stable for auth recovery.
-    const budgetTargetKey = sendClass === "auth-recovery" && credentialRotationBudget.lastTargetKey
-      ? credentialRotationBudget.lastTargetKey
-      : targetKey;
-    const decision = credentialRotationBudget.reserveDispatch({
+    if (!isRequestExecutionBudget(sendBudget)) return { allowed: true };
+    const decision = sendBudget.reserveDispatch({
       sendClass,
-      targetKey: budgetTargetKey,
+      // A same-provider credential hop is not a model/endpoint transition. Its diagnostic
+      // label must not replace the physical target used by the adapter's next retry.
+      targetKey: sendClass === "auth-recovery" ? sendBudget.lastTargetKey ?? targetKey : targetKey,
       countedExternally,
     });
     return decision.allowed ? { allowed: true, permit: decision.permit } : { allowed: false };
@@ -357,6 +331,13 @@ function adapterDispatchBudgetView(
       // already paid does not make an unsafe replay safe, so that check stays with the budget.
       if (intent.replaySafe !== false) {
         const hopPermit = hop.claimHopPermit();
+        if (hopPermit && intent.targetKey !== budget.lastTargetKey) {
+          // The rotated credential can select a different regional endpoint. Replace the
+          // provisional booking synchronously so the actual destination obeys transition
+          // limits, while the physical send is still charged only once.
+          hopPermit.release();
+          return budget.reserveDispatch({ ...intent, sendClass: hopPermit.sendClass });
+        }
         // Confirmed here rather than in `use()`: the adapter reserves immediately before it
         // opens the transport, which is the same boundary the hop's own confirmation uses.
         // A permit some other leg already settled returns false, and this falls through to a

@@ -39,9 +39,30 @@ that survives the transport budget: unified Desktop `exec` as well as the legacy
 unified `exec` keeps its own schema and is surfaced back to Codex as a client tool. It must never
 fall through to the separate native-local-exec dispatcher.
 
+Denied native fs/shell/fetch frames carry a catalog-aware redirect (`cursorNativeExecRedirectHint`).
+When the visible catalog is Codex code mode — a freeform unified `exec` and no bare shell bridge —
+the redirect steers the model INSIDE `exec`: shell, file, search, and fetch are nested
+`tools.<name>(...)` helpers of the JavaScript cell with `text(...)` required for output, and the
+wording never recommends the top-level `shell_command`/`exec_command` bridge code mode does not
+expose; separately listed namespaced tools remain callable as usual. A flat catalog with a bare
+bridge or a non-freeform unified `exec` keeps the default bridge wording, and a catalog with no
+execution path at all keeps naming the request's actual client/MCP wire names.
+
 In external Cursor turns using code mode or shell aliases, the bounded leading-commentary guard in `src/adapters/cursor/envelope-echo.ts` counts `Shell`, `네이티브 셸`, and `네이티브 쉘` as one `shell` identity, including spacing variants and names split across text deltas. Korean aliases require a Unicode-aware left token boundary so wording embedded in a larger word or identifier is not counted; punctuation and following Korean grammatical suffixes remain supported. Rejection still requires a failure claim plus either an explicit redirect or at least two distinct native-tool identities; repeated aliases alone do not count as multiple tools.
 
 > Decision record: [ADR-0048](../decisions/ADR-0048-cursor-native-exec.md)
+
+## Structured final output
+
+Cursor's Connect wire has no native Responses `text.format` schema field. The adapter preserves
+`json_object` and `json_schema` in `src/adapters/cursor/types.ts` and renders the final-output
+contract through `src/adapters/cursor/structured-output.ts`. The protobuf builder includes it in
+system roots and repeats it in active user-message actions, including tool-result continuations.
+This is a prompt fallback, not constrained decoding or response-schema validation. Tool calls
+remain available before the final answer; ordinary text requests receive no JSON instruction.
+The checkpoint instruction digest includes the format, so a changed schema forces full replay.
+`tests/providers/cursor/cursor-request-compat.test.ts` checks the encoded action and
+`tests/providers/cursor/cursor-request-builder.test.ts` checks checkpoint invalidation.
 
 ## Cursor parameterized models
 
