@@ -500,7 +500,7 @@ the request, and they never raise it.
 Combo dispatch reads the final target ladder through the same `supportedLadderFor` authority. An
 explicit empty ladder means that target receives no effort control; an unknown ladder receives no
 parent effort controls only when the combo opts into `reasoningEffortMode: "adaptive"`. Known
-non-empty ladders continue through the existing per-target resolution.
+non-empty ladders continue through the existing per-target resolution. Per-turn `tool_choice` compatibility does not alter catalog membership. `src/routing/request-evidence.ts` records only whether a request requires a non-auto choice, and combo selection consults that evidence against each resolved target's `autoToolChoiceOnlyModels`. A model can therefore stay visible in catalogs and ordinary auto routing while being ineligible for one forced/named/`none` request. This request-local filter neither mutates the saved combo nor invents capability metadata.
 
 The `ocx effort` CLI accepts only the same canonical cap ladder before live probing or persistence.
 Its status output preserves unsupported legacy cap values and reports that those fields are ignored;

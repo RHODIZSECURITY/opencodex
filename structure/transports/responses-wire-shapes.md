@@ -151,14 +151,7 @@ Anthropic endpoints. The built-in preset therefore selects `openai-responses` on
 keeps the provider-wide `openai-chat` default for other non-pinned models. This endpoint correction
 does not set `modelResponsesUpstreamStreaming`: client `stream: true` remains real upstream
 streaming until a current-runtime reproduction justifies a separate bounded-JSON compatibility
-policy.
-
-Claude Code Auto classification sends Anthropic `stop_sequences` on its `/v1/messages` side
-query. For the exact `opencode-go/gpt-5.6-luna` Responses route, Console Go rejects the translated
-Responses `stop` field with HTTP 400 `unknown_parameter`. The provider registry therefore lists
-only that model in `noStopModels`; the shared Responses request-strip removes `stop` after
-translation and before upstream dispatch. Sibling Go models retain caller stop behavior, and this
-compatibility capability does not change wire selection, model choice, reasoning effort or failover.
+policy. Claude Code Auto classification sends Anthropic `stop_sequences` on its `/v1/messages` side query; for the exact `opencode-go/gpt-5.6-luna` Responses route Console Go rejects the translated Responses `stop` field with HTTP 400 `unknown_parameter`, so the provider registry lists only that model in `noStopModels` and the shared Responses request-strip removes `stop` after translation and before upstream dispatch. Sibling Go models retain caller stop behavior, and this capability changes neither wire/model selection, reasoning effort nor failover.
 
 Go's non-forward Responses request path moves valid `additional_tools` wrappers into top-level
 `tools` through `src/adapters/opencode-go-additional-tools.ts`. Placement runs after existing

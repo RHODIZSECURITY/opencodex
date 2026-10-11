@@ -150,7 +150,7 @@ cooldown is live. A stale-generation refusal cannot borrow a sibling request's s
 capability ladders remove effort and thinking controls in every combo mode; adaptive mode also
 removes those controls for unknown ladders and preserves `reasoning.summary`. Known non-empty
 ladders retain the existing per-target effort resolution. This request normalization does not
-change target order or attempt accounting; provider-400 decisions follow the [request-local target compatibility](../runtime.md#request-local-target-compatibility) contract.
+change target order or attempt accounting; provider-400 decisions follow the [request-local target compatibility](../runtime.md#request-local-target-compatibility) contract. A combo target declared `autoToolChoiceOnlyModels` is ineligible before dispatch when the original request carries non-auto `tool_choice` evidence; `auto` and omitted choices keep normal target order. The same pre-commit target-local class includes the exact structured Vertex `MALFORMED_FUNCTION_CALL` 400 described by that contract. Neither rule mutates the request to fit the target or grants a replay after output commitment.
 
 The shared Responses path follows the [bounded multipart recovery contract](../subagents.md#multipart-encrypted-task-recovery); credential admission and retry policy remain unchanged.
 

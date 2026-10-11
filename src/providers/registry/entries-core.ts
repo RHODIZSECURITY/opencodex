@@ -794,7 +794,10 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     modelContextWindows: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_CONTEXT_WINDOW])),
     modelInputModalities: Object.fromEntries(META_MUSE_MODELS.map(id => [id, ["text", "image"] as ["text", "image"]])),
     modelReasoningEfforts: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_CODE_REASONING_EFFORTS])),
-    modelReasoningEffortMap: Object.fromEntries(META_MUSE_MODELS.map(id => [id, META_MUSE_CODE_REASONING_EFFORT_MAP])),
+    modelReasoningEffortMap: Object.fromEntries(META_MUSE_MODELS.map(id => [id, {
+      ...META_MUSE_CODE_REASONING_EFFORT_MAP,
+      none: "minimal",
+    }])),
     // Live Meta Responses probes (2026-09-27) accept only tool_choice:"auto"; required,
     // named function and hosted web_search choices return HTTP 400. Combo routing therefore
     // excludes these models when the caller requires a particular tool instead of silently

@@ -30,6 +30,15 @@ Successful or blocked trusted executions receive a module-private receipt bound 
 
 The trusted credential sender keeps secret injection outside Lab code and uses the existing pinned HTTP primitive. CL-03 explicitly supplies its connect timeout; other pinned-HTTP callers retain their prior timeout behavior. Only response metadata required by live assertions currently crosses back into Lab (`content-type`); cookies, account/organization metadata, credential-adjacent headers, and rate-limit headers are not exposed.
 
+## Artifact filesystem mode probe
+
+`src/lab/artifacts/secure-fs.ts` detects dirfd support with a private per-process probe in the
+trusted artifact directory. Every exit path removes both the pre-rename probe and its renamed
+sentinel: cleanup first attempts the dirfd namespace and then the canonical path fallback. A
+failed rename or early fallback therefore cannot leave `.dirfd-probe-*` artifacts in the workspace
+or current directory, and detection still falls back to the pinned path mode rather than weakening
+artifact identity checks.
+
 ## Evidence text sanitization
 
 Response *headers* are allowlisted, but assertion summaries carry
