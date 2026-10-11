@@ -433,6 +433,8 @@ export const SERIAL_FULL_SUITE_FILES = [
   // product assertions unchanged and isolate the whole files.
   "claude-integration/claude-native-affinity.test.ts",
   "lab/lab-live-review-regressions.test.ts",
+  "lab/lab-live-probe.test.ts",
+  "lab/lab-live-receipt-integrity.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;
