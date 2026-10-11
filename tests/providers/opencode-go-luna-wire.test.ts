@@ -12,6 +12,7 @@ import { handleResponses } from "../../src/server/responses/core";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { createResponsesPassthroughAdapter } from "../../src/adapters/openai-responses";
 import { parseRequest } from "../../src/responses/parser";
+import { anthropicToResponsesBody } from "../../src/claude/inbound";
 import { withTestTranslatorBudget } from "../helpers/translator-budget";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
@@ -50,6 +51,35 @@ describe("OpenCode Go GPT 5.6 Luna wire selection (#1482)", () => {
       expect(resolveWireProtocolOverride("opencode-go", "glm-5.2", opencodeGo(), inbound).adapter)
         .toBe("openai-chat");
     }
+  });
+});
+
+describe("OpenCode Go Claude Auto stop compatibility", () => {
+  test("drops Claude stop_sequences before GPT 5.6 Luna reaches Console Go Responses", () => {
+    const provider = opencodeGo();
+    const translated = anthropicToResponsesBody({
+      model: MODEL,
+      messages: [{ role: "user", content: "classify this action" }],
+      stop_sequences: ["</decision>"],
+      stream: false,
+      max_tokens: 64,
+    });
+    expect(translated.stop).toEqual(["</decision>"]);
+    const adapter = withTestTranslatorBudget(createResponsesPassthroughAdapter({
+      ...provider,
+      adapter: "openai-responses",
+    }));
+    const sent = JSON.parse(adapter.buildRequest(parseRequest(translated)).body) as Record<string, unknown>;
+    expect(provider.noStopModels).toContain(MODEL);
+    expect(sent.stop).toBeUndefined();
+
+    const stale = opencodeGo();
+    delete stale.noStopModels;
+    enrichProviderFromRegistry("opencode-go", stale);
+    expect(stale.noStopModels).toContain(MODEL);
+    const explicit = opencodeGo({ noStopModels: [] });
+    enrichProviderFromRegistry("opencode-go", explicit);
+    expect(explicit.noStopModels).toEqual([]);
   });
 });
 

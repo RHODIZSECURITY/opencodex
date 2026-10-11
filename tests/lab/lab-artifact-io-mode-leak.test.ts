@@ -66,7 +66,7 @@ function runDetection(artifactsDir: string, forceRenameFailure = false): Detecti
     const finalName = \`.dirfd-probe-\${process.pid}.ok\`;
     if (force) fs.mkdirSync(finalName, { recursive: true });
     const { openTrustedArtifactDir, closeTrustedArtifactDir } = await import(${JSON.stringify(
-      resolve(import.meta.dir, "../src/lab/artifacts/secure-fs.ts"),
+      resolve(import.meta.dir, "../../src/lab/artifacts/secure-fs.ts"),
     )});
     const dir = openTrustedArtifactDir(${JSON.stringify(artifactsDir)});
     // openTrustedArtifactDir triggers detectArtifactIoMode via the open path.
