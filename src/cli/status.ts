@@ -365,6 +365,9 @@ export function statusServiceSummary(
     const label = (startupSource ?? (live ? "live" : "local")) === "live" ? "live" : "local";
     return `${supervisor}${label} startup reports service ${state}${action} (logs: ${serviceLogPath()})`;
   }
+  if (!live && liveStartup?.externalRootSupervisor) {
+    return "verified RHODIZ systemd supervisor is configured, but the proxy is not serving; inspect opencodex-rhodiz.service without starting a competing user proxy";
+  }
   return service.installed && !live
     ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`
     : service.summary;

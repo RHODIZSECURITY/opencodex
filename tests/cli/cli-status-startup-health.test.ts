@@ -330,6 +330,9 @@ describe("RHODIZ externally managed systemd startup in ocx status", () => {
     expect(verified?.externalRootSupervisor).toBe(true);
     expect(statusServiceSummary(verified,{installed:true,summary:"user service is inactive"},true))
       .toContain("verified RHODIZ systemd system supervisor");
+    const down=statusServiceSummary(verified,{installed:true,summary:"user service is inactive"},false);
+    expect(down).toContain("opencodex-rhodiz.service");
+    expect(down).not.toContain("ocx service repair");
   });
 
   test("invalid root supervisor claim fails closed and older payload stays compatible", async () => {

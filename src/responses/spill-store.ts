@@ -802,8 +802,16 @@ function openSpillDirScan(dir: string): SpillDirScan | null {
   return {
     nextName: () => {
       if (injected) return injected();
-      const entry = handle!.readSync();
-      return entry ? entry.name : null;
+      try {
+        const entry = handle!.readSync();
+        return entry ? entry.name : null;
+      } catch (error) {
+        // Bun may defer ENOENT for a nonexistent directory from opendirSync to
+        // Dir.readSync(). Treat that exact state as an empty scan; other errors
+        // still surface, and this never creates or removes spill files.
+        if (isErrno(error, "ENOENT")) return null;
+        throw error;
+      }
     },
     close: () => { try { handle?.closeSync(); } catch { /* best effort */ } },
   };

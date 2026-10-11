@@ -71,6 +71,18 @@ describe("response spill directory inspection", () => {
     else process.env["OPENCODEX_HOME"] = priorHome;
   });
 
+  test("nonexistent spill directory is a clean empty scan under Node and Bun", () => {
+    // Bun can defer ENOENT from opendirSync until the first Dir.readSync().
+    // A fresh ocx doctor home has no spill folder; diagnostics must not abort.
+    const missing=join(home,"never-created-spill-directory");
+    expect(existsSync(missing)).toBe(false);
+    const inspect=inspectResponseSpillDir(new Set(),missing);
+    expect(inspect).toMatchObject({scanned:0,files:0,bytes:0,orphanFiles:0,truncated:false});
+    const reclaimed=recoverOrphanedResponseSpills(new Set(),missing);
+    expect(reclaimed).toMatchObject({scanned:0,removed:0,failed:0,bytesRemoved:0});
+    expect(existsSync(missing)).toBe(false);
+  });
+
   test("classifies files into owned, orphan candidate, and plain leftover", () => {
     const dir = responseSpillDirectory(home);
     const owned = writeResponseSpillDurably("resp_owned", { createdAt: Date.now(), items: ["a"] });

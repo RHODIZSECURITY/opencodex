@@ -639,6 +639,19 @@ describe("service memory section (#314 WP4)", () => {
     expect(proxyDownRestartHint({ proxyRunning: true, port: 10100, serviceViable: true })).toBeNull();
   });
 
+  test("verified root supervisor downtime never advises installing a competing user proxy", () => {
+    const hint = proxyDownRestartHint({
+      proxyRunning: false, port: 10101, serviceViable: false,
+      serviceInstalled: true, externalRootSupervisor: true,
+    });
+    expect(hint).toContain("opencodex-rhodiz.service");
+    expect(hint).not.toContain("ocx service install");
+    expect(hint).not.toContain("ocx service repair");
+    expect(proxyDownRestartHint({
+      proxyRunning: true, port: 10101, serviceViable: false, externalRootSupervisor: true,
+    })).toBeNull();
+  });
+
   test("proxyDownRestartHint names the symptom and both restart paths", () => {
     const hint = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false });
     expect(hint).toContain("error sending request for url");

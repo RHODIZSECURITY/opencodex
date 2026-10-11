@@ -1031,6 +1031,8 @@ export function proxyDownRestartHint(input: {
   proxyRunning: boolean;
   port: number;
   serviceViable: boolean;
+  /** An independently verified, persistent RHODIZ systemd system unit. */
+  externalRootSupervisor?: boolean;
   /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
   serviceInstalled?: boolean;
   serviceConflict?: boolean;
@@ -1041,6 +1043,9 @@ export function proxyDownRestartHint(input: {
   staleProcessState?: boolean;
 }): string | null {
   if (input.proxyRunning) return null;
+  if (input.externalRootSupervisor) {
+    return "The OpenCodex proxy is not serving, despite an attested RHODIZ systemd system supervisor. Diagnose opencodex-rhodiz.service and its local listener; do not start or install a competing user proxy.";
+  }
   // `serviceViable` alone conflates "no service at all" with "registered but stale or
   // stopped". Only the first wants `install`: re-registering an existing service costs a
   // UAC prompt on Windows and can switch a WinSW backend to Task Scheduler. A conflict
@@ -1669,6 +1674,7 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     proxyRunning: Boolean(live),
     port: live?.port ?? doctorConfig.port ?? 10100,
     serviceViable: startup.serviceViable,
+    externalRootSupervisor: startup.externalRootSupervisor,
     serviceInstalled: startup.serviceInstalled,
     serviceConflict: startup.serviceConflict,
     // Threaded through the same decision helper `ocx status` uses, so the two
