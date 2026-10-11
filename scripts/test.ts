@@ -428,6 +428,11 @@ export const SERIAL_FULL_SUITE_FILES = [
   "claude-integration/claude-picker-ca.test.ts",
   "claude-integration/claude-picker-recovery.test.ts",
   "server/plaintext-v2-agent-messages-server.test.ts",
+  // These pass deterministically in fresh processes but can share mutable/native route
+  // state or exceed a 5s native-affinity watchdog under the four-file pool. Keep the
+  // product assertions unchanged and isolate the whole files.
+  "claude-integration/claude-native-affinity.test.ts",
+  "lab/lab-live-review-regressions.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;
