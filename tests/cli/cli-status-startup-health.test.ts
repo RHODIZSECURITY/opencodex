@@ -317,3 +317,24 @@ test("supervision evidence must match the identity-checked live PID before evalu
   expect(selected).toEqual({ startup: live, startupSource: "live" });
   expect(fallbackCalls).toBe(0);
 });
+
+describe("RHODIZ externally managed systemd startup in ocx status", () => {
+  test("signed live reading shows the system supervisor even when the user service is inactive", async () => {
+    const live={
+      ...startupPayload(), externalRootSupervisor:true, serviceViable:false,
+      serviceInstalled:true, serviceEnabled:false, serviceRunning:false,
+      serviceConflict:false, status:"protected", protection:"service" as const,
+    };
+    const verified=await fetchLiveStartupHealth(LIVE,deps(live));
+    expect(verified).not.toBeNull();
+    expect(verified?.externalRootSupervisor).toBe(true);
+    expect(statusServiceSummary(verified,{installed:true,summary:"user service is inactive"},true))
+      .toContain("verified RHODIZ systemd system supervisor");
+  });
+
+  test("invalid root supervisor claim fails closed and older payload stays compatible", async () => {
+    expect(await fetchLiveStartupHealth(LIVE,deps({...startupPayload(),externalRootSupervisor:"yes"}))).toBeNull();
+    const legacy=await fetchLiveStartupHealth(LIVE,deps(startupPayload()));
+    expect(legacy?.externalRootSupervisor).toBeUndefined();
+  });
+});

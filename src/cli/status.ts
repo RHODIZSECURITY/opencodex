@@ -303,6 +303,7 @@ export async function fetchLiveStartupHealth(
     }
   }
   for (const key of STARTUP_HEALTH_BOOLEAN_FIELDS) if (typeof row[key] !== "boolean") return null;
+  if (row.externalRootSupervisor !== undefined && typeof row.externalRootSupervisor !== "boolean") return null;
   return payload as StartupHealth;
 }
 
@@ -349,6 +350,9 @@ export function statusServiceSummary(
 ): string {
   if (live && liveStartup) {
     const supervisor = liveStartup.desktop?.supervisor ? "OpenCodex Desktop supervises the running proxy; " : "";
+    if (liveStartup.protection === "service" && liveStartup.externalRootSupervisor && !liveStartup.serviceConflict) {
+      return "running under verified RHODIZ systemd system supervisor (opencodex-rhodiz.service)";
+    }
     if (liveStartup.protection === "service" && liveStartup.serviceViable) {
       return `${supervisor}running under the live managed service (logs: ${serviceLogPath()})`;
     }

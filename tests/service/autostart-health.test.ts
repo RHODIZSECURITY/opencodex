@@ -720,3 +720,46 @@ test("desktop recovery guidance is scoped to routing owned by OpenCodex", () => 
     expect(other.recommendedCommand).toBe(routingKind === "custom-local" || routingKind === "unknown" ? "ocx restore" : null);
   }
 });
+
+describe("RHODIZ trusted systemd system supervisor diagnostics", () => {
+  const rootBase = { ...base, platform: "linux" as const, serviceInstalled: true, externalRootSupervisor: true };
+  test("recognizes verified external root supervisor only when user service cannot compete", () => {
+    const health=deriveStartupHealth({ ...rootBase, serviceEnabled: false, serviceRunning: false });
+    expect(health).toMatchObject({
+      externalRootSupervisor: true, status: "protected", rebootSafe: true,
+      protection: "service", serviceViable: false, recommendedCommand: null,
+    });
+    expect(startupHealthSummary(health)).toContain("verified RHODIZ systemd system supervisor");
+    expect(formatStartupRoutingDetail(health)).toContain("verified-system-supervisor");
+  });
+
+  test("rejects dual-manager auto-start even if the root service is healthy", () => {
+    for(const service of [{serviceEnabled:true,serviceRunning:false},{serviceEnabled:true,serviceRunning:true}]) {
+      const health=deriveStartupHealth({ ...rootBase, ...service });
+      expect(health).toMatchObject({status:"at-risk",rebootSafe:false,serviceConflict:true,protection:"none",recommendedCommand:null});
+      expect(health.recommendedAction).toContain("Resolve the legacy user");
+      expect(startupHealthSummary(health)).toContain("system supervisor conflicts with legacy user proxy manager");
+    }
+  });
+
+  test("no external manager credit on other platforms, local gateway overrides or stale diagnostics", () => {
+    for(const change of [
+      {platform:"win32" as const},
+      {platform:"darwin" as const},
+      {routingKind:"custom-local" as const},
+      {diagnosticStale:true},
+    ]) {
+      const health=deriveStartupHealth({ ...rootBase, ...change });
+      expect(health.rebootSafe).toBe(false);
+      expect(health.status).toBe("at-risk");
+    }
+    const healthy=deriveStartupHealth(rootBase);
+    const stale=markStartupHealthDiagnosticStale(healthy);
+    expect(stale).toMatchObject({
+      rebootSafe:false,status:"at-risk",protection:"none",diagnosticStale:true,
+      externalRootSupervisor:false,recommendedCommand:null,
+    });
+    expect(stale.recommendedAction).toContain("evidence is stale");
+    expect(formatStartupRoutingDetail(stale)).not.toContain("verified-system-supervisor");
+  });
+});
