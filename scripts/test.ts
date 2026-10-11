@@ -420,6 +420,14 @@ export const SERIAL_FULL_SUITE_FILES = [
   "service/service-wsl-home-ownership.test.ts",
   "service/launchd-repair.test.ts",
   "cli/cli-update-restart-home.test.ts",
+  // These fixtures own short WebSocket/process deadlines that pass deterministically in a
+  // fresh process but can expire under the four-file pool on a loaded HomeLab/CI worker.
+  // Quarantine the file, not the assertion: each retains its original product watchdog.
+  "responses/responses-compaction-override.test.ts",
+  "claude-integration/claude-picker-ca-store.test.ts",
+  "claude-integration/claude-picker-ca.test.ts",
+  "claude-integration/claude-picker-recovery.test.ts",
+  "server/plaintext-v2-agent-messages-server.test.ts",
   "codex-integration/native-codex-toggle.test.ts",
   "codex-integration/native-grok-toggle.test.ts",
 ] as const;
