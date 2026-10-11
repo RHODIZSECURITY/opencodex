@@ -4031,6 +4031,7 @@ describe("service definitions are not world-readable", () => {
     try {
       const path = join(dir, "plist");
       writeFileSync(path, "stale", { encoding: "utf8", mode: 0o644 });
+      chmodSync(path, 0o644); // Model the loose legacy definition even under a hardened process umask.
       expect(modeOf(path)).toBe("644");
 
       writeServiceDefinitionFile(path, buildPlist(resolvedProxyEnv({})), "utf8");

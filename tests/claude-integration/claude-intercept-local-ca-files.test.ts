@@ -24,6 +24,7 @@ test.skipIf(process.platform === "win32")("local CA rejects a symlink directory 
   const outside = fixture();
   const marker = join(outside, "marker");
   writeFileSync(marker, "external", { mode: 0o640 });
+  if (process.platform !== "win32") chmodSync(marker, 0o640);
   symlinkSync(outside, claudeInterceptStateDir(root));
   expect(() => ensureLocalInterceptCa(root)).toThrow();
   expect(readdirSync(outside)).toEqual(["marker"]);
@@ -38,6 +39,7 @@ for (const name of ["ca.key", "ca.pem", "ca-publication.sqlite", "ca-publication
     const dir = claudeInterceptStateDir(root);
     const outside = join(fixture(), "external");
     writeFileSync(outside, "external", { mode: 0o640 });
+    if (process.platform !== "win32") chmodSync(outside, 0o640);
     const path = join(dir, name);
     rmSync(path, { force: true });
     symlinkSync(outside, path);
@@ -137,6 +139,7 @@ test.skipIf(process.platform === "win32")("local CA rejects a key substituted be
   const path = join(claudeInterceptStateDir(root), "ca.key");
   const external = join(fixture(), "outside");
   writeFileSync(external, "external fixture", { mode: 0o640 });
+  if (process.platform !== "win32") chmodSync(external, 0o640);
   setLocalCaFileHooksForTests({ beforeRead(target) {
     if (target !== path) return;
     unlinkSync(path);
@@ -152,6 +155,7 @@ test.skipIf(process.platform === "win32")("local CA never writes key bytes to a 
   const root = fixture();
   const external = join(fixture(), "outside");
   writeFileSync(external, "external fixture", { mode: 0o640 });
+  if (process.platform !== "win32") chmodSync(external, 0o640);
   let substituted: string | undefined;
   setLocalCaFileHooksForTests({ beforeWrite(path) {
     expect(statSync(path).size).toBe(0);
@@ -170,6 +174,7 @@ test.skipIf(process.platform === "win32")("local CA publication refuses a newly 
   const root = fixture();
   const external = join(fixture(), "outside");
   writeFileSync(external, "external fixture", { mode: 0o640 });
+  if (process.platform !== "win32") chmodSync(external, 0o640);
   setLocalCaFileHooksForTests({ beforePublish(path) { symlinkSync(external, path); } });
   expect(() => { ensureLocalInterceptCa(root); }).toThrow();
   expect(readFileSync(external, "utf8")).toBe("external fixture");
@@ -198,6 +203,7 @@ test.skipIf(process.platform === "win32")("exclusive nofollow staging refuses a 
   mkdirSync(dir, { mode: 0o700 });
   const external = join(fixture(), "outside");
   writeFileSync(external, "external fixture", { mode: 0o640 });
+  if (process.platform !== "win32") chmodSync(external, 0o640);
   const temp = join(dir, `.ca.key.${process.pid}.${"00".repeat(16)}.tmp`);
   symlinkSync(external, temp);
   const random = spyOn(nodeCrypto, "randomBytes").mockReturnValue(Buffer.alloc(16));

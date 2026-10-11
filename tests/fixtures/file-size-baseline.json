@@ -13,6 +13,7 @@
     "gui/src/i18n/zh-TW.ts",
     "gui/src/i18n/zh.ts",
     "scripts/model-metadata.source.json",
+    "scripts/test-layout/layout.json",
     "src/adapters/cursor/gen/agent_pb.ts"
   ],
   "files": {

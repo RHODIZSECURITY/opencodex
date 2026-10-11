@@ -1,5 +1,5 @@
 import type { AudioClientSocket } from "../../src/cli/access-audio-live";
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { Readable } from "node:stream";
 import { handleAccessAudioCommand, type AccessAudioDeps } from "../../src/cli/access-audio";
 import { resolveAudioClient } from "../../src/server/audio-client";
@@ -10,6 +10,9 @@ const KEY = "ocx_data_audio_live_synthetic";
 const argv = ["live-check", "--model", "synthetic-live", "--api-key-stdin", "--json"];
 const originalToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const servers: ReturnType<typeof Bun.serve>[] = [];
+// scripts/test.ts marks filtered runs as full-suite, so isolationBudgetMs(20) becomes 5s on POSIX.
+// Keep Bun's own test deadline strictly above the product readiness+close budgets to avoid a tie.
+setDefaultTimeout(15_000);
 let out: ReturnType<typeof spyOn<typeof console, "log">>;
 let err: ReturnType<typeof spyOn<typeof console, "error">>;
 beforeEach(() => {

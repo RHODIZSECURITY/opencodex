@@ -1891,6 +1891,36 @@ describe("renamed fixed-key destination reasoning metadata", () => {
     expect(configuredReasoningEfforts(provider, known)).toEqual([]);
     expect(configuredReasoningEfforts(provider, newer)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
+  test("custom fixed destinations inherit replay/tool-choice compatibility lists without overriding explicit opt-outs", () => {
+    const kimi: OcxProviderConfig = {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://api.kimi.com/coding/v1",
+    };
+    const kimiDestination = registryEntryForProviderDestination(kimi);
+    expect(kimiDestination?.preserveReasoningContentModels?.length).toBeGreaterThan(0);
+    expect(kimiDestination?.autoToolChoiceOnlyModels?.length).toBeGreaterThan(0);
+    enrichProviderFromRegistry("CustomKimiCode", kimi);
+    expect(kimi.preserveReasoningContentModels).toEqual(kimiDestination?.preserveReasoningContentModels);
+    expect(kimi.autoToolChoiceOnlyModels).toEqual(kimiDestination?.autoToolChoiceOnlyModels);
+
+    const optedOut: OcxProviderConfig = {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://api.kimi.com/coding/v1",
+      preserveReasoningContentModels: [], autoToolChoiceOnlyModels: [],
+    };
+    enrichProviderFromRegistry("CustomKimiCodeOptOut", optedOut);
+    expect(optedOut.preserveReasoningContentModels).toEqual([]);
+    expect(optedOut.autoToolChoiceOnlyModels).toEqual([]);
+
+    const zhipu: OcxProviderConfig = {
+      adapter: "openai-chat", authMode: "key", baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    };
+    const zhipuDestination = registryEntryForProviderDestination(zhipu);
+    expect(zhipuDestination?.preserveReasoningContentModels?.length).toBeGreaterThan(0);
+    expect(zhipuDestination?.requiresReasoningPlaceholderModels).toEqual([]);
+    enrichProviderFromRegistry("CustomZhipuPayg", zhipu);
+    expect(zhipu.preserveReasoningContentModels).toEqual(zhipuDestination?.preserveReasoningContentModels);
+    expect(zhipu.requiresReasoningPlaceholderModels).toEqual([]);
+  });
+
   test("does not infer metadata for a different adapter, OAuth, or unrelated endpoint", () => {
     for (const override of [{ adapter: "openai-responses" }, { authMode: "oauth" as const }, { baseUrl: "https://example.test/v1" }]) {
       const provider = make(override);

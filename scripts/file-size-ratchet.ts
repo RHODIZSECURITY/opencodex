@@ -71,6 +71,7 @@ export const I18N_CATALOG_PATHS = [
 export const DATA_SNAPSHOT_PATHS = [
   "docs-site/src/data/frontier-benchmarks.json",
   "scripts/model-metadata.source.json",
+  "scripts/test-layout/layout.json",
 ] as const;
 
 /** Every path exempt from a size cap, whatever the reason. */
