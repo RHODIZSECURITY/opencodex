@@ -2,7 +2,7 @@
  * Cheap request-side evidence extraction for policy routing (RI-05).
  *
  * Extracts only what the request body can prove: whether the caller asked for
- * tools and whether the input contains image parts. Context-window size is
+ * tools, whether it requires any non-auto tool choice, and whether the input contains image parts. Context-window size is
  * left unknown at routing time (documented limitation) - the dry-run API/CLI
  * remains the evidence-inspection surface for context-sensitive profiles.
  */
@@ -33,6 +33,17 @@ function inputContainsImage(input: unknown): boolean {
   return input.some(containsImagePart);
 }
 
+function nonAutoToolChoiceRequired(value: unknown): boolean {
+  if (value === undefined || value === "auto") return false;
+  if (value === "none" || value === "required") return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.mode === "auto") return false;
+  // The evidence means the destination must support a tool_choice other than auto;
+  // it does not mean that a tool must run.
+  return typeof record.type === "string" && record.type !== "auto";
+}
+
 export function evidenceFromBody(body: unknown): PolicyRequestEvidence {
   if (!body || typeof body !== "object" || Array.isArray(body)) return {};
   const record = body as Record<string, unknown>;
@@ -40,6 +51,7 @@ export function evidenceFromBody(body: unknown): PolicyRequestEvidence {
   const image = inputContainsImage(record.input) || inputContainsImage(record.messages);
   return {
     ...(tools ? { toolsRequired: true } : {}),
+    ...(tools && nonAutoToolChoiceRequired(record.tool_choice) ? { nonAutoToolChoiceRequired: true } : {}),
     ...(image ? { imageInputRequired: true } : {}),
   };
 }
