@@ -1,5 +1,5 @@
 import { warnPlaintextV2AgentMessagesStartup } from "../../src/server";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -307,6 +307,19 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
 
   test("bounds the headerless prefix probe when the upstream body produces no chunk", async () => {
     takeInheritedSpendHome();
+    const nativeTimeout = globalThis.setTimeout;
+    const probeTimerDelays: number[] = [];
+    const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]
+    ) => {
+      // Both the absolute 1s deadline and its one idle read timeout are armed
+      // by classifyPlaintextV2SseResponse. Record their requested durations,
+      // not the host clock time at which a loaded event loop eventually wakes.
+      if (new Error().stack?.includes("classifyPlaintextV2SseResponse")) {
+        probeTimerDelays.push(delay ?? 0);
+      }
+      return nativeTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
     let cancels = 0;
     let pulls = 0;
     globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
@@ -314,20 +327,24 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
       cancel: () => { cancels += 1; },
     }), { status: 200 })) as typeof fetch;
 
-    const response = await handleResponses(
-      collaborationRequest(),
-      config(true, false, undefined, 1),
-      { model: "", provider: "" },
-    );
-    const clientBody = await response.text();
+    try {
+      const response = await handleResponses(
+        collaborationRequest(),
+        config(true, false, undefined, 1),
+        { model: "", provider: "" },
+      );
+      const clientBody = await response.text();
 
-    expect(response.status).toBe(502);
-    expect(clientBody).toContain("unsupported content type");
-    // The permanently pending pull must be cancelled after the 1s probe budget.
-    // Wall-clock elapsed can exceed that budget when a loaded runner stalls the
-    // JS event loop; the response and cancellation prove the fail-closed outcome.
-    expect(pulls).toBe(1);
-    expect(cancels).toBe(1);
+      expect(response.status).toBe(502);
+      expect(clientBody).toContain("unsupported content type");
+      // The configured one-second deadline remains an exact regression contract
+      // even if macOS CI wakes the timer several seconds late under load.
+      expect(probeTimerDelays.slice(0, 2)).toEqual([1_000, 1_000]);
+      expect(pulls).toBe(1);
+      expect(cancels).toBe(1);
+    } finally {
+      timerSpy.mockRestore();
+    }
   });
 
   test("fails closed when the headerless prefix probe reads a failed body", async () => {
