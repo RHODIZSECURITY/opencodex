@@ -652,6 +652,23 @@ describe("service memory section (#314 WP4)", () => {
     })).toBeNull();
   });
 
+  test("configured but stopped RHODIZ systemd unit cannot trigger a competing proxy recommendation", () => {
+    for (const serviceConflict of [false, true]) {
+      const hint = proxyDownRestartHint({
+        proxyRunning: false, port: 10101, serviceViable: false,
+        serviceInstalled: false, serviceConflict,
+        externalRootSupervisor: false, externalRootSupervisorConfigured: true,
+      });
+      expect(hint).toContain("installed but stopped");
+      expect(hint).toContain("opencodex-rhodiz.service");
+      for (const unsafe of ["ocx start", "ocx service install", "ocx service repair", "ocx restore"])
+        expect(hint).not.toContain(unsafe);
+    }
+    expect(proxyDownRestartHint({
+      proxyRunning: true, port: 10101, serviceViable: false, externalRootSupervisorConfigured: true,
+    })).toBeNull();
+  });
+
   test("proxyDownRestartHint names the symptom and both restart paths", () => {
     const hint = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false });
     expect(hint).toContain("error sending request for url");
