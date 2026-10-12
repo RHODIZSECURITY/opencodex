@@ -88,6 +88,16 @@ describe("ocx status down-proxy restart guidance",()=>{
     expect(output).not.toContain("No background service was available");
   });
 
+  test("installed-but-stopped RHODIZ system unit does not trigger user service install",()=>{
+    const stopped={...startupPayload(),externalRootSupervisor:false,externalRootSupervisorConfigured:true,
+      serviceInstalled:false,serviceConflict:false,protection:"none",status:"at-risk"} as StartupHealth;
+    const lines=downProxyRestartAdviceLines(stopped,true).join("\n");
+    expect(lines).toContain("installed but stopped");
+    expect(lines).not.toContain("ocx start");
+    expect(lines).not.toContain("ocx service install");
+    expect(statusServiceSummary(stopped,{installed:false,summary:"none"},false)).toContain("installed but stopped");
+  });
+
   test("ordinary user services retain normal repair and installation advice",()=>{
     const base={...startupPayload(),externalRootSupervisor:false,externalRootSupervisorEvidenceStale:false,
       serviceInstalled:false,serviceConflict:false} as StartupHealth;

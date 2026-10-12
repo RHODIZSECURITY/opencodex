@@ -304,6 +304,8 @@ export async function fetchLiveStartupHealth(
   }
   for (const key of STARTUP_HEALTH_BOOLEAN_FIELDS) if (typeof row[key] !== "boolean") return null;
   if (row.externalRootSupervisor !== undefined && typeof row.externalRootSupervisor !== "boolean") return null;
+  if (row.externalRootSupervisorConfigured !== undefined && typeof row.externalRootSupervisorConfigured !== "boolean") return null;
+  if (row.externalRootSupervisorEvidenceStale !== undefined && typeof row.externalRootSupervisorEvidenceStale !== "boolean") return null;
   return payload as StartupHealth;
 }
 
@@ -344,21 +346,26 @@ export function runtimeSupervisorLine(startup: StartupHealth): string | null {
  * register a competing user proxy. Share this with the actual CLI formatter.
  */
 export function downProxyRestartAdviceLines(
-  startup: Pick<StartupHealth,"serviceInstalled"|"serviceConflict"|"externalRootSupervisor"|"externalRootSupervisorEvidenceStale">,
+  startup: Pick<StartupHealth,"serviceInstalled"|"serviceConflict"|"externalRootSupervisor"|"externalRootSupervisorConfigured"|"externalRootSupervisorEvidenceStale">,
   staleProcessState = false,
 ): string[] {
   const hasRootSupervisor = startup.externalRootSupervisor === true;
+  const rootConfigured = startup.externalRootSupervisorConfigured === true;
   const rootEvidenceStale = startup.externalRootSupervisorEvidenceStale === true;
   const installed = startup.serviceInstalled && !startup.serviceConflict;
   const lines: string[] = [];
   if (staleProcessState) {
     lines.push("     Stale process records remain, so the previous run may have exited unexpectedly.");
-    if (!installed && !hasRootSupervisor && !rootEvidenceStale) {
+    if (!installed && !hasRootSupervisor && !rootConfigured && !rootEvidenceStale) {
       lines.push("     No background service was available to restart it.");
     }
   }
   if (rootEvidenceStale) {
     lines.push("     RHODIZ systemd supervisor evidence is stale; await a fresh probe, and do not start a competing user proxy.");
+  } else if (rootConfigured && !hasRootSupervisor) {
+    lines.push(startup.serviceConflict
+      ? "     Trusted RHODIZ systemd supervisor is stopped and conflicts with a user proxy manager; inspect both without starting another proxy."
+      : "     Trusted RHODIZ systemd supervisor is installed but stopped; inspect opencodex-rhodiz.service without installing or starting a user proxy.");
   } else if (hasRootSupervisor) {
     lines.push(startup.serviceConflict
       ? "     The verified RHODIZ systemd supervisor conflicts with the user proxy manager; inspect both without starting another proxy."
@@ -399,6 +406,9 @@ export function statusServiceSummary(
   }
   if (!live && liveStartup?.externalRootSupervisorEvidenceStale) {
     return "RHODIZ systemd supervisor attestation is stale; await fresh evidence before any service action, and do not start a competing user proxy";
+  }
+  if (!live && liveStartup?.externalRootSupervisorConfigured && !liveStartup?.externalRootSupervisor) {
+    return "verified RHODIZ systemd supervisor is installed but stopped; inspect opencodex-rhodiz.service without starting or installing a competing user proxy";
   }
   if (!live && liveStartup?.externalRootSupervisor) {
     return liveStartup.serviceConflict

@@ -342,6 +342,9 @@ describe("CLI status JSON", () => {
           rebootSafe?: unknown;
           routingInjected?: unknown;
           serviceInstalled?: unknown;
+          externalRootSupervisor?: unknown;
+          externalRootSupervisorConfigured?: unknown;
+          externalRootSupervisorEvidenceStale?: unknown;
           shimInstalled?: unknown;
           shimHealthy?: unknown;
           shimCoverage?: unknown;
@@ -395,6 +398,10 @@ describe("CLI status JSON", () => {
       expect(typeof parsed.startup?.rebootSafe).toBe("boolean");
       expect(typeof parsed.startup?.routingInjected).toBe("boolean");
       expect(typeof parsed.startup?.serviceInstalled).toBe("boolean");
+      expect(typeof parsed.startup?.externalRootSupervisor).toBe("boolean");
+      expect(typeof parsed.startup?.externalRootSupervisorConfigured).toBe("boolean");
+      expect(parsed.startup?.externalRootSupervisorEvidenceStale === undefined
+        || typeof parsed.startup?.externalRootSupervisorEvidenceStale === "boolean").toBe(true);
       expect(typeof parsed.startup?.shimInstalled).toBe("boolean");
       expect(typeof parsed.startup?.shimHealthy).toBe("boolean");
       expect(["full", "cli-only", "none"]).toContain(parsed.startup?.shimCoverage);

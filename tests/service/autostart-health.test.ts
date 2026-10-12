@@ -733,6 +733,21 @@ describe("RHODIZ trusted systemd system supervisor diagnostics", () => {
     expect(formatStartupRoutingDetail(health)).toContain("verified-system-supervisor");
   });
 
+  test("stopped but verified root unit never grants protection or recommends a user proxy", () => {
+    const health=deriveStartupHealth({...rootBase,externalRootSupervisor:false,
+      externalRootSupervisorConfigured:true,serviceInstalled:false,serviceEnabled:false,serviceRunning:false});
+    expect(health).toMatchObject({externalRootSupervisor:false,externalRootSupervisorConfigured:true,
+      status:"at-risk",rebootSafe:false,protection:"none",recommendedCommand:null});
+    expect(health.recommendedAction).toContain("installed but stopped");
+    expect(startupHealthSummary(health)).toContain("trusted RHODIZ systemd supervisor is stopped");
+    expect(startupHealthSummary(health)).not.toContain("ocx service install");
+    expect(formatStartupRoutingDetail(health)).toContain("system-supervisor-configured-stopped");
+    const stale=markStartupHealthDiagnosticStale(health);
+    expect(stale.externalRootSupervisorConfigured).toBe(false);
+    expect(stale.externalRootSupervisorEvidenceStale).toBe(true);
+    expect(stale.recommendedCommand).toBeNull();
+  });
+
   test("rejects dual-manager auto-start even if the root service is healthy", () => {
     for(const service of [{serviceEnabled:true,serviceRunning:false},{serviceEnabled:true,serviceRunning:true},{serviceEnabled:false,serviceRunning:true}]) {
       const health=deriveStartupHealth({ ...rootBase, ...service });

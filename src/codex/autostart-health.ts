@@ -5,7 +5,7 @@ import { getCodexRoutingKind, type CodexRoutingKind } from "./inject";
 import { collectRoutingAdoption, type RoutingAdoptionEvidence } from "./routing-adoption";
 import { diagnoseCodexShim, type CodexShimDiagnostic } from "./shim";
 import { diagnoseDesktopStartup, type DesktopStartupDiagnostic } from "../service/desktop-startup";
-import { verifyRhodizRootSupervisor } from "./trusted-systemd-supervisor";
+import { inspectRhodizRootSupervisor } from "./trusted-systemd-supervisor";
 
 export type StartupProtection = "service" | "desktop" | "shim" | "none";
 export type StartupHealthStatus = "native" | "protected" | "at-risk";
@@ -34,6 +34,8 @@ export interface StartupHealthInputs {
   serviceSupported: boolean;
   /** Independently attested systemd supervisor, separate from the user service. */
   externalRootSupervisor?: boolean;
+  /** Attested root unit may be configured but stopped; never counts as protection. */
+  externalRootSupervisorConfigured?: boolean;
   shimInstalled: boolean;
   shimHealthy: boolean;
   platform: NodeJS.Platform;
@@ -57,6 +59,7 @@ export interface StartupHealth {
   serviceStale: boolean;
   serviceConflict: boolean;
   externalRootSupervisor: boolean;
+  externalRootSupervisorConfigured?: boolean;
   /** Previous positive root supervisor attestation is stale, not absent. */
   externalRootSupervisorEvidenceStale?: boolean;
   shimInstalled: boolean;
@@ -98,10 +101,13 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
   // An arbitrary localhost gateway has an independent lifecycle that OCX cannot repair.
   const ownsLocalRouting = inputs.routingKind === "opencodex-local";
   const externalRootSupervisor = inputs.platform === "linux" && inputs.externalRootSupervisor === true && !inputs.diagnosticStale;
+  const externalRootSupervisorConfigured = inputs.platform === "linux" && !inputs.diagnosticStale
+    && (externalRootSupervisor || inputs.externalRootSupervisorConfigured === true);
+  const externalRootSupervisorStopped = externalRootSupervisorConfigured && !externalRootSupervisor;
   // A lingering, enabled user service can race the system unit at boot. Never
   // mark this dual-manager topology restart-safe until the legacy user service
   // is disabled. We do not stop/start either service in this diagnostic.
-  const externalManagerConflict = externalRootSupervisor && (inputs.serviceEnabled || inputs.serviceRunning);
+  const externalManagerConflict = externalRootSupervisorConfigured && (inputs.serviceEnabled || inputs.serviceRunning);
   const backgroundViable = !externalManagerConflict && (inputs.serviceViable || externalRootSupervisor);
   const desktopEffective = (inputs.platform === "darwin" || inputs.platform === "linux") && !inputs.diagnosticStale
     && inputs.desktop !== undefined && (inputs.desktop.owned || inputs.desktop.supervisor !== undefined)
@@ -119,7 +125,7 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
     : rebootSafe
       ? "protected"
       : "at-risk";
-  const recommendedCommand = externalManagerConflict || status !== "at-risk" || (ownsLocalRouting && inputs.desktop !== undefined)
+  const recommendedCommand = externalRootSupervisorConfigured || externalManagerConflict || status !== "at-risk" || (ownsLocalRouting && inputs.desktop !== undefined)
     ? null
     : inputs.routingKind === "custom-local" || inputs.routingKind === "unknown"
       ? COMMANDS.restoreNative
@@ -133,6 +139,8 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
       : COMMANDS.restoreNative;
   const recommendedAction = externalManagerConflict
     ? "Resolve the legacy user opencodex-proxy.service competing with the verified system opencodex-rhodiz.service; only disable it when inactive and never start a second proxy."
+    : externalRootSupervisorStopped && status === "at-risk" && ownsLocalRouting
+    ? "Verified RHODIZ systemd supervisor is installed but stopped; inspect opencodex-rhodiz.service without starting or installing a competing user proxy."
     : status === "at-risk" && ownsLocalRouting && inputs.desktop !== undefined
     ? inputs.diagnosticStale || inputs.desktop.loginEnabled
       ? "Reopen OpenCodex and check Start at Login."
@@ -141,6 +149,7 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
   return {
     ...inputs,
     externalRootSupervisor,
+    externalRootSupervisorConfigured,
     serviceConflict: inputs.serviceConflict || externalManagerConflict,
     diagnosticStale: inputs.diagnosticStale ?? false,
     routingInjected,
@@ -160,6 +169,7 @@ export interface StartupHealthDiagnostics {
   routingKind?: CodexRoutingKind;
   service?: ServiceDiagnostic;
   externalRootSupervisor?: boolean;
+  externalRootSupervisorConfigured?: boolean;
   shim?: CodexShimDiagnostic;
   routingAdoption?: RoutingAdoptionEvidence;
 }
@@ -172,8 +182,10 @@ export function collectStartupHealth(
   const shim = diagnostics.shim ?? diagnoseCodexShim();
   const service = diagnostics.service ?? diagnoseService();
   const routingKind = diagnostics.routingKind ?? getCodexRoutingKind();
-  const externalRootSupervisor = diagnostics.externalRootSupervisor
-    ?? (routingKind === "opencodex-local" && verifyRhodizRootSupervisor());
+  const rootSupervisor = diagnostics.externalRootSupervisor !== undefined || diagnostics.externalRootSupervisorConfigured !== undefined
+    ? { active: diagnostics.externalRootSupervisor === true,
+        configured: diagnostics.externalRootSupervisor === true || diagnostics.externalRootSupervisorConfigured === true }
+    : routingKind === "opencodex-local" ? inspectRhodizRootSupervisor() : { active: false, configured: false };
   const desktop = diagnostics.desktop ?? diagnoseDesktopStartup();
   const routingAdoption = diagnostics.routingAdoption
     ?? (routingKind === "opencodex-local" ? collectRoutingAdoption({ routingKind }) : undefined);
@@ -188,7 +200,8 @@ export function collectStartupHealth(
     serviceStale: service.stale,
     serviceConflict: service.conflict,
     serviceSupported: service.supported,
-    externalRootSupervisor,
+    externalRootSupervisor: rootSupervisor.active,
+    externalRootSupervisorConfigured: rootSupervisor.configured,
     shimInstalled: shim.installed,
     shimHealthy: shim.healthy,
     platform: process.platform,
@@ -238,6 +251,10 @@ function classifyStartupHealthSummary(health: StartupHealth): string {
     ? "protected by verified RHODIZ systemd system supervisor"
     : "protected by background service";
   if (health.protection === "desktop") return "protected by desktop app at login and its proxy supervisor";
+  if (health.externalRootSupervisorConfigured && !health.externalRootSupervisor && health.serviceConflict)
+    return "AT RISK after restart (RHODIZ system supervisor is stopped and the legacy user service conflicts; inspect both, do not start a second proxy)";
+  if (health.externalRootSupervisorConfigured && !health.externalRootSupervisor)
+    return "AT RISK after restart (trusted RHODIZ systemd supervisor is stopped; inspect opencodex-rhodiz.service, do not start a competing user proxy)";
   if (health.externalRootSupervisorEvidenceStale) return "AT RISK after restart (RHODIZ systemd supervisor attestation is stale; await a fresh read-only probe, do not start a competing proxy)";
   const command = health.recommendedCommand ?? health.commands.restoreNative;
   if (health.routingKind === "unknown") return `AT RISK after restart (Codex routing could not be verified; run '${command}')`;
@@ -279,6 +296,8 @@ function pendingClientRestartDetail(adoption: RoutingAdoptionEvidence | undefine
 export function formatStartupRoutingDetail(health: StartupHealth): string {
   const service = health.externalRootSupervisorEvidenceStale
     ? "system-supervisor-attestation-stale"
+    : health.externalRootSupervisorConfigured && !health.externalRootSupervisor
+    ? "system-supervisor-configured-stopped"
     : health.externalRootSupervisor
     ? health.serviceConflict ? "system-vs-user-conflict" : "verified-system-supervisor"
     : health.serviceViable

@@ -1033,6 +1033,7 @@ export function proxyDownRestartHint(input: {
   serviceViable: boolean;
   /** An independently verified, persistent RHODIZ systemd system unit. */
   externalRootSupervisor?: boolean;
+  externalRootSupervisorConfigured?: boolean;
   /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
   serviceInstalled?: boolean;
   serviceConflict?: boolean;
@@ -1045,6 +1046,9 @@ export function proxyDownRestartHint(input: {
   if (input.proxyRunning) return null;
   if (input.externalRootSupervisor) {
     return "The OpenCodex proxy is not serving, despite an attested RHODIZ systemd system supervisor. Diagnose opencodex-rhodiz.service and its local listener; do not start or install a competing user proxy.";
+  }
+  if (input.externalRootSupervisorConfigured) {
+    return "The OpenCodex proxy is down and a verified RHODIZ systemd system supervisor is installed but stopped. Inspect opencodex-rhodiz.service; do not start or install a competing user proxy.";
   }
   // `serviceViable` alone conflates "no service at all" with "registered but stale or
   // stopped". Only the first wants `install`: re-registering an existing service costs a
@@ -1675,6 +1679,7 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     port: live?.port ?? doctorConfig.port ?? 10100,
     serviceViable: startup.serviceViable,
     externalRootSupervisor: startup.externalRootSupervisor,
+    externalRootSupervisorConfigured: startup.externalRootSupervisorConfigured,
     serviceInstalled: startup.serviceInstalled,
     serviceConflict: startup.serviceConflict,
     // Threaded through the same decision helper `ocx status` uses, so the two

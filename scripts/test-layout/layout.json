@@ -252,7 +252,7 @@
     "audio-dictation.test.ts": "server",
     "audio-transcriptions.test.ts": "server",
     "auto-compact-budget.test.ts": "providers",
-    "autostart-health.test.ts": "service",
+    "autostart-health.test.ts": "service", "trusted-systemd-supervisor.test.ts": "service",
     "azure-adapter.test.ts": "providers",
     "azure-model-router-tool-schema.test.ts": "providers",
     "bare-echo-alias.test.ts": "responses",

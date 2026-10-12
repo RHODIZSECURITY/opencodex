@@ -46,6 +46,25 @@ describe("trusted systemd supervisor attestation", () => {
     expect(trustedRhodizSystemdSupervisorState(sample+"ActiveState=active\n",()=>true)).toBe(false);
   });
 
+  test("a trusted stopped unit is configured but never counts as running",()=>{
+    const stopped=sample.replace("ActiveState=active","ActiveState=inactive")
+      .replace("SubState=running","SubState=dead")
+      .replace("MainPID=3267569","MainPID=0");
+    expect(trustedRhodizSystemdSupervisorState(stopped,()=>true)).toBe(false);
+    expect(trustedRhodizSystemdSupervisorState(stopped,()=>true,"configured-stopped")).toBe(true);
+    const failed=stopped.replace("ActiveState=inactive","ActiveState=failed").replace("SubState=dead","SubState=failed");
+    expect(trustedRhodizSystemdSupervisorState(failed,()=>true,"configured-stopped")).toBe(true);
+    for(const tampered of [
+      stopped.replace("UnitFileState=enabled","UnitFileState=disabled"),
+      stopped.replace("User=opencodex-rhodiz","User=attacker"),
+      stopped.replace("start --port 10101","start --port 10100"),
+      stopped.replace("DropInPaths="+override,"DropInPaths=/tmp/evil.conf"),
+      stopped.replace("MainPID=0","MainPID=1234"),
+    ]) expect(trustedRhodizSystemdSupervisorState(tampered,()=>true,"configured-stopped")).toBe(false);
+    expect(trustedRhodizSystemdSupervisorState(sample,()=>true,"configured-stopped")).toBe(false);
+    expect(trustedRhodizSystemdSupervisorState(stopped,()=>false,"configured-stopped")).toBe(false);
+  });
+
   test("validates root ownership, restrictive file mode and symlink rejection",()=>{
     const owned={isFile:()=>true,isSymbolicLink:()=>false,uid:0,mode:0o100644};
     expect(trustedRootUnitFile("/isolated/unit",()=>owned)).toBe(true);

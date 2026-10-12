@@ -85,15 +85,16 @@ export function markStartupHealthDiagnosticStale(value: StartupHealth): StartupH
     rebootSafe: false,
     protection: "none",
     externalRootSupervisor: false,
-    externalRootSupervisorEvidenceStale: value.externalRootSupervisor || value.externalRootSupervisorEvidenceStale === true,
+    externalRootSupervisorConfigured: false,
+    externalRootSupervisorEvidenceStale: value.externalRootSupervisor || value.externalRootSupervisorConfigured || value.externalRootSupervisorEvidenceStale === true,
     diagnosticStale: true,
     // Mirror deriveStartupHealth's choice: an already-registered service is refreshed in
     // place. Hardcoding installService here silently undid that for every stale-cache
     // read, which is the path the dashboard hits while a probe is revalidating.
-    recommendedAction: value.externalRootSupervisor || value.externalRootSupervisorEvidenceStale
+    recommendedAction: value.externalRootSupervisor || value.externalRootSupervisorConfigured || value.externalRootSupervisorEvidenceStale
       ? "Root-owned systemd supervisor evidence is stale; wait for a fresh read-only probe. Do not start a second user proxy."
       : value.desktop ? "Reopen OpenCodex and check Start at Login." : value.recommendedAction,
-    recommendedCommand: value.externalRootSupervisor || value.externalRootSupervisorEvidenceStale
+    recommendedCommand: value.externalRootSupervisor || value.externalRootSupervisorConfigured || value.externalRootSupervisorEvidenceStale
       ? null
       : value.routingKind === "opencodex-local" && value.desktop !== undefined
       ? null
