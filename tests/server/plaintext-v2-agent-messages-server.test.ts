@@ -308,12 +308,12 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
   test("bounds the headerless prefix probe when the upstream body produces no chunk", async () => {
     takeInheritedSpendHome();
     let cancels = 0;
+    let pulls = 0;
     globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
-      pull: () => new Promise<void>(() => {}),
+      pull: () => { pulls++; return new Promise<void>(() => {}); },
       cancel: () => { cancels += 1; },
     }), { status: 200 })) as typeof fetch;
 
-    const started = performance.now();
     const response = await handleResponses(
       collaborationRequest(),
       config(true, false, undefined, 1),
@@ -323,8 +323,11 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
 
     expect(response.status).toBe(502);
     expect(clientBody).toContain("unsupported content type");
-    expect(cancels).toBeGreaterThan(0);
-    expect(performance.now() - started).toBeLessThan(3_000);
+    // The permanently pending pull must be cancelled after the 1s probe budget.
+    // Wall-clock elapsed can exceed that budget when a loaded runner stalls the
+    // JS event loop; the response and cancellation prove the fail-closed outcome.
+    expect(pulls).toBe(1);
+    expect(cancels).toBe(1);
   });
 
   test("fails closed when the headerless prefix probe reads a failed body", async () => {
@@ -411,10 +414,12 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
     const encoder = new TextEncoder();
     const timers: Array<ReturnType<typeof setTimeout>> = [];
     let cancelled = false;
+    let dripChunks = 0;
     globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
       start(controller) {
         const tick = (): void => {
           if (cancelled) return;
+          dripChunks++;
           controller.enqueue(encoder.encode("x"));
           timers.push(setTimeout(tick, 300));
         };
@@ -423,7 +428,6 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
       cancel() { cancelled = true; },
     }), { status: 200 })) as typeof fetch;
 
-    const started = performance.now();
     try {
       const response = await handleResponses(
         collaborationRequest(),
@@ -434,7 +438,12 @@ describe("plaintext v2 agent messages at the Responses server boundary", () => {
 
       expect(response.status).toBe(502);
       expect(clientBody).toContain("unsupported content type");
-      expect(performance.now() - started).toBeLessThan(3_000);
+      // Assert the probe's bounded work rather than host wall-clock latency.
+      // Under macOS CI load a stalled JS event loop can wake an already expired
+      // 1s deadline >3s late; that is not permission to read more drip chunks.
+      expect(cancelled).toBe(true);
+      expect(dripChunks).toBeGreaterThanOrEqual(1);
+      expect(dripChunks).toBeLessThanOrEqual(4);
     } finally {
       cancelled = true;
       for (const timer of timers) clearTimeout(timer);
