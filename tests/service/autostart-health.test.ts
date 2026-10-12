@@ -734,7 +734,7 @@ describe("RHODIZ trusted systemd system supervisor diagnostics", () => {
   });
 
   test("rejects dual-manager auto-start even if the root service is healthy", () => {
-    for(const service of [{serviceEnabled:true,serviceRunning:false},{serviceEnabled:true,serviceRunning:true}]) {
+    for(const service of [{serviceEnabled:true,serviceRunning:false},{serviceEnabled:true,serviceRunning:true},{serviceEnabled:false,serviceRunning:true}]) {
       const health=deriveStartupHealth({ ...rootBase, ...service });
       expect(health).toMatchObject({status:"at-risk",rebootSafe:false,serviceConflict:true,protection:"none",recommendedCommand:null});
       expect(health.recommendedAction).toContain("Resolve the legacy user");
@@ -760,6 +760,14 @@ describe("RHODIZ trusted systemd system supervisor diagnostics", () => {
       externalRootSupervisor:false,recommendedCommand:null,
     });
     expect(stale.recommendedAction).toContain("evidence is stale");
+    expect(stale.externalRootSupervisorEvidenceStale).toBe(true);
+    expect(startupHealthSummary(stale)).toContain("await a fresh read-only probe");
+    expect(startupHealthSummary(stale)).not.toContain("ocx restore");
+    const staleAgain=markStartupHealthDiagnosticStale(stale);
+    expect(staleAgain.externalRootSupervisorEvidenceStale).toBe(true);
+    expect(staleAgain.recommendedCommand).toBeNull();
+    expect(startupHealthSummary(staleAgain)).not.toContain("ocx restore");
+    expect(formatStartupRoutingDetail(stale)).toContain("system-supervisor-attestation-stale");
     expect(formatStartupRoutingDetail(stale)).not.toContain("verified-system-supervisor");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fetchLiveStartupHealth, selectStatusStartupHealth, statusServiceSummary, runtimeSupervisorLine } from "../../src/cli/status";
+import { downProxyRestartAdviceLines, fetchLiveStartupHealth, selectStatusStartupHealth, statusServiceSummary, runtimeSupervisorLine } from "../../src/cli/status";
 import type { StartupHealth } from "../../src/codex/autostart-health";
 import { startupHealthProbeBudgetMs, startupHealthReadBudgetMs } from "../../src/codex/autostart-health";
 import { LOCAL_ATTESTATION_PROOF_HEADER, createLocalAttestationProof } from "../../src/lib/local-management-attestation";
@@ -62,6 +62,39 @@ function deps(body: unknown, proof: string | null = createLocalAttestationProof(
     }),
   };
 }
+
+describe("ocx status down-proxy restart guidance",()=>{
+  test("verified root systemd supervisor never recommends a competing user proxy",()=>{
+    const root={...startupPayload(),serviceInstalled:false,serviceConflict:false,
+      externalRootSupervisor:true,serviceViable:false,protection:"service"} as StartupHealth;
+    const output=downProxyRestartAdviceLines(root,true).join("\n");
+    expect(output).toContain("inspect opencodex-rhodiz.service");
+    expect(output).toContain("Stale process records remain");
+    expect(output).not.toContain("No background service was available");
+    expect(output).not.toContain("ocx service install");
+    expect(output).not.toContain("ocx start");
+    const conflict=downProxyRestartAdviceLines({...root,serviceInstalled:true,serviceConflict:true}).join("\n");
+    expect(conflict).toContain("conflicts with the user proxy manager");
+    expect(conflict).not.toContain("ocx start");
+  });
+
+  test("stale supervisor attestation suppresses competing install/restart instructions",()=>{
+    const stale={...startupPayload(),externalRootSupervisor:false,externalRootSupervisorEvidenceStale:true,
+      serviceInstalled:false,serviceConflict:false,diagnosticStale:true,protection:"none"} as StartupHealth;
+    const output=downProxyRestartAdviceLines(stale,true).join("\n");
+    expect(output).toContain("evidence is stale");
+    expect(output).not.toContain("ocx service install");
+    expect(output).not.toContain("ocx start");
+    expect(output).not.toContain("No background service was available");
+  });
+
+  test("ordinary user services retain normal repair and installation advice",()=>{
+    const base={...startupPayload(),externalRootSupervisor:false,externalRootSupervisorEvidenceStale:false,
+      serviceInstalled:false,serviceConflict:false} as StartupHealth;
+    expect(downProxyRestartAdviceLines(base).join("\n")).toContain("ocx service install");
+    expect(downProxyRestartAdviceLines({...base,serviceInstalled:true}).join("\n")).toContain("ocx service repair");
+  });
+});
 
 describe("ocx status live startup health", () => {
   test("the reader covers the endpoint's bounded probe wait on every supported platform", () => {
@@ -333,6 +366,19 @@ describe("RHODIZ externally managed systemd startup in ocx status", () => {
     const down=statusServiceSummary(verified,{installed:true,summary:"user service is inactive"},false);
     expect(down).toContain("opencodex-rhodiz.service");
     expect(down).not.toContain("ocx service repair");
+  });
+
+  test("stale systemd attestation suppresses user-proxy repair instructions in service summary", () => {
+    const stale={...startupPayload(),externalRootSupervisor:false,externalRootSupervisorEvidenceStale:true,
+      diagnosticStale:true,protection:"none",serviceInstalled:true,serviceViable:false} as StartupHealth;
+    const summary=statusServiceSummary(stale,{installed:true,summary:"legacy user service is disabled"},false);
+    expect(summary).toContain("attestation is stale");
+    expect(summary).toContain("do not start a competing user proxy");
+    expect(summary).not.toContain("ocx service repair");
+    const conflict=statusServiceSummary({...stale,externalRootSupervisor:true,externalRootSupervisorEvidenceStale:false,
+      serviceConflict:true},{installed:true,summary:"legacy user service"},false);
+    expect(conflict).toContain("conflicts with a user service");
+    expect(conflict).not.toContain("ocx service repair");
   });
 
   test("invalid root supervisor claim fails closed and older payload stays compatible", async () => {

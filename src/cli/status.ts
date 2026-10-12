@@ -339,6 +339,38 @@ export function runtimeSupervisorLine(startup: StartupHealth): string | null {
     : null;
 }
 
+/** Recovery guidance for a proxy which is not serving.
+ * A root-owned RHODIZ systemd supervisor must never trigger an instruction to
+ * register a competing user proxy. Share this with the actual CLI formatter.
+ */
+export function downProxyRestartAdviceLines(
+  startup: Pick<StartupHealth,"serviceInstalled"|"serviceConflict"|"externalRootSupervisor"|"externalRootSupervisorEvidenceStale">,
+  staleProcessState = false,
+): string[] {
+  const hasRootSupervisor = startup.externalRootSupervisor === true;
+  const rootEvidenceStale = startup.externalRootSupervisorEvidenceStale === true;
+  const installed = startup.serviceInstalled && !startup.serviceConflict;
+  const lines: string[] = [];
+  if (staleProcessState) {
+    lines.push("     Stale process records remain, so the previous run may have exited unexpectedly.");
+    if (!installed && !hasRootSupervisor && !rootEvidenceStale) {
+      lines.push("     No background service was available to restart it.");
+    }
+  }
+  if (rootEvidenceStale) {
+    lines.push("     RHODIZ systemd supervisor evidence is stale; await a fresh probe, and do not start a competing user proxy.");
+  } else if (hasRootSupervisor) {
+    lines.push(startup.serviceConflict
+      ? "     The verified RHODIZ systemd supervisor conflicts with the user proxy manager; inspect both without starting another proxy."
+      : "     The RHODIZ systemd supervisor is configured; inspect opencodex-rhodiz.service and its listener without starting another user proxy.");
+  } else {
+    lines.push(installed
+      ? "     Restart with 'ocx start', or refresh the installed service: 'ocx service repair'."
+      : "     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
+  }
+  return lines;
+}
+
 /** Build the service summary from the same startup source that `ocx status` selected. */
 export function statusServiceSummary(
   liveStartup: StartupHealth | null,
@@ -365,8 +397,13 @@ export function statusServiceSummary(
     const label = (startupSource ?? (live ? "live" : "local")) === "live" ? "live" : "local";
     return `${supervisor}${label} startup reports service ${state}${action} (logs: ${serviceLogPath()})`;
   }
+  if (!live && liveStartup?.externalRootSupervisorEvidenceStale) {
+    return "RHODIZ systemd supervisor attestation is stale; await fresh evidence before any service action, and do not start a competing user proxy";
+  }
   if (!live && liveStartup?.externalRootSupervisor) {
-    return "verified RHODIZ systemd supervisor is configured, but the proxy is not serving; inspect opencodex-rhodiz.service without starting a competing user proxy";
+    return liveStartup.serviceConflict
+      ? "verified RHODIZ systemd supervisor conflicts with a user service; diagnose managers without starting another proxy"
+      : "verified RHODIZ systemd supervisor is configured, but the proxy is not serving; inspect opencodex-rhodiz.service without starting a competing user proxy";
   }
   return service.installed && !live
     ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`

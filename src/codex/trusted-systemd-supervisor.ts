@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync } from "node:fs";
+import { lstatSync, type Stats } from "node:fs";
 
 const UNIT = "opencodex-rhodiz.service";
 const UNIT_PATH = "/etc/systemd/system/opencodex-rhodiz.service";
@@ -41,9 +41,10 @@ export function trustedRhodizSystemdSupervisorState(
   return rootOwnedFiles([UNIT_PATH,...paths]);
 }
 
-function trustedRootUnitFile(path: string): boolean {
+/** Independently testable root-file predicate; production always uses lstatSync. */
+export function trustedRootUnitFile(path: string, stat: (path: string) => Pick<Stats,"isFile"|"isSymbolicLink"|"uid"|"mode"> = lstatSync): boolean {
   try {
-    const s=lstatSync(path);
+    const s=stat(path);
     return s.isFile() && !s.isSymbolicLink() && s.uid===0 &&
       (s.mode & 0o022)===0;
   } catch { return false; }
@@ -64,6 +65,6 @@ export function verifyRhodizRootSupervisor(platform: NodeJS.Platform=process.pla
       "-p", "MainPID", "-p", "ExecStart", "--no-pager",
     ], { encoding: "utf8", timeout: 1500, maxBuffer: 32*1024,
       stdio: ["ignore","pipe","ignore"] });
-    return trustedRhodizSystemdSupervisorState(stdout, paths => paths.every(trustedRootUnitFile));
+    return trustedRhodizSystemdSupervisorState(stdout, paths => paths.every(path => trustedRootUnitFile(path)));
   } catch { return false; }
 }

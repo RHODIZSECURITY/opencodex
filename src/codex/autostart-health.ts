@@ -57,6 +57,8 @@ export interface StartupHealth {
   serviceStale: boolean;
   serviceConflict: boolean;
   externalRootSupervisor: boolean;
+  /** Previous positive root supervisor attestation is stale, not absent. */
+  externalRootSupervisorEvidenceStale?: boolean;
   shimInstalled: boolean;
   shimHealthy: boolean;
   shimCoverage: ShimCoverage;
@@ -236,6 +238,7 @@ function classifyStartupHealthSummary(health: StartupHealth): string {
     ? "protected by verified RHODIZ systemd system supervisor"
     : "protected by background service";
   if (health.protection === "desktop") return "protected by desktop app at login and its proxy supervisor";
+  if (health.externalRootSupervisorEvidenceStale) return "AT RISK after restart (RHODIZ systemd supervisor attestation is stale; await a fresh read-only probe, do not start a competing proxy)";
   const command = health.recommendedCommand ?? health.commands.restoreNative;
   if (health.routingKind === "unknown") return `AT RISK after restart (Codex routing could not be verified; run '${command}')`;
   if (health.routingKind === "custom-local") return `AT RISK after restart (custom local gateway lifecycle is not managed by opencodex; run '${command}')`;
@@ -274,7 +277,9 @@ function pendingClientRestartDetail(adoption: RoutingAdoptionEvidence | undefine
  * thing separately is exactly how #2457 happened.
  */
 export function formatStartupRoutingDetail(health: StartupHealth): string {
-  const service = health.externalRootSupervisor
+  const service = health.externalRootSupervisorEvidenceStale
+    ? "system-supervisor-attestation-stale"
+    : health.externalRootSupervisor
     ? health.serviceConflict ? "system-vs-user-conflict" : "verified-system-supervisor"
     : health.serviceViable
     ? "viable"

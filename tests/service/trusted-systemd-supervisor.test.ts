@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { trustedRhodizSystemdSupervisorState, verifyRhodizRootSupervisor } from "../../src/codex/trusted-systemd-supervisor";
+import { trustedRootUnitFile, trustedRhodizSystemdSupervisorState, verifyRhodizRootSupervisor } from "../../src/codex/trusted-systemd-supervisor";
 
 const unit = "/etc/systemd/system/opencodex-rhodiz.service";
 const override = "/etc/systemd/system/opencodex-rhodiz.service.d/zz-lan-dashboard.conf";
@@ -44,6 +44,34 @@ describe("trusted systemd supervisor attestation", () => {
       expect(trustedRhodizSystemdSupervisorState(modified,()=>true)).toBe(false);
     }
     expect(trustedRhodizSystemdSupervisorState(sample+"ActiveState=active\n",()=>true)).toBe(false);
+  });
+
+  test("validates root ownership, restrictive file mode and symlink rejection",()=>{
+    const owned={isFile:()=>true,isSymbolicLink:()=>false,uid:0,mode:0o100644};
+    expect(trustedRootUnitFile("/isolated/unit",()=>owned)).toBe(true);
+    for(const unsafe of [
+      {...owned,uid:1001},
+      {...owned,mode:0o100666},
+      {...owned,mode:0o100664},
+      {...owned,isFile:()=>false},
+      {...owned,isSymbolicLink:()=>true},
+    ]) expect(trustedRootUnitFile("/isolated/unit",()=>unsafe)).toBe(false);
+    expect(trustedRootUnitFile("/isolated/missing",()=>{throw new Error("ENOENT");})).toBe(false);
+  });
+
+  test("drop-in traversal, extension and foreign origins fail closed",()=>{
+    const trustedExtra="/etc/systemd/system/opencodex-rhodiz.service.d/audit.conf";
+    const multiple=sample.replace("DropInPaths="+override,"DropInPaths="+override+" "+trustedExtra);
+    const visited:string[][]=[];
+    expect(trustedRhodizSystemdSupervisorState(multiple,paths=>{visited.push([...paths]);return true;})).toBe(true);
+    expect(visited).toEqual([[unit,override,trustedExtra]]);
+    for(const bad of [
+      "/etc/systemd/system/opencodex-rhodiz.service.d/../attack.conf",
+      "/etc/systemd/system/opencodex-rhodiz.service.d/attack.service",
+      "/etc/systemd/system/opencodex-rhodiz.service.d/bad"+String.fromCharCode(0)+".conf",
+      "/usr/lib/systemd/system/service.d/global.conf",
+    ]) expect(trustedRhodizSystemdSupervisorState(sample.replace("DropInPaths="+override,
+      "DropInPaths="+override+" "+bad),()=>true)).toBe(false);
   });
 
   test("never probes systemd on non-Linux systems", () => {

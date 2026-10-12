@@ -77,7 +77,7 @@ import {
   pendingTeardownsAreExactly,
   quarantinePendingTeardown,
 } from "../config/pending-teardown";
-import { collectStatus, deadProxyRoutingAdviceLines, detectMissingCodexCatalogPath, hubStatusLines, missingCodexCatalogLines, remoteHubBannerLine, remoteHubStatusLines, runtimeSupervisorLine, unusedProxyWarningLines } from "./status";
+import { collectStatus, deadProxyRoutingAdviceLines, downProxyRestartAdviceLines, detectMissingCodexCatalogPath, hubStatusLines, missingCodexCatalogLines, remoteHubBannerLine, remoteHubStatusLines, runtimeSupervisorLine, unusedProxyWarningLines } from "./status";
 import { endpointsToProve, everyEndpointProvenDownAsync, sharedTeardownAuthorized, type UninstallObservation } from "./uninstall-plan";
 import { takeFlag } from "./runtime-api";
 import { parseStartOptions, StartArgsError } from "./start-args";
@@ -1747,25 +1747,11 @@ async function handleStatus() {
   }
   if (!(status.json.proxy.pid || status.json.proxy.health.ok)) {
     console.log("   ↳ Not running — Codex/Claude requests will fail with connection errors.");
-    // The service summary a few lines below already tells a registered-but-not-serving
-    // user to repair. Printing "install the persistent service" unconditionally
-    // contradicted it in the same report, and install re-registers: UAC on Windows and a
-    // possible WinSW-to-scheduler switch for someone who already has a service.
-    const installed = status.json.startup.serviceInstalled && !status.json.startup.serviceConflict;
-    // #1419: the records outliving the process is the only evidence the user gets that a
-    // previous run ended without cleanup. Deliberately hedged and cause-neutral — cleanup
-    // ignores unlink failures and the records carry no session provenance, so this cannot
-    // prove a crash, only that the last run left state behind. The restart advice below is
-    // not repeated here; one recommendation per report.
-    if (status.json.proxy.staleProcessState) {
-      console.log("     Stale process records remain, so the previous run may have exited unexpectedly.");
-      if (!installed) {
-        console.log("     No background service was available to restart it.");
-      }
+    // A verified (or temporarily stale) root-owned RHODIZ supervisor is not a
+    // user service. Never advise installing or starting a competing user proxy.
+    for (const line of downProxyRestartAdviceLines(status.json.startup, status.json.proxy.staleProcessState)) {
+      console.log(line);
     }
-    console.log(installed
-      ? "     Restart with 'ocx start', or refresh the installed service: 'ocx service repair'."
-      : "     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
     // Restarting is only half the choice. A user who cannot sign in to Codex at all needs the
     // way out that does not require this proxy to come back (#5261).
     for (const line of deadProxyRoutingAdviceLines({
