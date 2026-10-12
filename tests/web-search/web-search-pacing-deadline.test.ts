@@ -15,6 +15,10 @@ import { createTestTranslatorBudget } from "../helpers/translator-budget";
 
 const HEADER_MS = 60;
 const QUEUE_MS = 180;
+// Reset replay incurs 120-180ms of legitimate network-retry backoff INSIDE the
+// header budget. 720ms leaves scheduler headroom but remains below the 900ms
+// pacing interval: a regression that charges queue time still returns 504.
+const RESET_HEADER_MS = QUEUE_MS * 4;
 const NAME = "search-pacing-test";
 const MODEL = "model";
 const provider: OcxProviderConfig = {
@@ -143,8 +147,9 @@ describe("web-search pacing and response-header deadline", () => {
         return new Response("ok");
       }, configured);
       await expectSuccess(run(executor, {
-        // Reset recovery retains its existing 120-180ms backoff inside the budget.
-        connectTimeoutMs: recovery === "reset" ? HEADER_MS * 5 : HEADER_MS,
+        // Retry backoff remains inside the header budget, but the longer 900ms
+        // pacing queue must be excluded. Never increase the PRODUCT deadline.
+        connectTimeoutMs: recovery === "reset" ? RESET_HEADER_MS : HEADER_MS,
         ...(recovery === "same-target" ? { retryOn429Policy: {
           enabled: true, attempts: 1, intervalMs: 1, maxIntervalMs: 1, respectRetryAfter: false,
         } } : {}),
