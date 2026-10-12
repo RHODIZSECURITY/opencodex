@@ -111,6 +111,23 @@ describe("staleness", () => {
 });
 
 describe("interleavings", () => {
+  test("a claims-directory disappearance after its safeNamespace probe is retryable contention", () => {
+    const path = lockPath(), claims = path + ".claims";
+    let reads = 0;
+    const racing: LockDeps = { ...alive, lstat(target) {
+      if (target === claims && ++reads === 2) {
+        const missing = Object.assign(new Error("directory removed between probes"), { code: "ENOENT" });
+        throw missing;
+      }
+      return ownerDefaults.lstat(target);
+    } };
+    expect(tryAcquire(path, racing)).toEqual({ok:false,error:"locked"});
+    expect(reads).toBe(2);
+    const retry=tryAcquire(path,alive);
+    expect(retry.ok).toBe(true);
+    if (retry.ok) expect(release(retry.handle)).toBe(true);
+  });
+
   test("real concurrent contenders admit at most one live owner and leave retries usable", async () => {
     const path = lockPath(), go = path + ".go", stop = path + ".stop";
     writeFileSync(path, JSON.stringify({ ...ownEvidence(ownerDefaults), token: "old", pid: 999999999, acquiredAt: 0 }));

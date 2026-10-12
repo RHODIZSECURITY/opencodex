@@ -42,7 +42,16 @@ export function withLockClaim<T>(
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   if (!safeNamespace(directory, "directory", deps)) throw new UnsafeLockNamespace(directory);
-  const parents = [root, { path: directory, stat: io(() => deps.lstat(directory)) }];
+  // A peer may remove its empty claims directory between the namespace probe
+  // and this final snapshot. The missing directory is contention, not an
+  // unexpected lock failure; no owner has been published by this contender.
+  let claimDirectoryStat: Namespace["stat"];
+  try { claimDirectoryStat = io(() => deps.lstat(directory)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: false };
+    throw error;
+  }
+  const parents = [root, { path: directory, stat: claimDirectoryStat }];
   const claimDirectoryGone = (): boolean => {
     try { const now = deps.lstat(directory); return now.dev !== parents[1].stat.dev || now.ino !== parents[1].stat.ino; }
     catch { return true; }
