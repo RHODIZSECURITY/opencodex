@@ -404,6 +404,15 @@ export const SERIAL_FULL_SUITE_FILES = [
   // delayed the event loop and admitted "firstlate" once. Keep the real
   // deadline assertions in an isolated serial lane, not a loosened policy.
   "server/bounded-body.test.ts",
+  // CLI update's published Node launcher invokes real npm subprocesses through
+  // a canonicalized symlink TMPDIR; under heavy suite contention its installer
+  // can fail spuriously, while the full 18-assertion case passed in isolation.
+  // Run the whole file, without omitting tests, under the serial process budget.
+  "codex-integration/codex-cli-update-apply.test.ts",
+  // Native Anthropic streaming resets race upstream EOF with a short budget.
+  // A separate listener subprocess prevents parallel workers' CPU pressure
+  // from manufacturing an unrelated 504 on its expected 200 response.
+  "claude-integration/claude-native-passthrough.test.ts",
   // Synchronous injection subprocesses can wedge the long-lived macOS isolate
   // parent while reaping a history Worker; contain them in a fresh bounded lane.
   "codex-integration/codex-inject-write-lock.test.ts",
