@@ -51,4 +51,14 @@ describe("Dashboard orphaned update job presentation", () => {
     expect(staleActiveUpdateJobReason(reused, now, () => true)).toContain("identity changed");
     expect(visibleUpdateJob(reused, now, () => true).status).toBe("failed");
   });
+
+  test("an unreadable Linux birth token cannot unlock an active installer", () => {
+    if (process.platform !== "linux") return;
+    const running = { ...job(), pid: process.pid, workerProcessStartTicks: "987654" };
+    // /proc access may be transiently unavailable even while the PID is live.
+    expect(staleActiveUpdateJobReason(running, now, () => true, () => null)).toBeNull();
+    expect(staleActiveUpdateJobReason(running, now, () => true, () => "987654")).toBeNull();
+    expect(staleActiveUpdateJobReason(running, now, () => true, () => "123456")).toContain("identity changed");
+    expect(staleActiveUpdateJobReason(running, now, () => false, () => null)).toContain("no longer running");
+  });
 });
