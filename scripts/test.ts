@@ -418,6 +418,12 @@ export const SERIAL_FULL_SUITE_FILES = [
   // can interleave background startup writes after the OFF snapshot under load.
   // Keep all eight real concurrency assertions in a fresh bounded serial process.
   "codex-integration/codex-composed-acceptance.test.ts",
+  // A catalog update performs real cross-process provider discovery and K-locked
+  // publication. Under a two-worker, two-CPU VM full suite the delayed HTTP sync
+  // returned 500 once, whereas all 9 cases passed in an independent 58s run.
+  // Preserve every concurrency assertion; separate unrelated CPU/IO contention
+  // so the test measures its own competing publishers and durable state.
+  "codex-integration/codex-retained-root-serialization.test.ts",
   // Synchronous injection subprocesses can wedge the long-lived macOS isolate
   // parent while reaping a history Worker; contain them in a fresh bounded lane.
   "codex-integration/codex-inject-write-lock.test.ts",
@@ -458,6 +464,12 @@ const SERIAL_LANE_TIMEOUT_MS: Partial<Record<SerialLaneBasename, number>> = {
   // This file intentionally exercises 33 complete release-script subprocess trees.
   // It is ~90s on an idle machine and measured at ~170s under unrelated host load.
   "release-helper.test.ts": 5 * 60 * 1000,
+  // 43 complete real-NPM/CLI installer cases elapsed beyond the previous 180s
+  // watchdog on VM106 while the main suite was still under load. This is only
+  // the outer FILE lane deadline; per-test timeouts and checks stay unchanged.
+  "codex-cli-update-apply.test.ts": 8 * 60 * 1000,
+  // Competing publisher/process fixtures, without reducing their deadlines.
+  "codex-retained-root-serialization.test.ts": 5 * 60 * 1000,
 };
 
 export interface BunTestLane {
