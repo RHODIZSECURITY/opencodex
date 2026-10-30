@@ -519,13 +519,18 @@ export function staleActiveUpdateJobReason(
   job: Pick<UpdateJobState, "status" | "pid" | "updatedAt" | "workerProcessStartTicks">,
   now = Date.now(),
   isAlive: (pid: number) => boolean = isProcessAlive,
+  readStartTicks: (pid: number) => string | null = readLinuxProcessStartTicks,
 ): string | null {
   if (job.status !== "running" && job.status !== "restarting") return null;
   if (typeof job.pid === "number" && Number.isSafeInteger(job.pid) && job.pid > 0) {
     if (!isAlive(job.pid)) return "update worker PID " + job.pid + " is no longer running";
-    if (process.platform === "linux" && typeof job.workerProcessStartTicks === "string"
-      && readLinuxProcessStartTicks(job.pid) !== job.workerProcessStartTicks) {
-      return "update worker PID " + job.pid + " identity changed after a process restart or PID reuse";
+    if (process.platform === "linux" && typeof job.workerProcessStartTicks === "string") {
+      const observedTicks = readStartTicks(job.pid);
+      // An unreadable /proc token is UNKNOWN, not proof of a reused PID.
+      // Keep the existing live worker locked rather than admitting a second installer.
+      if (observedTicks !== null && observedTicks !== job.workerProcessStartTicks) {
+        return "update worker PID " + job.pid + " identity changed after a process restart or PID reuse";
+      }
     }
     return null;
   }

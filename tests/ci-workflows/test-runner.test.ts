@@ -716,6 +716,13 @@ describe("bun test argv", () => {
       ]);
     }
     expect(plan.find(lane => lane.label === "release-helper.test.ts")?.timeoutMs).toBe(5 * 60 * 1000);
+    // Each real concurrency acceptance file still executes all its assertions,
+    // but under its own bounded process rather than the unrelated VM worker pool.
+    expect(plan.find(lane => lane.label === "codex-retained-root-serialization.test.ts")?.args).toEqual([
+      "--isolate", "--parallel=1", "./tests/codex-integration/codex-retained-root-serialization.test.ts",
+    ]);
+    expect(plan.find(lane => lane.label === "codex-retained-root-serialization.test.ts")?.timeoutMs).toBe(5 * 60 * 1000);
+    expect(plan.find(lane => lane.label === "codex-cli-update-apply.test.ts")?.timeoutMs).toBe(8 * 60 * 1000);
     expect(plan.find(lane => lane.label === "codex-shim.test.ts")?.timeoutMs).toBe(3 * 60 * 1000);
   });
 

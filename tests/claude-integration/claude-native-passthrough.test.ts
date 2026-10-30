@@ -1284,7 +1284,13 @@ test("a client that leaves while a non-stream body is pending logs the cancel as
   let reached!: () => void;
   const upstreamReached = new Promise<void>(resolve => { reached = resolve; });
   const upstream = startHeadersOnlyUpstream(() => reached());
-  saveConfig(cfg(`http://127.0.0.1:${upstream.port}`));
+  // This case measures cancellation of an already-pending response BODY, not
+  // the separate 250ms response-HEADER deadline in cfg(). Under CI shard load,
+  // 250ms can expire before the proxy receives this fixture's raw headers,
+  // yielding a header 504 instead of ever exercising the client-cancel path.
+  // Preserve all cancellation assertions; give only this fixture a distinct
+  // header budget while the upstream deliberately never sends body bytes.
+  saveConfig({ ...cfg(`http://127.0.0.1:${upstream.port}`), connectTimeoutMs: 5_000 });
   const server = startServer(0);
   try {
     const client = new AbortController();
