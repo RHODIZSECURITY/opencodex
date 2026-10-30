@@ -956,6 +956,9 @@ async function handleConfigRoutesImpl(ctx: ManagementContext): Promise<Response 
   }
 
   if (url.pathname === "/api/update/run" && req.method === "POST") {
+    const { dashboardSystemUnitUpdateBlockReason } = await import("../../update/systemd-scope-context");
+    const unsupported = dashboardSystemUnitUpdateBlockReason();
+    if (unsupported) return jsonResponse({ error: unsupported, code: "unsupported_system_unit_update" }, 409);
     const { normalizeUpdateChannel, startUpdateJob, UpdateJobError, spawnGuiUpdateWorker } = await import("../../update/job");
     let body: { tag?: unknown; restart?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
@@ -976,6 +979,12 @@ async function handleConfigRoutesImpl(ctx: ManagementContext): Promise<Response 
       const systemdRun = process.platform === "linux" && process.env.INVOCATION_ID
         ? await resolveSystemdRunAsync()
         : undefined;
+      if (process.platform === "linux" && process.env.INVOCATION_ID && !systemdRun) {
+        return jsonResponse({
+          error: "Cannot safely update: the systemd user scope is unavailable, so the updater would stop with the proxy.",
+          code: "update_user_scope_unavailable",
+        }, 503);
+      }
       return jsonResponse({ ok: true, job: startUpdateJob(channel, body.restart !== false, {
         checkForUpdateFn: () => checked,
         spawnWorkerFn: (jobId, runChannel, runRestart) =>
@@ -990,8 +999,8 @@ async function handleConfigRoutesImpl(ctx: ManagementContext): Promise<Response 
   }
 
   if (url.pathname === "/api/update/status" && req.method === "GET") {
-    const { readUpdateJob } = await import("../../update/job");
-    const job = readUpdateJob(url.searchParams.get("jobId"));
+    const { readVisibleUpdateJob } = await import("../../update/job-visibility");
+    const job = readVisibleUpdateJob(url.searchParams.get("jobId"));
     if (!job) return jsonResponse({ error: "update job not found" }, 404);
     return jsonResponse({ ok: true, job });
   }

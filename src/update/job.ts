@@ -54,6 +54,8 @@ import {
   type NpmCachePreflightReason,
 } from "./npm-cache-preflight.mjs";
 import { guiUpdateWorkerCommand } from "./worker-launch";
+import { readLinuxProcessStartTicks } from "./process-start-identity";
+import { dashboardSystemUnitUpdateBlockReason, withTrustedSystemdUserBusEnv } from "./systemd-scope-context";
 import { prepareWorkerUpdateHome, packageOnlyUpdateSucceeded } from "./job-update-home";
 import { defaultWorkerTrayHandoff } from "./job-update-tray";
 import { spawnWorkerPinnedStart } from "./job-pinned-start";
@@ -106,6 +108,8 @@ export interface UpdateJobState {
   releaseNotesUrl: string;
   log: string[];
   pid?: number;
+  /** Linux /proc/PID/stat field 22, used to fence PID reuse. */
+  workerProcessStartTicks?: string;
   error?: string;
   exitCode?: number | null;
   signal?: string | null;
@@ -512,13 +516,18 @@ function newJobId(): string {
  * - Impact: live PID records remain locked regardless of age; dead PIDs recover immediately; legacy records recover after ten minutes.
  */
 export function staleActiveUpdateJobReason(
-  job: Pick<UpdateJobState, "status" | "pid" | "updatedAt">,
+  job: Pick<UpdateJobState, "status" | "pid" | "updatedAt" | "workerProcessStartTicks">,
   now = Date.now(),
   isAlive: (pid: number) => boolean = isProcessAlive,
 ): string | null {
   if (job.status !== "running" && job.status !== "restarting") return null;
   if (typeof job.pid === "number" && Number.isSafeInteger(job.pid) && job.pid > 0) {
-    return isAlive(job.pid) ? null : `update worker PID ${job.pid} is no longer running`;
+    if (!isAlive(job.pid)) return "update worker PID " + job.pid + " is no longer running";
+    if (process.platform === "linux" && typeof job.workerProcessStartTicks === "string"
+      && readLinuxProcessStartTicks(job.pid) !== job.workerProcessStartTicks) {
+      return "update worker PID " + job.pid + " identity changed after a process restart or PID reuse";
+    }
+    return null;
   }
   const updatedAt = Date.parse(job.updatedAt);
   if (Number.isFinite(updatedAt) && now - updatedAt >= UPDATE_JOB_LEGACY_STALE_MS) {
@@ -550,12 +559,19 @@ export function spawnGuiUpdateWorker(
     restart ? "restart" : "no-restart",
   ]);
   if (process.platform !== "win32") {
+    // A root-owned system unit cannot be safely restarted by the unprivileged
+    // updater. Keep the direct function boundary as strict as the HTTP route.
+    const ownerRefusal = dashboardSystemUnitUpdateBlockReason();
+    if (ownerRefusal) throw new Error(ownerRefusal);
     const launch = guiUpdateWorkerCommand(process.execPath, args, context);
+    if (process.platform === "linux" && process.env.INVOCATION_ID && launch.command === process.execPath) {
+      throw new Error("Cannot start a safe Dashboard updater: systemd user scope is unavailable.");
+    }
     return probeSpawn(launch.command, launch.argv, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
-      env: { ...process.env, OCX_SERVICE: "1" },
+      env: withTrustedSystemdUserBusEnv({ ...process.env, OCX_SERVICE: "1" }),
     });
   }
 
@@ -650,7 +666,10 @@ export function startUpdateJob(
     updateJob(job, { status: "failed", error: "Could not start update worker: no worker PID was returned." }, "Update worker failed to start.");
     throw new UpdateJobError("Could not start update worker", 500, "update_worker_start_failed");
   }
-  const startedJob = updateJob(job, { pid: child.pid }, `Update worker started as PID ${child.pid}.`);
+  const workerBirth = readLinuxProcessStartTicks(child.pid);
+  const startedJob = updateJob(job, {
+    pid: child.pid, ...(workerBirth ? { workerProcessStartTicks: workerBirth } : {}),
+  }, "Update worker started as PID " + child.pid + ".");
   child.once("error", error => {
     const current = readUpdateJob(id);
     if (!current || current.pid !== child.pid || (current.status !== "running" && current.status !== "restarting")) return;

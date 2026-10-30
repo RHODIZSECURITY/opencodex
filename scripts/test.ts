@@ -393,6 +393,17 @@ export const SERIAL_FULL_SUITE_FILES = [
   // The full macOS isolate pool stalled in the structure gate's synchronous Git
   // child after earlier files; fresh-process execution retains the same assertions.
   "ci-workflows/structure-ssot.test.ts",
+  // The real-home guard spawns bounded child probes with a 5s timeout. On a
+  // two-core Linux VM under four-worker suite load, the harmless disarmed probe
+  // exceeded its deadline once (5541ms) while every assertion passed in an
+  // isolated 26-test run. Keep all guard assertions, but run in a fresh serial
+  // lane so the watchdog measures the child rather than unrelated worker load.
+  "ci-workflows/test-home-guard.test.ts",
+  // The bounded-body unit tests deliberately race 15ms inactivity timers
+  // against a 30ms next chunk. A two-CPU host with four unrelated workers
+  // delayed the event loop and admitted "firstlate" once. Keep the real
+  // deadline assertions in an isolated serial lane, not a loosened policy.
+  "server/bounded-body.test.ts",
   // Synchronous injection subprocesses can wedge the long-lived macOS isolate
   // parent while reaping a history Worker; contain them in a fresh bounded lane.
   "codex-integration/codex-inject-write-lock.test.ts",

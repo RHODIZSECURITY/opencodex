@@ -35,6 +35,7 @@ import { resolveNativeProfileContext } from "./native-profile-store";
 import { NativeProfileError } from "./native-profile-types";
 import { isNativeMainTrafficBlocked } from "./native-profile-startup";
 import { loadConfig } from "../config";
+import { skipAbsentNativeMainFileWhenClientOff } from "./native-main-empty-file";
 import {
   requestCodexAuthStatus,
   resolveNativeMainRefreshMode,
@@ -523,7 +524,13 @@ async function resolveMainAccountToken(
   // the outside is indistinguishable from a refusal: same failed request, no write, no verdict.
   // A forced refresh is the only caller that passes `rejectedAccessToken`, so only it reports.
   if (!initial) {
-    const refreshMode = await resolveNativeMainRefreshMode(loadConfig());
+    const config = loadConfig();
+    if (rejectedAccessToken === undefined && !dependencies.codexAuthStatus && !dependencies.refreshToken
+      && skipAbsentNativeMainFileWhenClientOff(config, codexHome)) {
+      forgetCodexOwnedMainUsability(codexHome);
+      return null;
+    }
+    const refreshMode = await resolveNativeMainRefreshMode(config);
     if (refreshMode.mode === "codex") {
       const refreshTimeout = AbortSignal.timeout(30_000);
       const signal = dependencies.signal

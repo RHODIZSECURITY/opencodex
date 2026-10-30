@@ -46,6 +46,8 @@ import {
   type JevCandidate,
   type JevDecision,
 } from "../../combos";
+import { museComboChoiceIsKnownIncompatible } from "../../adapters/openai-responses/muse-tool-choice";
+import { isMetaAiResponsesDestination } from "../../responses/muse-tool-name-alias";
 import { formatErrorResponse } from "../../bridge";
 import { SEND_BUDGET_EXHAUSTED_CODE } from "../../lib/errors";
 import { redactSecretString, sanitizeLogMetadataString } from "../../lib/redact";
@@ -532,11 +534,25 @@ export async function executeComboResponses(
   const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
     comboPayloadReadable || !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
   const meteredAllowed = admissionMayUseMeteredComboTargets(config, options.admission, combo);
+  // Meta Responses rejects required/named tool_choice before sending anything. Do not
+  // allow a target-local wire incompatibility to abort a multi-target combo.
+  // Keep the caller's selector unchanged; no silent downgrade to auto/none.
+  const metaToolChoiceEligible = (target: (typeof combo.targets)[number]): boolean => {
+    const choice = body !== null && typeof body === "object" && !Array.isArray(body)
+      ? (body as { tool_choice?: unknown }).tool_choice
+      : undefined;
+    if (!museComboChoiceIsKnownIncompatible(choice)) return true;
+    const provider = config.providers[target.provider];
+    return !provider
+      || provider.adapter !== "openai-responses"
+      || !isMetaAiResponsesDestination(provider.baseUrl);
+  };
   // Recovery can replace unreadable encrypted input, but cannot relax other admission checks.
   const recoveryEligible = (target: (typeof combo.targets)[number]): boolean =>
     (meteredAllowed || !target.metered)
     && (combo.strategy !== "jev" || target.provider !== JEV_PROVIDER_ID)
     && reasoningReplayEligible(target)
+    && metaToolChoiceEligible(target)
     && (protocolLanes?.pickable(target) ?? true);
   const targetEligible = (target: (typeof combo.targets)[number]): boolean =>
     payloadEligible(target) && recoveryEligible(target);
