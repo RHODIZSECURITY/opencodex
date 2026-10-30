@@ -413,6 +413,11 @@ export const SERIAL_FULL_SUITE_FILES = [
   // A separate listener subprocess prevents parallel workers' CPU pressure
   // from manufacturing an unrelated 504 on its expected 200 response.
   "claude-integration/claude-native-passthrough.test.ts",
+  // This real CLI+HTTP acceptance battery holds /models open across an ON->OFF
+  // write fence. Other Bun workers and the host's installed native Codex process
+  // can interleave background startup writes after the OFF snapshot under load.
+  // Keep all eight real concurrency assertions in a fresh bounded serial process.
+  "codex-integration/codex-composed-acceptance.test.ts",
   // Synchronous injection subprocesses can wedge the long-lived macOS isolate
   // parent while reaping a history Worker; contain them in a fresh bounded lane.
   "codex-integration/codex-inject-write-lock.test.ts",
