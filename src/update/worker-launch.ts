@@ -1,6 +1,7 @@
 import { probeSpawn, probeSpawnSync } from "./mutation-guard.mjs";
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+import { withTrustedSystemdUserBusEnv } from "./systemd-scope-context";
 
 /**
  * How to launch the dashboard update worker on POSIX.
@@ -94,9 +95,10 @@ export function isTrustedSystemdRunFile(path: string, deps: SystemdRunTrustDeps 
 
 /** Scope discovery gets only user-bus identity, never inherited management credentials. */
 function scopeProbeEnvironment(): NodeJS.ProcessEnv {
+  const trusted = withTrustedSystemdUserBusEnv(process.env);
   const env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" };
   for (const name of ["HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
-    if (process.env[name] !== undefined) env[name] = process.env[name];
+    if (trusted[name] !== undefined) env[name] = trusted[name];
   }
   return env;
 }

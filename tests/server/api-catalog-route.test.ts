@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { handleManagementAPI } from "../../src/server/management-api";
@@ -10,7 +11,9 @@ import { removeTreeWithRetry } from "../helpers/remove-tree";
 import type { ManagementModelRow } from "../../src/server/management/model-rows";
 import type { KiloGeneratedConfig, OpencodeGeneratedConfig } from "../../src/clients/config-export";
 
-const TEST_DIR = join(import.meta.dir, `.tmp-api-catalog-route-${process.pid}`);
+// Isolated PID namespaces reuse numeric PIDs between CI runs. A random nonce
+// prevents stale codex-runtime.json evidence from a previous failed test run.
+const TEST_DIR = join(import.meta.dir, `.tmp-api-catalog-route-${process.pid}-${randomUUID()}`);
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 const CATALOG_FIXTURE_BYTES = '{"models":[{"slug":"mock/test-model","display_name":"Mock Test","description":"fixture","priority":1,"visibility":"list","base_instructions":"You are a helpful coding assistant.","input_modalities":["text"]}]}';
